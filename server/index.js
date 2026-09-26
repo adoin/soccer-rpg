@@ -66,6 +66,14 @@ app.post('/api/match/:id/command', function (req, res) {
   res.json(result);
 });
 
+// 直接操控输入：方向向量 dx/dy（-1..1）+ 加速/减速 + 切换球员。
+// 服务器只接受意图，位置仍由服务器模拟（防作弊）。
+app.post('/api/match/:id/input', function (req, res) {
+  var m = getMatch(req, res);
+  if (!m) return;
+  res.json(m.setInput(req.body || {}));
+});
+
 // 暂停 / 继续
 app.post('/api/match/:id/pause', function (req, res) {
   var m = getMatch(req, res);
