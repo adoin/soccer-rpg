@@ -23,6 +23,7 @@ var T = require('../../shared/teams');
 var mulberry32 = require('../rng').mulberry32;
 var Offside = require('./rules/offside');
 var Foul = require('./rules/foul');
+var Behavior = require('./rules/behavior');
 
 var FIELD = C.FIELD;
 
@@ -97,6 +98,7 @@ Match.prototype.resetPositions = function (kickoffTeam) {
   this.players.forEach(function (p) {
     p.x = p.hx; p.y = p.hy;
     p.frozenUntil = 0; p.beatenUntil = 0; p.retreatTarget = null;
+    p.holdingUntil = 0; // 急停收步中（行为层）
   });
   this.ball.x = FIELD.W / 2; this.ball.y = FIELD.H / 2;
   // 开球球员：开球方的 10 号
@@ -305,6 +307,17 @@ Match.prototype.simulate = function (dt) {
   var sortedOpp = this.opponentsOf(carrier.team).slice().sort(function (a, b) {
     return dist(a, carrier) - dist(b, carrier);
   });
+  // ★ 行为层输入（每 tick 计算一次，确定性）：
+  //   - pressing：正在上抢的防守球员（不参与防线落位）
+  //   - lineTargets：防线落位目标（纪律/造越位协同驱动）
+  //   - snapAtt：进攻方视角的越位快照（跑位时机/收步决策用）
+  var pressing = {};
+  sortedOpp.forEach(function (q, idx) {
+    if (idx < 2 && self.now >= q.beatenUntil && self.now >= q.frozenUntil) pressing[q.id] = true;
+  });
+  var defTeam = carrier.team === 'home' ? 'away' : 'home';
+  var lineTargets = Behavior.defensiveShape(self, defTeam, pressing);
+  var snapAtt = Offside.snapshot(self, carrier.team);
   this.players.forEach(function (p) {
     if (p.id === carrier.id) return;
     if (p.sentOff) return; // 罚下球员不再参与模拟
@@ -312,22 +325,42 @@ Match.prototype.simulate = function (dt) {
     var beaten = self.now < p.beatenUntil;
     var tx, ty, sp;
     if (p.team !== carrier.team) {
-      // 防守方：最近的 2 人（被晃过的不算）上抢，其余回位
+      // 防守方：最近的 2 人（被晃过的不算）上抢，其余按防线行为落位
       var rank = sortedOpp.indexOf(p);
       if (rank >= 0 && rank < 2 && !beaten && !pFrozen) {
         tx = carrier.x; ty = carrier.y;
         sp = self.playerSpeed(p, true) * 0.94;
         chaseCount++;
       } else {
-        tx = p.hx; ty = p.hy;
+        // ★ 行为层：纪律好的后卫保持平行/协同压上，纪律差的各回阵型点
+        var lt = (p.pos === 'DF' && lineTargets[p.id]) ? lineTargets[p.id] : null;
+        if (lt) { tx = lt.x; ty = lt.y; }
+        else { tx = p.hx; ty = p.hy; }
         sp = self.playerSpeed(p, false) * 0.7;
       }
+    } else if (p.pos === 'GK') {
+      tx = p.hx; ty = p.hy;
+      sp = self.playerSpeed(p, false) * 0.7;
+    } else if (self.now < p.holdingUntil) {
+      // ★ 行为层：急停收步中——原地不动，不参与这次进攻
+      tx = p.x; ty = p.y;
+      sp = 0;
     } else {
       // 进攻方无球跑位：前插接应
       var push = self.mentality === 'attack' ? 16 : self.mentality === 'defend' ? 6 : 11;
       tx = clamp(carrier.x + push * dir, 4, FIELD.W - 4);
       ty = clamp(p.hy * 0.5 + carrier.y * 0.5 + (p.hy - FIELD.H / 2) * 0.35, 4, FIELD.H - 4);
-      if (p.pos === 'GK') { tx = p.hx; ty = p.hy; }
+      if (p.pos === 'FW' || p.pos === 'MF') {
+        // ★ 行为层·反越位时机：高 anti 球员把前插目标钳制在越位线之前
+        var wantU = p.team === 'home' ? tx : FIELD.W - tx;
+        var fixedU = Behavior.timeRunU(p, wantU, snapAtt);
+        if (fixedU != null) tx = p.team === 'home' ? fixedU : FIELD.W - fixedU;
+        // ★ 行为层·越位后的决策：收步的球员快速回位，不越位/选择前插的不管
+        if (Offside.isOffsidePosition(p, snapAtt) && Behavior.attackerDecision(p, snapAtt) === 'hold') {
+          tx = clamp(p.x - 14 * dir, 4, FIELD.W - 4);
+          ty = p.hy;
+        }
+      }
       sp = self.playerSpeed(p, false) * 0.8;
     }
     var moved = false;
@@ -488,25 +521,28 @@ Match.prototype.resolveAction = function (p, commandId, rate) {
     }
     case 'pass': {
       var target = this.bestPassTarget(p);
-      // ★ 越位判定（确定性，无随机）：传球瞬间快照
-      var os = Offside.judgePass(this, p, target);
-      if (os.type === 'offside') {
-        return this.whistleOffside(os, p);
-      }
-      if (os.type === 'hold') {
-        // 球商+心态过关：接应球员急停收步，改传不越位的队友
-        var alt = this.bestOnsideTarget(p, os.snap);
+      // ★ 行为层先行：接应目标若处越位位置，先看他自己的决策——
+      //   急停收步（hold）还是继续前插（go）。这是球员的行为选择，
+      //   不是裁判的豁免：选择前插而实际越位，哨声照吹。
+      var snapPass = Offside.snapshot(this, p.team);
+      if (Offside.isOffsidePosition(target, snapPass) &&
+          Behavior.attackerDecision(target, snapPass) === 'hold') {
+        target.holdingUntil = this.now + 2500;
+        var alt = this.bestOnsideTarget(p, snapPass);
         if (alt) {
+          text = '⚠ ' + target.name + '识破越位陷阱，急停收步！' + p.name + '改传' + alt.name + '。';
           target = alt;
-          text = '⚠ ' + os.player.name + '识破越位陷阱急停收步！' + p.name + '改传' + target.name + '。';
         } else {
           var interceptor = this.nearestOpponent(p).player;
           this.ball.ownerId = interceptor.id;
-          text = '⚠ ' + os.player.name + '急停收步，但' + p.name + '的传球线路已被' + interceptor.name + '封死！';
+          text = '⚠ ' + target.name + '急停收步，但' + p.name + '的传球线路已被' + interceptor.name + '封死！';
           break;
         }
-      } else if (os.beatTrap) {
-        text = '⚡ ' + target.name + '反越位成功！毫厘之间不越位，' + p.name + '送出直塞！';
+      }
+      // ★ 裁判层：纯客观判定，不看任何数值
+      var os = Offside.judgePass(this, p, target);
+      if (os.type === 'offside') {
+        return this.whistleOffside(os, p);
       }
       if (success) {
         this.ball.ownerId = target.id;
@@ -536,8 +572,11 @@ Match.prototype.resolveAction = function (p, commandId, rate) {
       this.ball.ownerId = keeper.id;
       var saved = this.rng() < 0.55;
       if (saved) {
-        // ★ 门将扑救反弹：越位位置球员获益 → 吹越位
-        var osReb = Offside.judgeRebound(this, p.team);
+        // 球反弹到门前区域
+        this.ball.x = clamp(keeper.x - 6 * dir, 2, FIELD.W - 2);
+        this.ball.y = clamp(keeper.y + (this.rng() - 0.5) * 10, 2, FIELD.H - 2);
+        // ★ 门将扑救反弹：以射门瞬间快照判断越位位置获益 → 吹越位
+        var osReb = Offside.judgeRebound(this, p.team, osShot.snap);
         if (osReb.type === 'offside') {
           return this.whistleOffside(osReb, p);
         }
