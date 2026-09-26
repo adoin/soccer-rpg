@@ -191,6 +191,7 @@ function releaseBtn(id) {
 }
 cv.addEventListener('touchstart', function (e) {
   if (!isTouch || screen !== 'game') return;
+  if (ui.pauseOpen || ui.overlay) return; // 菜单/覆盖层打开时手柄让路，保证菜单可点
   var used = false;
   for (var i = 0; i < e.changedTouches.length; i++) {
     var t = e.changedTouches[i], p = touchPos(t), tid = t.identifier;
@@ -374,10 +375,16 @@ function drawGame(t) {
   drawActors(t);
   drawScoreboard();
   drawPauseButton();
+  if (isTouch) drawGamepad(); // 移动端/Pad：透明虚拟手柄（画在菜单下层）
   if (ui.pauseOpen) drawPauseMenu();
   drawBottomUI(t);
   drawCutin();
-  if (isTouch) drawGamepad(); // 移动端/Pad：透明虚拟手柄覆盖
+  // 决策等待中：在指令菜单上方显示呼吸灯提示
+  if (state && state.decision && !ui.pauseOpen && !ui.overlay) {
+    var pulse = 0.5 + 0.5 * Math.sin(t / 280);
+    var alpha = (0.55 + 0.45 * pulse).toFixed(2);
+    text('👇 请选择指令，比赛才能继续', 454, 546, 20, 'rgba(255,217,74,' + alpha + ')', 'center', true);
+  }
   if (ui.overlay === 'status') drawStatusOverlay();
   if (ui.overlay === 'settings') drawSettingsOverlay();
   if (state && state.phase === 'fulltime') drawFulltime();
@@ -572,7 +579,11 @@ function drawPauseMenu() {
   panel(x, y, w, h);
   text('PAUSE', x + 20, y + 26, 20, '#9fb4dd', 'left', true);
   var items = [
-    { label: '▶ 继续比赛', fn: function () { togglePause(false); } },
+    { label: '▶ 继续比赛', fn: function () {
+        togglePause(false);
+        // 决策点会暂停模拟：此时不是"暂停"，而是等玩家选指令
+        if (state && state.decision) toast('请先在下方指令菜单选择行动');
+      } },
     { label: '⚙ 战术指令', fn: function () { ui.tacticOpen = !ui.tacticOpen; } },
     { label: '👤 球员状态', fn: function () { ui.overlay = 'status'; ui.pauseOpen = false; api.post('/api/match/' + matchId + '/pause', { paused: false }); } },
     { label: '🔧 比赛设定', fn: function () { ui.overlay = 'settings'; } },
@@ -590,6 +601,10 @@ function drawPauseMenu() {
     text(it.label, x + 28, iy + ih / 2, 18, '#fff', 'left');
     (function (fn) { addClick(x + 12, iy, w - 24, ih, fn); })(it.fn);
   });
+  // 决策等待中：明确告诉玩家游戏在等什么
+  if (state && state.decision) {
+    text('⏳ 等待选择指令：请在下方菜单操作', x + w / 2, y + h - 14, 14, '#ffd94a', 'center');
+  }
   if (ui.tacticOpen) {
     var tys = y + 52 + 1 * 42;
     var topts = [
@@ -696,8 +711,8 @@ function drawCommandMenu(x, y, w, h, dx, dy, dw, dh) {
 
 function drawIdleHint(x, y, w, h) {
   panel(x, y, w, h);
-  var msg = isTouch ? '拖左盘移动球员（绿圈），右侧按键加速/减速/切换'
-                    : 'WASD 移动球员（绿圈），J加速 K减速，L切换球员';
+  var msg = isTouch ? '拖左盘移动（绿圈球员）；持球遇防守时在下方选指令'
+                    : 'WASD 移动（绿圈球员）；持球遇防守时在下方选指令';
   if (state) {
     if (state.phase === 'kickoff') msg = '开球！';
     else if (state.phase === 'goal') msg = '⚽ 进球！';
