@@ -517,14 +517,16 @@ function drawHmDirs(hm, lvl, pr, cx) {
     var sel = (lvl.dirSel == null ? hm.pass.dir : lvl.dirSel) === dir;
     hmText(PASS_DIR_NAMES[dir], x, y, sel ? 36 : 28, sel ? '#ffd94a' : '#fff');
     (function (dd, xx, yy) {
-      addClick(xx - 28, yy - 28, 56, 56, function () {
+      addClick(xx - 36, yy - 36, 72, 72, function () {
         hm.pass.dir = dd; lvl.dirSel = dd;
         pushHmLevel(techLevel()); requestHmPreview();
       });
     })(dir, x, y);
   }
-  hmText('← 返回', pr.x, pr.y + 46, 17, '#9fb4dd', false);
-  addClick(pr.x - 70, pr.y + 46 - 20, 140, 40, function () { popHmLevel(); });
+  // ←返回放在罗盘下方足够远处，避免与 ↓ 箭头点击区重叠
+  var backY = pr.y + 128;
+  hmText('← 返回', pr.x, backY, 17, '#9fb4dd', false);
+  addClick(pr.x - 70, backY - 20, 140, 40, function () { popHmLevel(); });
 }
 
 function drawHmPower(hm, lvl, pr, cx, headY) {
