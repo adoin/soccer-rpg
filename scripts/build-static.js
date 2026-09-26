@@ -149,14 +149,18 @@ fs.writeFileSync(path.join(DOCS, 'js/main.js'), mainStatic);
 
 // 5. index.html：相对路径 + 引擎包 + 本地适配器
 var html = fs.readFileSync(path.join(ROOT, 'client/index.html'), 'utf8');
+// ★ 缓存击穿：每次构建带上版本号，避免手机浏览器沿用旧 JS
+var ver = Date.now().toString(36);
 html = html
-  .replace('src="/shared/constants.js"', 'src="shared/constants.js"')
-  .replace('src="/shared/teams.js"', 'src="shared/teams.js"')
+  .replace('src="/shared/constants.js"', 'src="shared/constants.js?v=' + ver + '"')
+  .replace('src="/shared/teams.js"', 'src="shared/teams.js?v=' + ver + '"')
+  .replace('src="js/sprites.js"', 'src="js/sprites.js?v=' + ver + '"')
+  .replace('src="js/main.js"', 'src="js/main.js?v=' + ver + '"')
   .replace(
     '<!-- 客户端 -->',
     '<!-- 纯前端试玩版：引擎跑在浏览器里（正式版走服务器，见 README） -->\n' +
-    '<script src="engine.bundle.js"></script>\n' +
-    '<script src="js/api-local.js"></script>\n' +
+    '<script src="engine.bundle.js?v=' + ver + '"></script>\n' +
+    '<script src="js/api-local.js?v=' + ver + '"></script>\n' +
     '<!-- 客户端 -->'
   );
 fs.writeFileSync(path.join(DOCS, 'index.html'), html);
