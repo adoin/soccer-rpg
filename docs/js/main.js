@@ -252,7 +252,10 @@ function refresh() {
   api.get('/api/match/' + matchId + '/state').then(function (r) {
     if (!r.ok) return;
     state = r.state;
-    if (!state.decision) ui.choosing = false;
+    var hasDec = !!(state && state.decision);
+    if (hasDec && !ui._hadDecision) ui.choosing = false; // 新决策到达：清掉旧标记
+    if (!hasDec) ui.choosing = false;
+    ui._hadDecision = hasDec;
     // 首次同步渲染位置
     state.players.forEach(function (p) {
       if (!renderPos[p.id]) renderPos[p.id] = { x: p.x, y: p.y };
@@ -309,6 +312,19 @@ function bar(x, y, w, h, ratio, color, bg) {
   ctx.fillRect(x, y, w * clamp(ratio, 0, 1), h);
   ctx.strokeStyle = '#0a0d18'; ctx.lineWidth = 1;
   ctx.strokeRect(x + 0.5, y + 0.5, w - 1, h - 1);
+}
+// 通用按钮：绘制 + 注册点击；disabled 时置灰且点击只 toast
+function drawButton(x, y, w, h, label, onClick, color, fontSize, disabled) {
+  ctx.fillStyle = disabled ? '#232838' : (color || '#2b5fe3');
+  rr(x, y, w, h, 8); ctx.fill();
+  if (!disabled) { ctx.strokeStyle = 'rgba(255,255,255,0.25)'; ctx.lineWidth = 1.5; ctx.stroke(); }
+  text(label, x + w / 2, y + h / 2 - 8, fontSize || 18, disabled ? '#5a6584' : '#fff', 'center', true);
+  (function (fn, dis) {
+    addClick(x, y, w, h, function () {
+      if (dis) { toast('精神不足或该球员无法使用'); return; }
+      fn();
+    });
+  })(onClick, disabled);
 }
 
 // ---------------- 绘制：标题 ----------------
@@ -379,12 +395,8 @@ function drawGame(t) {
   if (ui.pauseOpen) drawPauseMenu();
   drawBottomUI(t);
   drawCutin();
-  // 决策等待中：在指令菜单上方显示呼吸灯提示
-  if (state && state.decision && !ui.pauseOpen && !ui.overlay) {
-    var pulse = 0.5 + 0.5 * Math.sin(t / 280);
-    var alpha = (0.55 + 0.45 * pulse).toFixed(2);
-    text('👇 请选择指令，比赛才能继续', 454, 546, 20, 'rgba(255,217,74,' + alpha + ')', 'center', true);
-  }
+  // ★ 被动决策：直接中央弹窗 + 比赛暂停（模拟在 decision 阶段本就停止）
+  if (state && state.decision && !ui.pauseOpen && !ui.overlay) drawDecisionModal(t);
   if (ui.overlay === 'status') drawStatusOverlay();
   if (ui.overlay === 'settings') drawSettingsOverlay();
   if (state && state.phase === 'fulltime') drawFulltime();
@@ -601,10 +613,6 @@ function drawPauseMenu() {
     text(it.label, x + 28, iy + ih / 2, 18, '#fff', 'left');
     (function (fn) { addClick(x + 12, iy, w - 24, ih, fn); })(it.fn);
   });
-  // 决策等待中：明确告诉玩家游戏在等什么
-  if (state && state.decision) {
-    text('⏳ 等待选择指令：请在下方菜单操作', x + w / 2, y + h - 14, 14, '#ffd94a', 'center');
-  }
   if (ui.tacticOpen) {
     var tys = y + 52 + 1 * 42;
     var topts = [
@@ -648,9 +656,8 @@ function drawBottomUI(t) {
   var y0 = 556;
   // 球员卡
   drawPlayerCard(8, y0, 288, 92);
-  // 指令菜单 + 详情
-  if (state && state.decision) drawCommandMenu(304, y0, 300, 92, 612, y0, 330, 92);
-  else drawIdleHint(304, y0, 636, 92);
+  // 指令区：被动决策改为中央弹窗（drawDecisionModal），底部只保留待机提示
+  drawIdleHint(304, y0, 636, 92);
   // 雷达 + 阵容条
   drawRadar(8, 654, 212, 58);
   drawRoster(228, 654, W - 236, 58);
@@ -681,32 +688,38 @@ function drawPlayerCard(x, y, w, h) {
 
 var CMD_ICONS = { dribble: '💨', pass: '➡️', shoot: '⚽', special: '🔥', feint: '🌀', retreat: '↩️' };
 
-function drawCommandMenu(x, y, w, h, dx, dy, dw, dh) {
+// ★ 被动决策：直接中央弹窗 + 比赛暂停（点选即执行）
+function drawDecisionModal(t) {
   var d = state.decision;
-  panel(x, y, w, h, '#2b5fe3');
-  var rh = (h - 8) / 6;
-  d.options.forEach(function (o, i) {
-    var oy = y + 4 + i * rh;
-    var en = o.enabled && !ui.choosing;
-    ctx.fillStyle = !o.enabled ? '#10142a' : (ui.choosing ? '#1a2340' : (i % 2 ? '#16204a' : '#1a2450'));
-    ctx.fillRect(x + 4, oy, w - 8, rh - 2);
-    var col = o.enabled ? '#fff' : '#5a6584';
-    text((CMD_ICONS[o.id] || '•') + ' ' + o.name, x + 12, oy + rh / 2 - 1, 12.5, col, 'left', o.id === 'special');
-    text(o.cost + '', x + w - 14, oy + rh / 2 - 1, 12.5, o.enabled ? '#ffd94a' : '#5a6584', 'right', true);
+  ctx.fillStyle = 'rgba(0,0,0,0.62)';
+  ctx.fillRect(0, 0, W, H);
+  var pw = 660, ph = 540, px = (W - pw) / 2, py = (H - ph) / 2;
+  panel(px, py, pw, ph);
+  var carrier = null;
+  for (var i = 0; i < state.players.length; i++) {
+    if (state.players[i].id === d.playerId) { carrier = state.players[i]; break; }
+  }
+  text('⏸ 请选择指令', px + 30, py + 46, 27, '#fff', 'left', true);
+  text((carrier ? carrier.num + ' ' + carrier.name : d.playerName) + ' 持球 · 比赛已暂停', px + 30, py + 78, 16, '#ffd94a', 'left');
+  if (ui.choosing) {
+    text('判定中…', px + pw / 2, py + ph / 2 + 20, 22, '#ffd94a', 'center');
+    return;
+  }
+  var cols = 2, bw = 280, bh = 92, gapX = 28, gapY = 18;
+  var sx = px + (pw - (bw * cols + gapX * (cols - 1))) / 2, sy = py + 112;
+  d.options.forEach(function (o, idx) {
+    var cx = sx + (idx % cols) * (bw + gapX), cy = sy + Math.floor(idx / cols) * (bh + gapY);
+    var label = (CMD_ICONS[o.id] || '•') + ' ' + o.name;
+    var sub = o.rate + '% · ' + o.cost + '精神';
     if (o.enabled) {
-      (function (opt) { addClick(x + 4, oy, w - 8, rh - 2, function () { sendCommand(opt); }); })(o);
+      drawButton(cx, cy, bw, bh, label, function () { sendCommand(o); }, '#12325e', 22);
+      text(sub, cx + bw / 2, cy + bh - 16, 14, '#9fc0ff', 'center');
+    } else {
+      drawButton(cx, cy, bw, bh, label, function () {}, '#1a2030', 22, true);
+      text(sub, cx + bw / 2, cy + bh - 16, 14, '#5a6584', 'center');
     }
   });
-  // 详情面板
-  panel(dx, dy, dw, dh, '#2b5fe3');
-  var sel = d.options[0];
-  text(sel.name, dx + 16, dy + 22, 20, '#fff', 'left', true);
-  wrapText(sel.desc, dx + 16, dy + 44, dw - 32, 13, '#cfe0ff', 2);
-  text('成功率', dx + 16, dy + dh - 34, 15, '#9fb4dd', 'left');
-  text(sel.rate + '%', dx + 110, dy + dh - 32, 30, '#7fd0ff', 'left', true);
-  text('消耗精神', dx + 200, dy + dh - 34, 15, '#9fb4dd', 'left');
-  text(sel.cost + '', dx + 290, dy + dh - 32, 30, '#ffd94a', 'left', true);
-  if (ui.choosing) text('判定中…', dx + dw / 2, dy + dh / 2, 16, '#ffd94a', 'center');
+  text('点选即执行', px + pw / 2, py + ph - 24, 14, '#8fa3c8', 'center');
 }
 
 function drawIdleHint(x, y, w, h) {
