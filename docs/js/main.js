@@ -41,6 +41,33 @@ var ui = {
 var clickables = [];        // 本帧可点击区域（绘制时重建）
 var frameNo = 0;
 
+// ---------------- 直接操控输入 ----------------
+// 桌面端：WASD 方向 / J 加速 / K 减速 / L或Tab 切换球员 / 空格 暂停菜单
+// 移动端/Pad：透明虚拟手柄覆盖（左方向盘 + 右按键）
+var isTouch = ('ontouchstart' in window) || (navigator.maxTouchPoints > 0);
+var pad = { dx: 0, dy: 0, sprint: false, slow: false };
+var DPAD = { x: 140, y: 445, r: 95 };
+var BTNS = [
+  { id: 'sprint', x: 1060, y: 400, r: 44, label: '加速' },
+  { id: 'slow',   x: 1170, y: 400, r: 44, label: '减速' },
+  { id: 'switch', x: 1060, y: 505, r: 44, label: '切换' },
+  { id: 'menu',   x: 1170, y: 505, r: 44, label: '菜单' },
+];
+var padTouchId = null;      // 方向盘上的触点 id
+var btnTouchIds = {};       // 触点 id -> 按键 id
+function sendInput(extra) {
+  if (screen !== 'game' || !matchId) return;
+  var body = { dx: +pad.dx.toFixed(3), dy: +pad.dy.toFixed(3), sprint: pad.sprint, slow: pad.slow };
+  if (extra) for (var k in extra) body[k] = extra[k];
+  api.post('/api/match/' + matchId + '/input', body).catch(function () {});
+}
+function setPad(dx, dy, sprint, slow) {
+  if (dx !== pad.dx || dy !== pad.dy || sprint !== pad.sprint || slow !== pad.slow) {
+    pad.dx = dx; pad.dy = dy; pad.sprint = sprint; pad.slow = slow;
+    sendInput();
+  }
+}
+
 // ---------------- 精灵 ----------------
 var frameCache = {};
 function framesFor(p) {
@@ -102,7 +129,97 @@ cv.addEventListener('click', function (e) {
 });
 document.addEventListener('keydown', function (e) {
   if (e.key === 'Escape' && screen === 'game' && !ui.overlay) togglePause();
+  if (screen !== 'game') return;
+  var k = (e.key || '').toLowerCase();
+  if ([' ', 'tab', 'w', 'a', 's', 'd', 'j', 'k', 'l'].indexOf(k) >= 0) e.preventDefault();
+  if (e.repeat) return;
+  if (k === ' ') { togglePause(); return; }
+  if (k === 'l' || k === 'tab') {
+    sendInput({ switchPlayer: true });
+    toast('切换操控球员');
+    return;
+  }
+  keys[k] = true;
+  updatePadFromKeys();
 });
+document.addEventListener('keyup', function (e) {
+  var k = (e.key || '').toLowerCase();
+  if (keys[k]) { keys[k] = false; updatePadFromKeys(); }
+});
+window.addEventListener('blur', function () {
+  // 失焦松开所有键，避免球员一直跑
+  for (var k in keys) keys[k] = false;
+  setPad(0, 0, false, false);
+});
+var keys = {};
+function updatePadFromKeys() {
+  // 场地坐标：+x 朝对方球门（右），+y 朝屏幕上方
+  var dx = (keys['d'] ? 1 : 0) - (keys['a'] ? 1 : 0);
+  var dy = (keys['w'] ? 1 : 0) - (keys['s'] ? 1 : 0);
+  setPad(dx, dy, !!keys['j'], !!keys['k']);
+}
+
+// ---- 触屏虚拟手柄 ----
+function touchPos(t) {
+  var rect = cv.getBoundingClientRect();
+  return { x: (t.clientX - rect.left) * (W / rect.width), y: (t.clientY - rect.top) * (H / rect.height) };
+}
+function hitBtn(p) {
+  for (var i = 0; i < BTNS.length; i++) {
+    var b = BTNS[i];
+    if (Math.hypot(p.x - b.x, p.y - b.y) <= b.r + 10) return b;
+  }
+  return null;
+}
+function moveDpad(p) {
+  var dx = (p.x - DPAD.x) / DPAD.r, dy = (p.y - DPAD.y) / DPAD.r;
+  var len = Math.hypot(dx, dy);
+  if (len < 0.25) { setPad(0, 0, pad.sprint, pad.slow); return; } // 死区
+  if (len > 1) { dx /= len; dy /= len; }
+  // canvas 纵轴向下，场地 +y 朝上，故取反
+  setPad(+dx.toFixed(3), +(-dy).toFixed(3), pad.sprint, pad.slow);
+}
+function pressBtn(id) {
+  if (id === 'sprint') setPad(pad.dx, pad.dy, true, pad.slow);
+  else if (id === 'slow') setPad(pad.dx, pad.dy, pad.sprint, true);
+  else if (id === 'switch') { sendInput({ switchPlayer: true }); toast('切换操控球员'); }
+  else if (id === 'menu') togglePause();
+}
+function releaseBtn(id) {
+  if (id === 'sprint') setPad(pad.dx, pad.dy, false, pad.slow);
+  else if (id === 'slow') setPad(pad.dx, pad.dy, pad.sprint, false);
+}
+cv.addEventListener('touchstart', function (e) {
+  if (!isTouch || screen !== 'game') return;
+  var used = false;
+  for (var i = 0; i < e.changedTouches.length; i++) {
+    var t = e.changedTouches[i], p = touchPos(t), tid = t.identifier;
+    var b = hitBtn(p);
+    if (b) { btnTouchIds[tid] = b.id; pressBtn(b.id); used = true; }
+    else if (padTouchId === null && Math.hypot(p.x - DPAD.x, p.y - DPAD.y) <= DPAD.r + 30) {
+      padTouchId = tid; moveDpad(p); used = true;
+    }
+  }
+  if (used) e.preventDefault();
+}, { passive: false });
+cv.addEventListener('touchmove', function (e) {
+  if (padTouchId === null) return;
+  for (var i = 0; i < e.changedTouches.length; i++) {
+    if (e.changedTouches[i].identifier === padTouchId) {
+      moveDpad(touchPos(e.changedTouches[i]));
+      e.preventDefault();
+    }
+  }
+}, { passive: false });
+function touchEnd(e) {
+  for (var i = 0; i < e.changedTouches.length; i++) {
+    var tid = e.changedTouches[i].identifier;
+    if (tid === padTouchId) { padTouchId = null; setPad(0, 0, pad.sprint, pad.slow); }
+    if (btnTouchIds[tid]) { releaseBtn(btnTouchIds[tid]); delete btnTouchIds[tid]; }
+  }
+}
+cv.addEventListener('touchend', touchEnd);
+cv.addEventListener('touchcancel', touchEnd);
 function addClick(x, y, w, h, action) {
   clickables.push({ x: x, y: y, w: w, h: h, action: action });
 }
@@ -121,6 +238,9 @@ function startMatch() {
     renderPos = {};
     ballR = { x: 52.5, y: 34 };
     selectedHomeIdx = 9;
+    pad.dx = 0; pad.dy = 0; pad.sprint = false; pad.slow = false;
+    padTouchId = null; btnTouchIds = {};
+    for (var k in keys) keys[k] = false;
     ui.pauseOpen = false; ui.overlay = null; ui.choosing = false; ui.exitArm = 0;
     refresh();
     setInterval(refresh, 300);
@@ -136,6 +256,8 @@ function refresh() {
     state.players.forEach(function (p) {
       if (!renderPos[p.id]) renderPos[p.id] = { x: p.x, y: p.y };
     });
+    // 输入心跳：保持操控输入新鲜（服务器 2 秒无有效操作则 AI 接管）
+    sendInput();
   }).catch(function () {});
 }
 function sendCommand(opt) {
@@ -240,7 +362,8 @@ function drawTitle() {
   text('⚽ 开 始 比 赛', W / 2, by + bh / 2, 28, '#3a2a00', 'center', true);
   addClick(bx, by, bw, bh, startMatch);
 
-  text('操作：在持球球员遇到防守时选择指令，服务器结算后播放动画', W / 2, 680, 16, '#5f7099', 'center');
+  text('电脑：WASD 移动 · J加速 K减速 · L切换球员 · 空格暂停', W / 2, 672, 16, '#5f7099', 'center');
+  text('手机 / Pad：左虚拟方向盘移动 · 右侧按键加速/减速/切换/菜单', W / 2, 696, 16, '#5f7099', 'center');
 }
 
 // ---------------- 绘制：比赛 ----------------
@@ -254,6 +377,7 @@ function drawGame(t) {
   if (ui.pauseOpen) drawPauseMenu();
   drawBottomUI(t);
   drawCutin();
+  if (isTouch) drawGamepad(); // 移动端/Pad：透明虚拟手柄覆盖
   if (ui.overlay === 'status') drawStatusOverlay();
   if (ui.overlay === 'settings') drawSettingsOverlay();
   if (state && state.phase === 'fulltime') drawFulltime();
@@ -386,6 +510,15 @@ function drawActors(t) {
       ctx.beginPath();
       ctx.ellipse(pr.x, pr.y + 2, 16 * s, 6 * s, 0, 0, Math.PI * 2);
       ctx.stroke();
+    }
+    // 被玩家直接操控标记（绿圈）
+    if (state.controlledId && p.id === state.controlledId) {
+      ctx.strokeStyle = '#51ff9a'; ctx.lineWidth = 3;
+      ctx.setLineDash([8, 5]);
+      ctx.beginPath();
+      ctx.ellipse(pr.x, pr.y + 2, 22 * s, 9 * s, 0, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.setLineDash([]);
     }
     var frames = framesFor(p);
     var img = frames[animFrame];
@@ -563,7 +696,8 @@ function drawCommandMenu(x, y, w, h, dx, dy, dw, dh) {
 
 function drawIdleHint(x, y, w, h) {
   panel(x, y, w, h);
-  var msg = '比赛中… 持球球员接近防守时将弹出指令菜单';
+  var msg = isTouch ? '拖左盘移动球员（绿圈），右侧按键加速/减速/切换'
+                    : 'WASD 移动球员（绿圈），J加速 K减速，L切换球员';
   if (state) {
     if (state.phase === 'kickoff') msg = '开球！';
     else if (state.phase === 'goal') msg = '⚽ 进球！';
@@ -628,8 +762,44 @@ function drawRoster(x, y, w, h) {
       ctx.strokeStyle = '#7fd0ff'; ctx.lineWidth = 2;
       rr(ix, y + 4, iw - 6, h - 8, 4); ctx.stroke();
     }
-    (function (idx) { addClick(ix, y + 4, iw - 6, h - 8, function () { selectedHomeIdx = idx; }); })(i);
+    (function (idx) { addClick(ix, y + 4, iw - 6, h - 8, function () {
+      selectedHomeIdx = idx;
+      var pl = homePlayer(idx);
+      if (pl && pl.pos !== 'GK' && !pl.sentOff) {
+        sendInput({ playerId: pl.id });
+        toast('操控 ' + pl.num + '号 ' + pl.name);
+      }
+    }); })(i);
   }
+}
+
+// ---------------- 透明虚拟手柄（移动端 / Pad） ----------------
+function drawGamepad() {
+  if (screen !== 'game') return;
+  // 左：方向盘
+  ctx.fillStyle = 'rgba(255,255,255,0.08)';
+  ctx.beginPath(); ctx.arc(DPAD.x, DPAD.y, DPAD.r, 0, Math.PI * 2); ctx.fill();
+  ctx.strokeStyle = 'rgba(255,255,255,0.28)'; ctx.lineWidth = 2; ctx.stroke();
+  // 四方向刻度
+  ctx.fillStyle = 'rgba(255,255,255,0.30)';
+  [[0, -1], [0, 1], [-1, 0], [1, 0]].forEach(function (d) {
+    ctx.beginPath();
+    ctx.arc(DPAD.x + d[0] * (DPAD.r - 14), DPAD.y + d[1] * (DPAD.r - 14), 5, 0, Math.PI * 2);
+    ctx.fill();
+  });
+  // 摇杆头（跟随输入）
+  var kx = DPAD.x + pad.dx * DPAD.r * 0.55, ky = DPAD.y - pad.dy * DPAD.r * 0.55;
+  ctx.fillStyle = 'rgba(255,255,255,0.22)';
+  ctx.beginPath(); ctx.arc(kx, ky, 34, 0, Math.PI * 2); ctx.fill();
+  ctx.strokeStyle = 'rgba(255,255,255,0.35)'; ctx.lineWidth = 2; ctx.stroke();
+  // 右：功能按键
+  BTNS.forEach(function (b) {
+    var active = (b.id === 'sprint' && pad.sprint) || (b.id === 'slow' && pad.slow);
+    ctx.fillStyle = active ? 'rgba(120,255,160,0.28)' : 'rgba(255,255,255,0.08)';
+    ctx.beginPath(); ctx.arc(b.x, b.y, b.r, 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = 'rgba(255,255,255,0.28)'; ctx.lineWidth = 2; ctx.stroke();
+    text(b.label, b.x, b.y + 1, 20, 'rgba(255,255,255,0.75)', 'center', true);
+  });
 }
 
 // ---------------- 事件横幅 / 指令演出 ----------------

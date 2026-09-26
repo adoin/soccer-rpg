@@ -72,6 +72,16 @@ function Match(id, options) {
   this.decision = null;     // 等待用户决策时的指令选项
   this.lastAction = null;   // 最近一次结算事件（供客户端播放动画/横幅）
 
+  // ★ 直接操控：玩家实时操控一名主队球员（WASD / 虚拟手柄）。
+  // 服务器只接受「方向向量 + 加速/减速 + 切换」，位置仍由服务器模拟（防作弊）。
+  this.control = {
+    playerId: null,  // 被操控的球员 id
+    dx: 0, dy: 0,    // 输入方向（-1..1）
+    sprint: false, slow: false,
+    stamp: -1e9,     // 最近一次输入包时间（服务器时钟）
+    activeStamp: -1e9, // 最近一次“有效操作”时间；超时无操作则 AI 接管该球员
+  };
+
   this.nextDecisionAt = 0;  // 下次允许触发决策点的时间
   this.lastDecisionPos = { x: 0, y: 0 };
   this.aiCooldownUntil = 0; // AI 决策冷却
@@ -255,6 +265,20 @@ Match.prototype.moveToward = function (p, tx, ty, speed, dt) {
   return step >= d - 0.01;
 };
 
+// ★ 直接操控：若该球员正被玩家操控且 2 秒内有有效操作，用输入方向移动，跳过 AI。
+// 返回 true 表示本 tick 的移动已由输入接管（含冻结/松手的情况，避免 AI 顶替）。
+Match.prototype.controlMove = function (p, dt) {
+  var c = this.control;
+  if (p.id !== c.playerId) return false;
+  if (this.now - c.activeStamp > 2000) return false; // 超时无操作：AI 接管
+  if (this.now < p.frozenUntil) return true;
+  if (c.dx === 0 && c.dy === 0) return true; // 松手：原地不动
+  var sp = this.playerSpeed(p, c.sprint);
+  if (c.slow) sp *= 0.45;
+  this.moveToward(p, p.x + c.dx * 30, p.y + c.dy * 30, sp, dt);
+  return true;
+};
+
 Match.prototype.playerSpeed = function (p, sprint) {
   var base = 13 * (0.8 + p.stats.speed / 250);
   if (sprint) base *= 1.08;
@@ -289,7 +313,10 @@ Match.prototype.simulate = function (dt) {
   var cSpeed = this.playerSpeed(carrier, true);
   var moving = false;
   if (!frozen) {
-    if (carrier.retreatTarget) {
+    if (this.controlMove(carrier, dt)) {
+      // ★ 被玩家直接操控：按输入方向移动，不自动推进
+      moving = (this.control.dx !== 0 || this.control.dy !== 0);
+    } else if (carrier.retreatTarget) {
       var arrived = this.moveToward(carrier, carrier.retreatTarget.x, carrier.retreatTarget.y, cSpeed * 0.9, dt);
       moving = true;
       if (arrived) carrier.retreatTarget = null;
@@ -321,6 +348,11 @@ Match.prototype.simulate = function (dt) {
   this.players.forEach(function (p) {
     if (p.id === carrier.id) return;
     if (p.sentOff) return; // 罚下球员不再参与模拟
+    // ★ 被玩家直接操控：按输入移动，跳过 AI 跑位
+    if (self.controlMove(p, dt)) {
+      self.updateEnergy(p, self.control.dx !== 0 || self.control.dy !== 0, false, dt);
+      return;
+    }
     var pFrozen = self.now < p.frozenUntil;
     var beaten = self.now < p.beatenUntil;
     var tx, ty, sp;
@@ -817,6 +849,56 @@ Match.prototype.setPaused = function (paused) {
   this.paused = !!paused;
 };
 
+// ★ 直接操控：接收客户端输入（方向/加速/减速/切换），只接受意图，不接受位置。
+Match.prototype.setInput = function (data) {
+  var c = this.control;
+  data = data || {};
+  var dz = function (v) {
+    v = +v || 0;
+    if (v > 1) v = 1; if (v < -1) v = -1;
+    return Math.abs(v) < 0.15 ? 0 : v; // 死区
+  };
+  c.dx = dz(data.dx); c.dy = dz(data.dy);
+  c.sprint = !!data.sprint; c.slow = !!data.slow;
+  c.stamp = this.now;
+  if (c.dx !== 0 || c.dy !== 0 || c.sprint || c.slow) c.activeStamp = this.now;
+  var cur = this.byId[c.playerId];
+  var wantSwitch = !!data.switchPlayer;
+  if (data.playerId && this.byId[data.playerId]) {
+    // 点名操控：只接受主队非门将、未罚下球员
+    var want = this.byId[data.playerId];
+    if (want.team === 'home' && want.pos !== 'GK' && !want.sentOff && want.id !== c.playerId) {
+      c.playerId = want.id;
+      c.activeStamp = this.now;
+      return { ok: true, controlledId: c.playerId };
+    }
+  }
+  if (!cur || cur.team !== 'home' || cur.sentOff || wantSwitch) {
+    c.playerId = this.selectControlled(cur && wantSwitch ? cur.id : null);
+    if (wantSwitch) c.activeStamp = this.now;
+  }
+  return { ok: true, controlledId: c.playerId };
+};
+
+// 选择被操控球员：默认离球最近的主队非门将；switch 时按离球距离轮换下一名。
+Match.prototype.selectControlled = function (fromId) {
+  var cands = this.players.filter(function (p) {
+    return p.team === 'home' && p.pos !== 'GK' && !p.sentOff;
+  });
+  if (!cands.length) return null;
+  var bx = this.ball.x, by = this.ball.y;
+  cands.sort(function (a, b) {
+    var da = (a.x - bx) * (a.x - bx) + (a.y - by) * (a.y - by);
+    var db = (b.x - bx) * (b.x - bx) + (b.y - by) * (b.y - by);
+    return da - db;
+  });
+  if (!fromId) return cands[0].id;
+  for (var i = 0; i < cands.length; i++) {
+    if (cands[i].id === fromId) return cands[(i + 1) % cands.length].id;
+  }
+  return cands[0].id;
+};
+
 Match.prototype.setMentality = function (m) {
   if (['balanced', 'attack', 'defend'].indexOf(m) >= 0) this.mentality = m;
 };
@@ -857,6 +939,7 @@ Match.prototype.serialize = function () {
       };
     }),
     referee: { name: this.referee.name, strictness: this.referee.strictness },
+    controlledId: this.control.playerId, // 当前被玩家直接操控的球员
     ball: { x: +this.ball.x.toFixed(2), y: +this.ball.y.toFixed(2) },
     decision: this.decision ? {
       playerId: this.decision.playerId,
