@@ -1,0 +1,22 @@
+/* 热血足球 RPG demo 样式：像素风深色 UI */
+* { margin: 0; padding: 0; box-sizing: border-box; }
+html, body {
+  height: 100%;
+  background: #0b1020;
+  font-family: "PingFang SC", "Microsoft YaHei", monospace;
+  overflow: hidden;
+  user-select: none;
+  -webkit-user-select: none;
+}
+#wrap {
+  width: 100vw; height: 100vh;
+  display: flex; align-items: center; justify-content: center;
+  background: radial-gradient(ellipse at center, #141b34 0%, #0b1020 70%);
+}
+#game {
+  image-rendering: pixelated;
+  image-rendering: crisp-edges;
+  cursor: pointer;
+  max-width: 100vw; max-height: 100vh;
+  box-shadow: 0 0 60px rgba(43, 95, 227, 0.25);
+}
