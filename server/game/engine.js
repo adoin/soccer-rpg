@@ -348,6 +348,8 @@ Match.prototype.buildOptions = function (p) {
     if (id === 'special' && p.special) name = '必杀技·' + p.special.name;
     var enabled = p.spirit >= def.cost;
     if (id === 'special' && (!p.special || (p.pos !== 'FW' && p.pos !== 'MF'))) enabled = false;
+    // 门将不参与射门：避免出现"门将 1% 成功率射门"这种无意义选项，引导玩家用传球组织
+    if (p.pos === 'GK' && (id === 'shoot' || id === 'special')) enabled = false;
     return {
       id: id, name: name, cost: def.cost, desc: def.desc,
       rate: Math.round(clamp(rate, 1, 99)),
