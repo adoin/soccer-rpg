@@ -21,6 +21,8 @@
 var C = require('../../shared/constants');
 var T = require('../../shared/teams');
 var mulberry32 = require('../rng').mulberry32;
+var Offside = require('./rules/offside');
+var Foul = require('./rules/foul');
 
 var FIELD = C.FIELD;
 
@@ -73,6 +75,10 @@ function Match(id, options) {
   this.lastDecisionPos = { x: 0, y: 0 };
   this.aiCooldownUntil = 0; // AI 决策冷却
   this.kickoffTeam = 'home';
+
+  // 裁判与规则：每场比赛随机一名裁判（执法尺度影响牌阈值，不影响判罚正确性）
+  this.referee = Foul.pickReferee(this.rng);
+  this.pendingResume = null; // 哨声/点球后的恢复信息 { ownerId }
 
   this.resetPositions('home');
 
@@ -159,7 +165,36 @@ Match.prototype.tick = function () {
     case 'fulltime':
       // decision：等待客户端指令，不推进模拟；fulltime：比赛结束
       break;
+    case 'whistle':
+    case 'penalty':
+      // 死球阶段：等哨声流程走完再恢复
+      this.now += dt * 1000;
+      if (this.now >= this.phaseUntil) this.resumeStoppage();
+      break;
   }
+};
+
+// ---------- 死球恢复（越位 / 犯规哨声 / 点球之后） ----------
+
+Match.prototype.enterStoppage = function (phase, ms, ownerId) {
+  this.phase = phase; // 'whistle' 或 'penalty'
+  this.phaseUntil = this.now + ms;
+  this.decision = null;
+  this.pendingResume = { ownerId: ownerId };
+};
+
+Match.prototype.resumeStoppage = function () {
+  var r = this.pendingResume;
+  this.pendingResume = null;
+  if (r && r.ownerId && this.byId[r.ownerId] && !this.byId[r.ownerId].sentOff) {
+    this.ball.ownerId = r.ownerId;
+    this.ball.x = this.byId[r.ownerId].x;
+    this.ball.y = this.byId[r.ownerId].y;
+  }
+  this.phase = 'play';
+  this.nextDecisionAt = this.now + 1500;
+  var c = this.carrier();
+  if (c) this.lastDecisionPos = { x: c.x, y: c.y };
 };
 
 Match.prototype.endHalf = function () {
@@ -193,13 +228,13 @@ Match.prototype.carrier = function () {
 Match.prototype.teamOf = function (p) { return p.team; };
 
 Match.prototype.opponentsOf = function (team) {
-  return this.players.filter(function (p) { return p.team !== team; });
+  return this.players.filter(function (p) { return p.team !== team && !p.sentOff; });
 };
 
 Match.prototype.nearestOpponent = function (p) {
   var best = null, bd = 1e9, self = this;
   this.players.forEach(function (q) {
-    if (q.team === p.team) return;
+    if (q.team === p.team || q.sentOff) return;
     var d = dist(p, q);
     if (d < bd) { bd = d; best = q; }
   });
@@ -272,6 +307,7 @@ Match.prototype.simulate = function (dt) {
   });
   this.players.forEach(function (p) {
     if (p.id === carrier.id) return;
+    if (p.sentOff) return; // 罚下球员不再参与模拟
     var pFrozen = self.now < p.frozenUntil;
     var beaten = self.now < p.beatenUntil;
     var tx, ty, sp;
@@ -431,16 +467,50 @@ Match.prototype.resolveAction = function (p, commandId, rate) {
         def.beatenUntil = this.now + 2000;
         text = p.name + ' 用突破晃过了 ' + def.name + '！';
       } else {
-        this.ball.ownerId = def.id;
-        text = p.name + ' 的突破被 ' + def.name + ' 断下！';
+        // ★ 抢断对决：干净抢断 / 犯规 / 被过掉（基于数值随机）
+        var t = Foul.judgeTackle(this, def, p, {
+          fromBehind: false,
+          speedHigh: true,
+          attackPromising: Foul.distGoal(p, p.team) < 30,
+        });
+        if (t.outcome === 'clean') {
+          this.ball.ownerId = def.id;
+          text = p.name + ' 的突破被 ' + def.name + ' 干净地断下！';
+        } else if (t.outcome === 'beaten') {
+          def.beatenUntil = this.now + 2000;
+          p.x = clamp(def.x + 7 * dir, 2, FIELD.W - 2);
+          text = p.name + ' 强行抹过了 ' + def.name + '！';
+        } else {
+          return this.applyFoulResult(t.foul);
+        }
       }
       break;
     }
     case 'pass': {
       var target = this.bestPassTarget(p);
+      // ★ 越位判定（确定性，无随机）：传球瞬间快照
+      var os = Offside.judgePass(this, p, target);
+      if (os.type === 'offside') {
+        return this.whistleOffside(os, p);
+      }
+      if (os.type === 'hold') {
+        // 球商+心态过关：接应球员急停收步，改传不越位的队友
+        var alt = this.bestOnsideTarget(p, os.snap);
+        if (alt) {
+          target = alt;
+          text = '⚠ ' + os.player.name + '识破越位陷阱急停收步！' + p.name + '改传' + target.name + '。';
+        } else {
+          var interceptor = this.nearestOpponent(p).player;
+          this.ball.ownerId = interceptor.id;
+          text = '⚠ ' + os.player.name + '急停收步，但' + p.name + '的传球线路已被' + interceptor.name + '封死！';
+          break;
+        }
+      } else if (os.beatTrap) {
+        text = '⚡ ' + target.name + '反越位成功！毫厘之间不越位，' + p.name + '送出直塞！';
+      }
       if (success) {
         this.ball.ownerId = target.id;
-        text = p.name + ' 把球传给了 ' + target.name + '。';
+        if (!text) text = p.name + ' 把球传给了 ' + target.name + '。';
       } else {
         this.ball.ownerId = near.player.id;
         text = p.name + ' 的传球被 ' + near.player.name + ' 拦截！';
@@ -452,14 +522,25 @@ Match.prototype.resolveAction = function (p, commandId, rate) {
       var isSpecial = commandId === 'special';
       var keeper = this.byId[p.team === 'home' ? 'a1' : 'h1'];
       var label = isSpecial && p.special ? p.special.name : '射门';
+      // ★ 射门瞬间：越位位置球员遮挡门将视线 / 挡在射门线路上 → 直接吹越位
+      var osShot = Offside.judgeShot(this, p);
+      if (osShot.type === 'offside') {
+        return this.whistleOffside(osShot, p);
+      }
       this.shots[p.team]++;
       if (success) {
         this.goal(p, p.team);
         return { kind: commandId, label: label, playerName: p.name, success: true, text: this.lastAction.text };
       }
-      // 失败：被扑出或偏出（球权给对方门将）
+      // 失败：被扑出或偏出
       this.ball.ownerId = keeper.id;
-      if (this.rng() < 0.55) {
+      var saved = this.rng() < 0.55;
+      if (saved) {
+        // ★ 门将扑救反弹：越位位置球员获益 → 吹越位
+        var osReb = Offside.judgeRebound(this, p.team);
+        if (osReb.type === 'offside') {
+          return this.whistleOffside(osReb, p);
+        }
         text = p.name + ' 的' + label + '被门将 ' + keeper.name + ' 扑出！';
       } else {
         text = p.name + ' 的' + label + '偏出了球门……';
@@ -473,9 +554,21 @@ Match.prototype.resolveAction = function (p, commandId, rate) {
         p.x = clamp(p.x + 3 * dir, 2, FIELD.W - 2);
         text = p.name + ' 的假动作晃晕了 ' + d2.name + '！';
       } else {
-        d2.x = clamp(d2.x + (p.x - d2.x) * 0.4, 2, FIELD.W - 2);
-        d2.y = clamp(d2.y + (p.y - d2.y) * 0.4, 2, FIELD.H - 2);
-        text = p.name + ' 的假动作被 ' + d2.name + ' 看穿了。';
+        // ★ 假动作被看穿：防守方上抢，同样走抢断对决
+        var t2 = Foul.judgeTackle(this, d2, p, {
+          fromBehind: false,
+          speedHigh: false,
+          attackPromising: false,
+        });
+        if (t2.outcome === 'clean') {
+          this.ball.ownerId = d2.id;
+          text = p.name + ' 的假动作被 ' + d2.name + ' 看穿并断下！';
+        } else if (t2.outcome === 'beaten') {
+          d2.beatenUntil = this.now + 1500;
+          text = p.name + ' 的假动作没晃开 ' + d2.name + '，但顺势抹了过去！';
+        } else {
+          return this.applyFoulResult(t2.foul);
+        }
       }
       break;
     }
@@ -511,13 +604,141 @@ Match.prototype.bestPassTarget = function (p) {
   var self = this;
   var best = null, bestScore = -1e9;
   this.players.forEach(function (q) {
-    if (q.team !== p.team || q.id === p.id || q.pos === 'GK') return;
+    if (q.team !== p.team || q.id === p.id || q.pos === 'GK' || q.sentOff) return;
     var forward = (q.x - p.x) * dir;
     var open = self.nearestOpponent(q).dist;
     var score = forward * 1.5 + open * 2.0;
     if (score > bestScore) { bestScore = score; best = q; }
   });
   return best || p;
+};
+
+// 选择不越位位置的传球目标（收步改传用）
+Match.prototype.bestOnsideTarget = function (p, snap) {
+  var dir = p.team === 'home' ? 1 : -1;
+  var self = this;
+  var best = null, bestScore = -1e9;
+  this.players.forEach(function (q) {
+    if (q.team !== p.team || q.id === p.id || q.pos === 'GK' || q.sentOff) return;
+    if (Offside.isOffsidePosition(q, snap)) return;
+    var forward = (q.x - p.x) * dir;
+    var open = self.nearestOpponent(q).dist;
+    var score = forward * 1.5 + open * 2.0;
+    if (score > bestScore) { bestScore = score; best = q; }
+  });
+  return best;
+};
+
+// ---------- 越位哨声：间接任意球 ----------
+Match.prototype.whistleOffside = function (os, passer) {
+  var defendingTeam = passer.team === 'home' ? 'away' : 'home';
+  var taker = null, bd = 1e9, self = this;
+  this.players.forEach(function (q) {
+    if (q.team !== defendingTeam || q.sentOff) return;
+    var d = dist(q, os.spot);
+    if (d < bd) { bd = d; taker = q; }
+  });
+  if (taker) {
+    this.ball.ownerId = taker.id;
+    this.ball.x = taker.x; this.ball.y = taker.y;
+  }
+  this.enterStoppage('whistle', 2200, this.ball.ownerId);
+  var teamName = defendingTeam === 'home' ? T.HOME_NAME : T.AWAY_NAME;
+  this.lastAction = {
+    kind: 'offside',
+    label: '越位',
+    playerName: os.player.name,
+    team: defendingTeam,
+    success: false,
+    text: Offside.reasonText(os.reason, os.player) + ' ' + teamName + '获得间接任意球。',
+    until: Date.now() + 2200,
+  };
+  return this.lastAction;
+};
+
+// ---------- 犯规处理：任意球 / 点球 / 进攻有利 ----------
+Match.prototype.applyFoulResult = function (foul) {
+  Foul.applyCards(foul);
+  var vName = foul.victim.name;
+
+  if (foul.advantage) {
+    this.lastAction = {
+      kind: 'advantage',
+      label: '进攻有利',
+      playerName: vName,
+      team: foul.team,
+      success: true,
+      text: '🟢 ' + foul.defender.name + '犯规，但裁判示意进攻有利，比赛继续！',
+      until: Date.now() + 2200,
+    };
+    return this.lastAction;
+  }
+
+  var text = Foul.cardText(foul);
+  var teamName = foul.team === 'home' ? T.HOME_NAME : T.AWAY_NAME;
+  if (!foul.penalty) text += teamName + '获得直接任意球。';
+
+  if (foul.penalty) {
+    return this.resolvePenalty(foul, text);
+  }
+
+  // 直接任意球：受害方在犯规地点重新组织
+  this.ball.ownerId = foul.victim.id;
+  this.ball.x = foul.spot.x; this.ball.y = foul.spot.y;
+  this.enterStoppage('whistle', 2400, foul.victim.id);
+  var cardLabel = foul.card === 'red' ? '红牌' : (foul.card === 'yellow' ? '黄牌' : '犯规');
+  this.lastAction = {
+    kind: 'foul',
+    label: cardLabel,
+    playerName: foul.defender.name,
+    team: foul.team,
+    success: false,
+    text: text,
+    until: Date.now() + 2400,
+  };
+  return this.lastAction;
+};
+
+// ---------- 点球 ----------
+Match.prototype.resolvePenalty = function (foul, prefixText) {
+  var shooter = foul.victim;
+  var keeperTeam = shooter.team === 'home' ? 'away' : 'home';
+  var keeper = this.byId[shooter.team === 'home' ? 'a1' : 'h1'];
+  if (!keeper || keeper.sentOff) {
+    // 极端情况：门将被罚下过，找一名场上球员客串
+    keeper = null;
+    this.players.forEach(function (q) {
+      if (q.team === keeperTeam && !q.sentOff && !keeper) keeper = q;
+    });
+  }
+  this.shots[shooter.team]++;
+  var sEff = effFactor(shooter), kEff = effFactor(keeper);
+  var pGoal = clamp(
+    0.74 + (shooter.stats.shoot * sEff - keeper.stats.keep * kEff) * 0.01 +
+    (shooter.stats.nerve - keeper.stats.nerve) * 0.004,
+    0.4, 0.95
+  );
+  var roll = this.rng();
+  var call = prefixText + ' ' + shooter.name + '主罚点球……';
+  if (roll < pGoal) {
+    this.goal(shooter, shooter.team);
+    this.lastAction.kind = 'penalty';
+    this.lastAction.label = '点球命中';
+    this.lastAction.text = call + '球进了！' + shooter.name + '顶住压力罚入点球！';
+    return this.lastAction;
+  }
+  this.ball.ownerId = keeper.id;
+  this.enterStoppage('whistle', 2000, keeper.id);
+  this.lastAction = {
+    kind: 'penalty',
+    label: '点球罚失',
+    playerName: shooter.name,
+    team: shooter.team,
+    success: false,
+    text: call + (roll < pGoal + 0.12 ? '被门将' + keeper.name + '神勇扑出！' : '偏出了球门！'),
+    until: Date.now() + 2000,
+  };
+  return this.lastAction;
 };
 
 // ---------- AI（客队） ----------
@@ -592,8 +813,11 @@ Match.prototype.serialize = function () {
         special: p.special ? { name: p.special.name } : null,
         hasBall: self.ball.ownerId === p.id,
         frozen: self.now < p.frozenUntil,
+        cards: p.cards,
+        sentOff: !!p.sentOff,
       };
     }),
+    referee: { name: this.referee.name, strictness: this.referee.strictness },
     ball: { x: +this.ball.x.toFixed(2), y: +this.ball.y.toFixed(2) },
     decision: this.decision ? {
       playerId: this.decision.playerId,
