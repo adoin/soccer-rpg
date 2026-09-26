@@ -121,7 +121,9 @@ function reasonText(reason, player) {
 }
 
 // ---------- 传球瞬间的越位判定 ----------
-function judgePass(match, passer, target) {
+function judgePass(match, passer, target, skipReceive) {
+  // skipReceive：接球目标已急停收步、不参与进攻（行为层决策），
+  //   则他本人不构成"越位接球"，只扫描其他越位位置队友的干扰。
   var team = passer.team;
   var snap = snapshot(match, team);
   var gk = keeperOf(match, snap.defendingTeam);
@@ -161,8 +163,8 @@ function judgePass(match, passer, target) {
 
   // 先看接球目标：处于越位位置接球 → 直接吹罚，没有任何数值豁免。
   // （球员是否"急停收步"是行为层的决策，见 behavior.js；
-  //   裁判只看传球瞬间实际发生的局面。）
-  if (isOffsidePosition(target, snap)) {
+  //   收步者不参与进攻时跳过此项，只查他人干扰。）
+  if (!skipReceive && isOffsidePosition(target, snap)) {
     return offence(target, 'receive', snap, target.x, target.y);
   }
 

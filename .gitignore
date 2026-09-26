@@ -3,3 +3,6 @@ npm-debug.log*
 .DS_Store
 *.log
 .env
+# 生成元数据（美术源图保留 webp，过程 JSON 不入库）
+.agents/art/media-generation-*
+.agents/art/cutscene/media-generation-*

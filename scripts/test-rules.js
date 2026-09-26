@@ -46,7 +46,8 @@ console.log('== 越位裁判层：纯客观，数值零介入 ==');
   awayLine(m, 80, 78, 75);
   set(m, 'h10', 60, 34); ball(m, 60, 34);
   var t = P(m, 'h9'); set(m, 'h9', 84, 34);
-  t.stats.anti = 99; t.stats.iq = 99; t.stats.nerve = 99; // 数值拉满
+  t.stats.anticipation = 20; t.stats.offBall = 20; t.stats.decisions = 20;
+  t.stats.vision = 20; t.stats.composure = 20; t.stats.determination = 20; // 数值拉满（FM 1-20）
   var r = Offside.judgePass(m, P(m, 'h10'), t);
   ok(r.type === 'offside' && r.reason === 'receive', '数值拉满也照吹越位', JSON.stringify({ t: r.type, reason: r.reason }));
 })();
@@ -131,8 +132,8 @@ console.log('== 行为层：数值驱动决策（确定性，零随机） ==');
   set(m, 'h10', 60, 34); ball(m, 60, 34);
   set(m, 'h9', 82, 30); // 越位 2 米
   var snap = Offside.snapshot(m, 'home');
-  var smart = P(m, 'h9'); smart.stats.iq = 85; smart.stats.nerve = 85;
-  var dull = P(m, 'h7'); set(m, 'h7', 82, 40); dull.stats.iq = 40; dull.stats.nerve = 40;
+  var smart = P(m, 'h9'); ['decisions','vision','composure','determination'].forEach(function(k){ smart.stats[k] = 17; });
+  var dull = P(m, 'h7'); set(m, 'h7', 82, 40); ['decisions','vision','composure','determination'].forEach(function(k){ dull.stats[k] = 8; });
   var d1 = Behavior.attackerDecision(smart, snap);
   var d2 = Behavior.attackerDecision(dull, snap);
   var d1b = Behavior.attackerDecision(smart, snap);
@@ -142,8 +143,8 @@ console.log('== 行为层：数值驱动决策（确定性，零随机） ==');
 // 9. timeRunU：高反越位意识 → 钳制在越位线前；低 → 不干预
 (function () {
   var snap = { attackingTeam: 'home', uSecondLast: 80, uBall: 60 };
-  var sharp = { stats: { anti: 85 }, stamina: 100, maxStamina: 100 };
-  var blunt = { stats: { anti: 40 }, stamina: 100, maxStamina: 100 };
+  var sharp = { stats: { anticipation: 17, offBall: 17 }, stamina: 100, maxStamina: 100 };
+  var blunt = { stats: { anticipation: 8, offBall: 8 }, stamina: 100, maxStamina: 100 };
   var r1 = Behavior.timeRunU(sharp, 84, snap);
   var r2 = Behavior.timeRunU(blunt, 84, snap);
   var r3 = Behavior.timeRunU(sharp, 78, snap);
@@ -155,7 +156,7 @@ console.log('== 行为层：数值驱动决策（确定性，零随机） ==');
   var m = newMatch(31);
   m.now = 0;
   set(m, 'a2', 70, 36); set(m, 'a3', 66, 34); set(m, 'a4', 62, 30); // 参差不齐
-  ['a2', 'a3', 'a4'].forEach(function (id) { P(m, id).stats.anti = 85; P(m, id).stats.iq = 85; });
+  ['a2', 'a3', 'a4'].forEach(function (id) { var q = P(m, id); ['anticipation','positioning','decisions','vision'].forEach(function(k){ q.stats[k] = 17; }); });
   ball(m, 40, 34); // 球在远处
   var out = Behavior.defensiveShape(m, 'away', {});
   var xs = ['a2', 'a3', 'a4'].map(function (id) { return out[id].x; });
@@ -167,7 +168,7 @@ console.log('== 行为层：数值驱动决策（确定性，零随机） ==');
   var m = newMatch(32);
   m.now = 0;
   set(m, 'a2', 70, 36); set(m, 'a3', 66, 34); set(m, 'a4', 62, 30);
-  ['a2', 'a3', 'a4'].forEach(function (id) { P(m, id).stats.anti = 30; P(m, id).stats.iq = 30; });
+  ['a2', 'a3', 'a4'].forEach(function (id) { var q = P(m, id); ['anticipation','positioning','decisions','vision'].forEach(function(k){ q.stats[k] = 6; }); });
   ball(m, 40, 34);
   var out = Behavior.defensiveShape(m, 'away', {});
   ok(out.a2.x === P(m, 'a2').hx && out.a3.x === P(m, 'a3').hx,
@@ -179,7 +180,7 @@ console.log('== 行为层：数值驱动决策（确定性，零随机） ==');
   var m = newMatch(33);
   m.now = 0;
   set(m, 'a2', 70, 36); set(m, 'a3', 68, 34); set(m, 'a4', 66, 30);
-  ['a2', 'a3', 'a4'].forEach(function (id) { P(m, id).stats.anti = 85; P(m, id).stats.iq = 85; });
+  ['a2', 'a3', 'a4'].forEach(function (id) { var q = P(m, id); ['anticipation','positioning','decisions','vision'].forEach(function(k){ q.stats[k] = 17; }); });
   ball(m, 52.5, 34); // 球在中场，无紧迫威胁
   var out = Behavior.defensiveShape(m, 'away', {});
   var xs = ['a2', 'a3', 'a4'].map(function (id) { return out[id].x; });
@@ -188,16 +189,16 @@ console.log('== 行为层：数值驱动决策（确定性，零随机） ==');
 })();
 
 console.log('== 引擎集成：行为 → 局面 → 判罚 ==');
-// 13. 传球给越位目标：高球商目标急停收步，改传不越位队友
+// 13. 传球给越位目标：高球商目标急停收步，不改传他人，球成空传被防守方得到
 (function () {
   var m = newMatch(41);
   awayLine(m, 80, 78, 75); parkAway(m);
   set(m, 'h10', 60, 34); ball(m, 60, 34); m.ball.ownerId = 'h10';
-  var t9 = P(m, 'h9'); set(m, 'h9', 82, 30); t9.stats.iq = 85; t9.stats.nerve = 85;
+  var t9 = P(m, 'h9'); set(m, 'h9', 82, 30); ['decisions','vision','composure','determination'].forEach(function(k){ t9.stats[k] = 17; });
   set(m, 'h7', 58, 20); set(m, 'h11', 58, 48); set(m, 'h8', 55, 34); // 不越位的备选
   var r = m.resolveAction(P(m, 'h10'), 'pass', 100);
-  ok(r.kind === 'pass' && /急停收步/.test(r.text) && m.ball.ownerId !== 'h9',
-    '高球商目标收步改传', JSON.stringify({ kind: r.kind, owner: m.ball.ownerId }));
+  ok(r.kind === 'pass' && /急停收步/.test(r.text) && m.ball.ownerId !== 'h9' && m.ball.ownerId[0] === 'a',
+    '高球商目标收步，空传被防守方得到（不偷偷改传）', JSON.stringify({ kind: r.kind, owner: m.ball.ownerId }));
 })();
 
 // 14. 传球给越位目标：低球商目标继续前插，裁判照吹
@@ -205,7 +206,7 @@ console.log('== 引擎集成：行为 → 局面 → 判罚 ==');
   var m = newMatch(42);
   awayLine(m, 80, 78, 75); parkAway(m);
   set(m, 'h10', 60, 34); ball(m, 60, 34); m.ball.ownerId = 'h10';
-  var t9 = P(m, 'h9'); set(m, 'h9', 82, 30); t9.stats.iq = 40; t9.stats.nerve = 40;
+  var t9 = P(m, 'h9'); set(m, 'h9', 82, 30); ['decisions','vision','composure','determination'].forEach(function(k){ t9.stats[k] = 8; });
   set(m, 'h7', 58, 20); set(m, 'h11', 58, 48); set(m, 'h8', 55, 34);
   var r = m.resolveAction(P(m, 'h10'), 'pass', 100);
   ok(r.kind === 'offside', '低球商目标前插被吹越位', JSON.stringify({ kind: r.kind, label: r.label }));
@@ -299,6 +300,114 @@ console.log('== 回归：完整比赛能跑完 ==');
   console.log('     比分 ' + m.score.home + ' - ' + m.score.away + '，规则事件：' + JSON.stringify(events));
   var badCards = m.players.filter(function (p) { return p.cards.yellow < 0 || (p.cards.red && !p.sentOff); });
   ok(badCards.length === 0, '牌面数据正常');
+})();
+
+console.log('== 单体能四档 + 持球/变向/爆发/对抗修正 ==');
+(function () {
+  // 以固定速度比直线跑 n 米，返回净消耗（已重置状态）
+  function runMeters(m, p, meters, ratio) {
+    var vmax = m.playerSpeed(p, true), v = vmax * ratio, dt = 0.1;
+    var step = v * dt, n = Math.max(1, Math.round(meters / step));
+    p.stamina = 100;
+    p._px = null; p._py = null; p._ltier = null; p._ldx = null;
+    p.x = 50; p.y = 34;
+    m.updateEnergy(p, dt);
+    for (var i = 0; i < n; i++) { p.x += step; m.updateEnergy(p, dt); }
+    return 100 - p.stamina;
+  }
+  var m = newMatch(51);
+  var p = P(m, 'h10');
+  m.ball.ownerId = null;
+  // 把客队全部拉远，隔离身体对抗消耗
+  m.players.forEach(function (q) { if (q.team === 'away') { q.x = 100; q.y = 34; } });
+  var walk100 = runMeters(m, p, 100, 0.2);   // 散步
+  var jog10 = runMeters(m, p, 10, 0.45);     // 慢跑
+  var fast10 = runMeters(m, p, 10, 0.7);     // 高速跑
+  var sprint10 = runMeters(m, p, 10, 0.95);  // 冲刺（含一次爆发 0.4）
+  ok(walk100 < 0.5, '散步 100 米基本不掉体能（散步带恢复）', walk100.toFixed(2));
+  ok(sprint10 > 0.5, '冲刺 10 米明显消耗', sprint10.toFixed(2));
+  ok(sprint10 > walk100, '硬约束：冲刺 10 米 > 散步 100 米', sprint10.toFixed(2) + ' > ' + walk100.toFixed(2));
+  ok(jog10 < fast10 && fast10 < sprint10, '四档单调：慢跑 < 高速跑 < 冲刺',
+    [jog10.toFixed(2), fast10.toFixed(2), sprint10.toFixed(2)].join(' < '));
+  // 持球修正 ×1.35
+  m.ball.ownerId = 'h10';
+  var jog10ball = runMeters(m, p, 10, 0.45);
+  m.ball.ownerId = null;
+  ok(Math.abs(jog10ball / jog10 - 1.35) < 0.05, '持球跑动 ×1.35', (jog10ball / jog10).toFixed(2));
+  // 急停变向：直行 vs 90° 转向
+  function turnCost(m, p, turn) {
+    var vmax = m.playerSpeed(p, true), dt = 0.1, step = vmax * 0.5 * dt;
+    p.stamina = 100; p._px = null; p._py = null; p._ltier = null; p._ldx = null;
+    p.x = 50; p.y = 34; m.updateEnergy(p, dt);
+    p.x += step; m.updateEnergy(p, dt);
+    if (turn) { p.y += step; } else { p.x += step; }
+    m.updateEnergy(p, dt);
+    return 100 - p.stamina;
+  }
+  var straight = turnCost(m, p, false), turned = turnCost(m, p, true);
+  ok(turned - straight > 0.25 && turned - straight < 0.35, '急停变向一次 0.3', (turned - straight).toFixed(2));
+  // 爆发：从非冲刺档突然提到冲刺档，精确多扣 0.4（直接设定上 tick 档位隔离单价差）
+  function burstCase(m, p, prevTier) {
+    var vmax = m.playerSpeed(p, true), dt = 0.1;
+    p.stamina = 100; p._px = null; p._py = null; p._ldx = null;
+    p.x = 50; p.y = 34; m.updateEnergy(p, dt); // 初始化 _px
+    p._ltier = prevTier;
+    p.x += vmax * 0.95 * dt; m.updateEnergy(p, dt); // 本 tick 冲刺
+    return 100 - p.stamina;
+  }
+  var d = burstCase(m, p, 2) - burstCase(m, p, 3);
+  ok(Math.abs(d - 0.4) < 0.01, '爆发跃迁多扣 0.4', d.toFixed(2));
+  // 身体对抗：1.2 米内有对手，静止 1 秒扣 1.5
+  var m2 = newMatch(52);
+  var p2 = P(m2, 'h10');
+  set(m2, 'h10', 50, 34); set(m2, 'a9', 50.8, 34);
+  p2.stamina = 100; p2._px = null;
+  for (var i = 0; i < 10; i++) m2.updateEnergy(p2, 0.1);
+  ok(Math.abs((100 - p2.stamina) - (1.5 - 1.2)) < 0.05, '对抗 1.5/s 叠加静止恢复 1.2/s', (100 - p2.stamina).toFixed(2));
+  // 静止恢复 1.2/s
+  var m3 = newMatch(53);
+  var p3 = P(m3, 'h10');
+  p3.stamina = 50; p3._px = null;
+  for (var j = 0; j < 10; j++) m3.updateEnergy(p3, 0.1);
+  ok(Math.abs(p3.stamina - 51.2) < 0.05, '静止恢复 1.2/s', p3.stamina.toFixed(2));
+})();
+
+console.log('== 行为层：无球任务 / 协防 / 盯人 / 持球调整 ==');
+(function () {
+  var m = newMatch(61);
+  var carrier = P(m, 'h10');
+  set(m, 'h10', 55, 34); ball(m, 55, 34); m.ball.ownerId = 'h10';
+  var snap = Offside.snapshot(m, 'home');
+  var tasks = Behavior.attackTasks(m, carrier, snap);
+  var types = {};
+  Object.keys(tasks).forEach(function (id) { types[tasks[id].type] = true; });
+  var nTypes = Object.keys(types).length;
+  ok(nTypes >= 3, '无球队员任务多样（接应/前插/拉边/拖后至少三类）', JSON.stringify(types));
+  // 任务粘性：短时间内重算不变
+  var t2 = Behavior.attackTasks(m, carrier, snap);
+  var same = Object.keys(tasks).every(function (id) { return t2[id] && t2[id].type === tasks[id].type; });
+  ok(same, '任务粘性：1.2s 内不跳变');
+  // 持球者被紧逼：减速护球
+  set(m, 'a8', 56.5, 34);
+  var adj = Behavior.carrierAdjust(m, carrier);
+  ok(adj.spMul === 0.55, '被紧逼时持球者减速护球');
+  m.players.forEach(function (q) { if (q.team === 'away') { q.x = 95; q.y = 34; } });
+  ok(Behavior.carrierAdjust(m, carrier).spMul === 1, '无人紧逼时正常推进');
+  // 防守盯人：MF 跟最近的对方无球队员
+  set(m, 'a8', 40, 30); set(m, 'h8', 42, 32);
+  var marks = Behavior.markTargets(m, 'away', carrier, {});
+  ok(marks['a8'] && Math.abs(marks['a8'].x - 42) < 0.01, '中场盯人跟住最近目标');
+  // 门将随球移动
+  var kt = Behavior.keeperTarget(m, P(m, 'a1'));
+  ok(kt.x !== P(m, 'a1').hx, '门将随球横向移动（不再钉死阵型点）');
+  // 30 秒模拟：无球队员不再全员同步往返（位置方差大）
+  var m2 = newMatch(62);
+  for (var i = 0; i < 300; i++) m2.tick();
+  var xs = m2.players.filter(function (p) { return p.team === 'home' && p.pos !== 'GK'; })
+    .map(function (p) { return p.x; });
+  var mean = xs.reduce(function (a, b) { return a + b; }, 0) / xs.length;
+  var sd = Math.sqrt(xs.reduce(function (a, x) { return a + (x - mean) * (x - mean); }, 0) / xs.length);
+  ok(sd > 8, '跑位拉开层次（x 标准差 > 8 米）', sd.toFixed(1));
 })();
 
 console.log(failures === 0 ? '\nALL TESTS PASSED' : '\n' + failures + ' TEST(S) FAILED');
