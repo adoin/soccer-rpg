@@ -122,7 +122,7 @@ Match.prototype.resetPositions = function (kickoffTeam) {
   this.phaseUntil = this.now + 1500;
   this.decision = null;
   this.lastAction = null;
-  this.nextDecisionAt = this.now + 4500; // 开球后给 4.5 秒自由带球，避免对方 10 号贴脸瞬间触发决策
+  // nextDecisionAt 在 kickoff→play 切换时设置（见 tick），保证 4.5 秒是纯比赛时间
   this.lastDecisionPos = { x: kicker.x, y: kicker.y };
   this.aiCooldownUntil = this.now + 2500;
   this.kickoffTeam = kickoffTeam;
@@ -152,7 +152,11 @@ Match.prototype.tick = function () {
   switch (this.phase) {
     case 'kickoff':
       this.now += dt * 1000;
-      if (this.now >= this.phaseUntil) this.phase = 'play';
+      if (this.now >= this.phaseUntil) {
+        this.phase = 'play';
+        // 开球保护：从真正开球（进入 play）起算 4.5 秒，避免对方 10 号贴脸瞬间触发决策
+        this.nextDecisionAt = this.now + 4500;
+      }
       break;
     case 'play':
       this.now += dt * 1000;
