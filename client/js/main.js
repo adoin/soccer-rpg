@@ -151,10 +151,11 @@ cv.addEventListener('click', function (e) {
 });
 document.addEventListener('keydown', function (e) {
   if (e.key === 'Escape' && screen === 'game') {
-    if (ui.passFlow) { passFlowBack(); return; } // 传球向导内：Esc = 返回上一步
+    if (headMenuOpen()) { headMenuBack(); return; } // 头顶菜单内：Esc = 返回上一步
     if (!ui.overlay) togglePause();
   }
   if (screen !== 'game') return;
+  if (headMenuOpen() && headMenuKey(e)) return; // 头顶菜单打开时接管键盘（方向键/回车/空格选，Esc 返回）
   var k = (e.key || '').toLowerCase();
   if ([' ', 'tab', 'w', 'a', 's', 'd', 'j', 'k', 'l'].indexOf(k) >= 0) e.preventDefault();
   if (e.repeat) return;
@@ -185,31 +186,32 @@ function updatePadFromKeys() {
 
 // ---- 触屏虚拟手柄 ----
 
-// ★ 传球力量条拖拽（桌面端鼠标；在向导第 5 步时力量条可拖动）
-var passBarDrag = false;
-function passBarSet(mx) {
-  var f = ui.passFlow, r = ui.passBarRect;
-  if (!f || f.step !== 5 || !r) return;
-  var p = Math.round((mx - r.x) / r.w * 100);
+// ★ 头顶菜单力量条拖拽（桌面端鼠标；力量选择时可拖动）
+var powerBarDrag = false;
+function powerBarSet(mx) {
+  var hm = ui.hmenu, r = ui.powerBarRect, lvl = hmTop();
+  if (!hm || !r || !lvl || lvl.kind !== 'power') return;
+  var p = Math.round((mx - r.x) / r.w * 95 + 5);
   p = Math.max(5, Math.min(100, p));
-  if (p !== f.power) { f.power = p; requestPassPreview(); }
+  if (p !== hm.pass.power) { hm.pass.power = p; requestHmPreview(); }
 }
 cv.addEventListener('mousedown', function (e) {
-  if (!ui.passFlow || ui.passFlow.step !== 5 || !ui.passBarRect) return;
-  var r = ui.passBarRect, rect = cv.getBoundingClientRect();
+  var lvl = hmTop();
+  if (!headMenuOpen() || !lvl || lvl.kind !== 'power' || !ui.powerBarRect) return;
+  var r = ui.powerBarRect, rect = cv.getBoundingClientRect();
   var mx = (e.clientX - rect.left) * (W / rect.width);
   var my = (e.clientY - rect.top) * (H / rect.height);
-  if (mx >= r.x - 12 && mx <= r.x + r.w + 12 && my >= r.y - 18 && my <= r.y + r.h + 18) {
-    passBarDrag = true;
-    passBarSet(mx);
+  if (mx >= r.x - 14 && mx <= r.x + r.w + 14 && my >= r.y - 24 && my <= r.y + r.h + 24) {
+    powerBarDrag = true;
+    powerBarSet(mx);
   }
 });
 cv.addEventListener('mousemove', function (e) {
-  if (!passBarDrag) return;
+  if (!powerBarDrag) return;
   var rect = cv.getBoundingClientRect();
-  passBarSet((e.clientX - rect.left) * (W / rect.width));
+  powerBarSet((e.clientX - rect.left) * (W / rect.width));
 });
-document.addEventListener('mouseup', function () { passBarDrag = false; });
+document.addEventListener('mouseup', function () { powerBarDrag = false; });
 
 function touchPos(t) {
   var rect = cv.getBoundingClientRect();
@@ -242,7 +244,7 @@ function releaseBtn(id) {
 }
 cv.addEventListener('touchstart', function (e) {
   if (!isTouch || screen !== 'game') return;
-  if (ui.pauseOpen || ui.overlay || ui.passFlow) return; // 菜单/覆盖层/传球向导打开时手柄让路，保证菜单可点
+  if (ui.pauseOpen || ui.overlay || headMenuOpen()) return; // 菜单/覆盖层/头顶菜单打开时手柄让路，保证菜单可点
   var used = false;
   for (var i = 0; i < e.changedTouches.length; i++) {
     var t = e.changedTouches[i], p = touchPos(t), tid = t.identifier;
@@ -255,10 +257,24 @@ cv.addEventListener('touchstart', function (e) {
   if (used) e.preventDefault();
 }, { passive: false });
 cv.addEventListener('touchmove', function (e) {
-  if (padTouchId === null) return;
   for (var i = 0; i < e.changedTouches.length; i++) {
-    if (e.changedTouches[i].identifier === padTouchId) {
-      moveDpad(touchPos(e.changedTouches[i]));
+    var t = e.changedTouches[i];
+    if (t.identifier === padTouchId) { moveDpad(touchPos(t)); e.preventDefault(); }
+    else if (t.identifier === powerBarTouchId) { powerBarSet(touchPos(t).x); e.preventDefault(); }
+  }
+}, { passive: false });
+// ★ 触屏拖动头顶菜单的力量条
+var powerBarTouchId = null;
+cv.addEventListener('touchstart', function (e) {
+  if (!isTouch || screen !== 'game' || !headMenuOpen()) return;
+  var lvl = hmTop();
+  if (!lvl || lvl.kind !== 'power' || !ui.powerBarRect) return;
+  var r = ui.powerBarRect;
+  for (var i = 0; i < e.changedTouches.length; i++) {
+    var t = e.changedTouches[i], p = touchPos(t);
+    if (p.x >= r.x - 20 && p.x <= r.x + r.w + 20 && p.y >= r.y - 30 && p.y <= r.y + r.h + 30) {
+      powerBarTouchId = t.identifier;
+      powerBarSet(p.x);
       e.preventDefault();
     }
   }
@@ -267,6 +283,7 @@ function touchEnd(e) {
   for (var i = 0; i < e.changedTouches.length; i++) {
     var tid = e.changedTouches[i].identifier;
     if (tid === padTouchId) { padTouchId = null; setPad(0, 0, pad.sprint, pad.slow); }
+    if (tid === powerBarTouchId) { powerBarTouchId = null; }
     if (btnTouchIds[tid]) { releaseBtn(btnTouchIds[tid]); delete btnTouchIds[tid]; }
   }
 }
@@ -306,9 +323,9 @@ function refresh() {
     var hasDec = !!(state && state.decision);
     if (hasDec && !ui._hadDecision) ui.choosing = false; // 新决策到达：清掉旧标记
     if (!hasDec) ui.choosing = false;
-    // 决策变化（新球员/决策结束）时关闭传球向导
+    // 决策变化（新球员/决策结束）时关闭头顶菜单
     var decKey = hasDec ? state.decision.playerId : null;
-    if (decKey !== ui._passDecisionKey) { ui.passFlow = null; ui._passDecisionKey = decKey; }
+    if (decKey !== ui._hmDecisionKey) { ui.hmenu = null; ui._hmDecisionKey = decKey; }
     ui._hadDecision = hasDec;
     // 首次同步渲染位置
     state.players.forEach(function (p) {
@@ -322,149 +339,295 @@ function sendCommand(opt, params) {
   if (ui.choosing || !state || !state.decision) return;
   if (!opt.enabled) { toast('体能不足，无法使用该指令'); return; }
   ui.choosing = true;
-  ui.passFlow = null; // 指令已发出，关闭传球向导
+  ui.hmenu = null; // 指令已发出，关闭头顶菜单（等结算期间头顶显示"判定中"）
   var body = { commandId: opt.id };
   if (params) body.params = params;
   api.post('/api/match/' + matchId + '/command', body).then(function (r) {
     if (!r.ok) { toast(r.error || '指令发送失败'); ui.choosing = false; }
   }).catch(function () { ui.choosing = false; });
 }
-// ---------------- 传球多阶段向导 ----------------
-// 流程：1 长/短传 → 2 方向（8向） → 3 脚法 → 4 高度 → 5 力量+预估落点 → 确认。
-// 落点/散布全部由服务器计算（/pass-preview），客户端只提交选择意图。
+// ---------------- 浮动头顶菜单（无背景、多级嵌套） ----------------
+// 决策触发时，选项直接浮现在该球员头顶：零面板、零遮挡，场上内容全可见。
+// ui.hmenu = { playerId, passOpt, pass:{kind,dir,technique,height,power}, preview, previewAt, stack:[level] }
+// level: { kind:'cmds'|'passKind'|'tech'|'height', title, items:[{label,sub,enabled,back,fn}], sel }
+//        { kind:'dirs', title, dirSel } | { kind:'power', title, sel }（sel: 0=踢出 1=返回）
 var PASS_DIR_NAMES = ['→', '↗', '↑', '↖', '←', '↙', '↓', '↘'];
-var PASS_DIR_GRID = [3, 2, 1, 4, -1, 0, 5, 6, 7]; // 3x3 罗盘布局，-1 为中心空位
 var PASS_HEIGHTS = [
-  { id: 'low', name: '低', desc: '贴地快 · 易被断' },
-  { id: 'mid', name: '中', desc: '标准弧线' },
-  { id: 'high', name: '高', desc: '越过防守' },
-  { id: 'vhigh', name: '超高', desc: '很飘 · 难控制' },
+  { id: 'low', name: '低球', desc: '贴地快 · 易被断' },
+  { id: 'mid', name: '中球', desc: '标准弧线' },
+  { id: 'high', name: '高球', desc: '越过防守' },
+  { id: 'vhigh', name: '超高球', desc: '很飘 · 难控制' },
 ];
 
-function startPassFlow(opt) {
-  ui.passFlow = { step: 1, kind: 'short', dir: 0, technique: 'inside', height: 'mid', power: 50, preview: null, opt: opt, previewAt: 0 };
-  requestPassPreview();
+function headMenuOpen() { return !!(ui.hmenu && ui.hmenu.stack && ui.hmenu.stack.length && state && state.decision); }
+function hmTop() { var h = ui.hmenu; return h ? h.stack[h.stack.length - 1] : null; }
+function playerById(id) {
+  for (var i = 0; i < state.players.length; i++) if (state.players[i].id === id) return state.players[i];
+  return null;
 }
-function passFlowParams() {
-  var f = ui.passFlow;
-  return { kind: f.kind, dir: f.dir, technique: f.technique, height: f.height, power: f.power };
+function firstEnabled(items, from) {
+  for (var i = 0; i < items.length; i++) { var j = (from + i) % items.length; if (items[j].enabled) return j; }
+  return from;
 }
-function requestPassPreview() {
-  var f = ui.passFlow;
-  if (!f || !matchId) return;
+function backItem() { return { label: '← 返回', sub: '', enabled: true, back: true, fn: popHmLevel }; }
+function pushHmLevel(lvl) { if (lvl.items && lvl.sel == null) lvl.sel = firstEnabled(lvl.items, 0); ui.hmenu.stack.push(lvl); }
+function popHmLevel() { if (ui.hmenu && ui.hmenu.stack.length > 1) ui.hmenu.stack.pop(); }
+function headMenuBack() { popHmLevel(); } // 头顶菜单内 Esc = 返回上一步（第一级无返回，必须选）
+
+function openHeadMenu(d) {
+  var items = d.options.map(function (o) {
+    return {
+      label: (CMD_ICONS[o.id] || '•') + ' ' + o.name,
+      sub: o.rate + '% · ' + o.cost + '体能',
+      enabled: o.enabled,
+      fn: function () {
+        if (o.id === 'pass') { ui.hmenu.passOpt = o; pushHmLevel(passKindLevel()); }
+        else sendCommand(o);
+      }
+    };
+  });
+  ui.hmenu = {
+    playerId: d.playerId, passOpt: null,
+    pass: { kind: 'short', dir: 0, technique: 'inside', height: 'mid', power: 50 },
+    preview: null, previewAt: 0,
+    stack: [{ kind: 'cmds', title: null, items: items, sel: firstEnabled(items, 0) }]
+  };
+}
+function passKindLevel() {
+  function go(kind) {
+    return function () {
+      ui.hmenu.pass.kind = kind;
+      pushHmLevel({ kind: 'dirs', title: '方向', dirSel: 0 });
+      requestHmPreview();
+    };
+  }
+  return { kind: 'passKind', title: '传球', items: [backItem(),
+    { label: '⚡ 短传', sub: '6~28 米 · 好控制', enabled: true, fn: go('short') },
+    { label: '🚀 长传', sub: '12~60 米 · 更飘', enabled: true, fn: go('long') }], sel: 1 };
+}
+function techLevel() {
+  var techs = (ui.hmenu.passOpt.passOpts && ui.hmenu.passOpt.passOpts.techniques) || [];
+  var items = [backItem()];
+  techs.forEach(function (t) {
+    items.push({
+      label: (t.enabled ? '' : '🔒 ') + t.name, sub: t.enabled ? t.desc : t.reason, enabled: t.enabled,
+      fn: (function (id) { return function () { ui.hmenu.pass.technique = id; pushHmLevel(heightLevel()); requestHmPreview(); }; })(t.id)
+    });
+  });
+  return { kind: 'tech', title: '脚法', items: items, sel: 1 };
+}
+function heightLevel() {
+  var items = [backItem()];
+  PASS_HEIGHTS.forEach(function (h) {
+    items.push({
+      label: h.name, sub: h.desc, enabled: true,
+      fn: (function (id) { return function () { ui.hmenu.pass.height = id; pushHmLevel({ kind: 'power', title: '力量', sel: 0 }); requestHmPreview(); }; })(h.id)
+    });
+  });
+  return { kind: 'height', title: '高度', items: items, sel: 1 };
+}
+function hmConfirmPass() {
+  var hm = ui.hmenu;
+  sendCommand(hm.passOpt, { kind: hm.pass.kind, dir: hm.pass.dir, technique: hm.pass.technique, height: hm.pass.height, power: hm.pass.power });
+}
+function requestHmPreview() {
+  var hm = ui.hmenu;
+  if (!hm || !matchId) return;
   var now = Date.now();
-  if (now - f.previewAt < 250) return; // 节流
-  f.previewAt = now;
-  api.post('/api/match/' + matchId + '/pass-preview', { params: passFlowParams() }).then(function (r) {
-    if (r.ok && ui.passFlow) {
-      ui.passFlow.preview = r.preview;
-      // 服务器会按球员能力钳制脚法（如外脚背被锁），同步回来
-      var p = r.preview.params || {};
-      if (p.technique) ui.passFlow.technique = p.technique;
+  if (now - hm.previewAt < 250) return; // 节流
+  hm.previewAt = now;
+  var body = { params: { kind: hm.pass.kind, dir: hm.pass.dir, technique: hm.pass.technique, height: hm.pass.height, power: hm.pass.power } };
+  api.post('/api/match/' + matchId + '/pass-preview', body).then(function (r) {
+    if (r.ok && ui.hmenu === hm) {
+      hm.preview = r.preview;
+      var p = (r.preview && r.preview.params) || {};
+      if (p.technique) hm.pass.technique = p.technique; // 服务器按能力钳制脚法，同步回来
     }
   });
 }
-function passFlowBack() {
-  var f = ui.passFlow;
-  if (!f) return;
-  if (f.step > 1) { f.step--; requestPassPreview(); }
-  else ui.passFlow = null;
+
+// 无背景描边文字：场上可读，不挡视线
+function hmText(str, x, y, size, color, bold) {
+  ctx.font = (bold === false ? '' : 'bold ') + size + 'px "PingFang SC","Microsoft YaHei",sans-serif';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.lineWidth = Math.max(3, size / 4);
+  ctx.strokeStyle = 'rgba(0,0,0,0.82)';
+  ctx.strokeText(str, x, y);
+  ctx.fillStyle = color || '#fff';
+  ctx.fillText(str, x, y);
+  return ctx.measureText(str).width;
 }
 
-function drawPassWizard(d) {
-  var f = ui.passFlow;
-  var pw = 368, ph = 560, px = W - pw - 16, py = 84;
-  panel(px, py, pw, ph);
-  var carrier = null;
-  for (var i = 0; i < state.players.length; i++) {
-    if (state.players[i].id === d.playerId) { carrier = state.players[i]; break; }
-  }
-  text('➡️ 传球', px + 24, py + 34, 26, '#fff', 'left', true);
-  text((carrier ? carrier.num + ' ' + carrier.name : d.playerName) + ' 持球', px + 24, py + 62, 15, '#ffd94a', 'left');
-  var steps = ['长短', '方向', '脚法', '高度', '力量'];
-  text(steps.map(function (s, i) { return (i + 1 === f.step ? '●' : '○') + s; }).join('  '), px + pw / 2, py + 92, 14, '#8fa3c8', 'center');
-
-  var bx = px + 24, bw = pw - 48;
-  function row(y, h, label, action, color, disabled) {
-    drawButton(bx, y, bw, h, label, action, color || '#12325e', 20, disabled);
-  }
-
-  if (f.step === 1) {
-    text('选择传球距离', px + pw / 2, py + 130, 18, '#cfe0ff', 'center');
-    row(py + 152, 76, '⚡ 短传（6~28 米）', function () { f.kind = 'short'; f.step = 2; requestPassPreview(); });
-    row(py + 240, 76, '🚀 长传（12~60 米）', function () { f.kind = 'long'; f.step = 2; requestPassPreview(); });
-    text('长传更远但落点更飘', px + pw / 2, py + 350, 14, '#8fa3c8', 'center');
-  } else if (f.step === 2) {
-    text('选择传球方向', px + pw / 2, py + 130, 18, '#cfe0ff', 'center');
-    var gs = 84, gap = 10, gx = px + (pw - (gs * 3 + gap * 2)) / 2, gy = py + 152;
-    PASS_DIR_GRID.forEach(function (dirIdx, cell) {
-      var cx = gx + (cell % 3) * (gs + gap), cy = gy + Math.floor(cell / 3) * (gs + gap);
-      if (dirIdx < 0) return;
-      (function (dd) {
-        drawButton(cx, cy, gs, gs, PASS_DIR_NAMES[dd], function () { f.dir = dd; f.step = 3; requestPassPreview(); }, '#12325e', 30);
-      })(dirIdx);
-    });
-    text('→ 为对方球门方向', px + pw / 2, gy + gs * 3 + gap * 2 + 30, 14, '#8fa3c8', 'center');
-  } else if (f.step === 3) {
-    text('选择击球部位', px + pw / 2, py + 130, 18, '#cfe0ff', 'center');
-    var techs = (f.opt.passOpts && f.opt.passOpts.techniques) || [];
-    var ty = py + 152;
-    techs.forEach(function (t) {
-      var sub = t.enabled ? t.desc : '🔒 ' + t.reason;
-      if (t.enabled) {
-        row(ty, 64, t.name, (function (id) { return function () { f.technique = id; f.step = 4; requestPassPreview(); }; })(t.id));
-      } else {
-        row(ty, 64, t.name + '（未解锁）', function () {}, '#1a2030', true);
-      }
-      text(sub, px + pw / 2, ty + 52, 13, t.enabled ? '#9fc0ff' : '#5a6584', 'center');
-      ty += 84;
-    });
-    text('脚法按 technique 能力解锁', px + pw / 2, ty + 16, 14, '#8fa3c8', 'center');
-  } else if (f.step === 4) {
-    text('选择传球高度', px + pw / 2, py + 130, 18, '#cfe0ff', 'center');
-    var hy = py + 152;
-    PASS_HEIGHTS.forEach(function (h) {
-      row(hy, 60, h.name + '球', (function (id) { return function () { f.height = id; f.step = 5; requestPassPreview(); }; })(h.id));
-      text(h.desc, px + pw / 2, hy + 48, 13, '#9fc0ff', 'center');
-      hy += 78;
-    });
-  } else if (f.step === 5) {
-    text('拖动力量条 · 场上黄圈为预估落点', px + pw / 2, py + 130, 17, '#cfe0ff', 'center');
-    var barX = bx, barY = py + 160, barW = bw - 96, barH = 26;
-    // 轨道
-    ctx.fillStyle = '#0a0d18';
-    ctx.fillRect(barX, barY, barW, barH);
-    var fillW = barW * (f.power - 5) / 95;
-    var grad = ctx.createLinearGradient(barX, 0, barX + barW, 0);
-    grad.addColorStop(0, '#2f9e5b'); grad.addColorStop(0.6, '#ffd94a'); grad.addColorStop(1, '#e05252');
-    ctx.fillStyle = grad;
-    ctx.fillRect(barX, barY, fillW, barH);
-    ctx.strokeStyle = '#3a4a6e'; ctx.lineWidth = 2;
-    ctx.strokeRect(barX, barY, barW, barH);
-    // 旋钮
-    var kx = barX + fillW;
-    ctx.fillStyle = '#fff';
-    ctx.beginPath(); ctx.arc(kx, barY + barH / 2, 13, 0, Math.PI * 2); ctx.fill();
-    ui.passBarRect = { x: barX, y: barY, w: barW, h: barH };
-    addClick(barX - 8, barY - 14, barW + 16, barH + 28, function () {});
-    text(f.power + '%', barX + barW + 48, barY + barH / 2, 24, '#ffd94a', 'center', true);
-    drawButton(bx, barY + 52, 44, 44, '−', function () { f.power = Math.max(5, f.power - 5); requestPassPreview(); }, '#1d3fa0', 24);
-    drawButton(bx + bw - 44, barY + 52, 44, 44, '+', function () { f.power = Math.min(100, f.power + 5); requestPassPreview(); }, '#1d3fa0', 24);
-    // 预估落点信息
-    var pv = f.preview;
-    if (pv) {
-      text('预估落点 ±' + pv.r.toFixed(1) + ' 米', px + pw / 2, barY + 130, 17, '#ffd94a', 'center');
-      text('落点精度取决于传球能力', px + pw / 2, barY + 156, 13, '#8fa3c8', 'center');
-    } else {
-      text('正在计算落点…', px + pw / 2, barY + 130, 16, '#8fa3c8', 'center');
+function drawHeadMenu() {
+  var d = state.decision;
+  if (!d) { ui.hmenu = null; return; }
+  if (!ui.hmenu || ui.hmenu.playerId !== d.playerId) openHeadMenu(d);
+  var hm = ui.hmenu;
+  if (ui.choosing) {
+    // 指令已发出、等服务器结算：头顶只显示"判定中"
+    var pc = playerById(hm.playerId);
+    if (pc) {
+      var rpc = renderPos[pc.id] || pc;
+      var prc = project(rpc.x, rpc.y);
+      hmText('判定中…', prc.x, prc.y - 24 * prc.s * 1.9 - 14, 20, '#ffd94a');
     }
-    drawButton(bx, py + ph - 150, bw, 64, '✅ 确认传球', function () { sendCommand(f.opt, passFlowParams()); }, '#1f7a3d', 22);
+    return;
   }
-
-  // 底部：返回 / 取消
-  drawButton(bx, py + ph - 70, bw, 52, f.step === 1 ? '✕ 取消' : '← 返回上一步', function () { passFlowBack(); }, '#2a3350', 18);
+  var p = playerById(hm.playerId); if (!p) return;
+  var rp = renderPos[p.id] || p;
+  var pr = project(rp.x, rp.y);
+  var s = pr.s;
+  var headY = pr.y - 24 * s * 1.9 - 14;
+  var cx = clamp(pr.x, 150, W - 150);
+  var lvl = hmTop();
+  if (lvl.kind === 'dirs') drawHmDirs(hm, lvl, pr, cx);
+  else if (lvl.kind === 'power') drawHmPower(hm, lvl, pr, cx, headY);
+  else drawHmList(lvl, pr, cx, headY);
+  drawHmLanding(hm);
 }
 
+function drawHmList(lvl, pr, cx, headY) {
+  var items = lvl.items, lineH = 40, titleH = lvl.title ? 30 : 0;
+  var totalH = items.length * lineH + titleH;
+  var yTop = headY - totalH;
+  if (yTop < 64) yTop = pr.y + 30; // 头顶空间不足 → 改放脚下
+  if (lvl.title) hmText('— ' + lvl.title + ' —', cx, yTop + 15, 15, '#9fb4dd', false);
+  items.forEach(function (it, i) {
+    var y = yTop + titleH + i * lineH + lineH / 2;
+    var sel = (i === lvl.sel);
+    var color = !it.enabled ? '#5a6584' : it.back ? '#9fb4dd' : sel ? '#ffd94a' : '#ffffff';
+    var w = hmText((sel ? '▶ ' : '') + it.label, cx, y - (it.sub ? 8 : 0), it.back ? 17 : 22, color);
+    if (it.sub) hmText(it.sub, cx, y + 13, 13, it.enabled ? '#b9c8e8' : '#4a5468', false);
+    (function (item, idx) {
+      addClick(cx - w / 2 - 24, y - lineH / 2, w + 48, lineH, function () {
+        if (!item.enabled) { toast('体能不足或该球员无法使用'); return; }
+        lvl.sel = idx; item.fn();
+      });
+    })(it, i);
+  });
+}
+
+function drawHmDirs(hm, lvl, pr, cx) {
+  var R = 82;
+  var cy = pr.y - 34;
+  hmText('— 方向 —', clamp(pr.x, 150, W - 150), cy - R - 24, 15, '#9fb4dd', false);
+  for (var dir = 0; dir < 8; dir++) {
+    var a = -dir * Math.PI / 4; // dir0=→ 屏幕右；逆时针排布
+    var x = pr.x + Math.cos(a) * R, y = cy + Math.sin(a) * R;
+    var sel = (lvl.dirSel == null ? hm.pass.dir : lvl.dirSel) === dir;
+    hmText(PASS_DIR_NAMES[dir], x, y, sel ? 36 : 28, sel ? '#ffd94a' : '#fff');
+    (function (dd, xx, yy) {
+      addClick(xx - 28, yy - 28, 56, 56, function () {
+        hm.pass.dir = dd; lvl.dirSel = dd;
+        pushHmLevel(techLevel()); requestHmPreview();
+      });
+    })(dir, x, y);
+  }
+  hmText('← 返回', pr.x, pr.y + 46, 17, '#9fb4dd', false);
+  addClick(pr.x - 70, pr.y + 46 - 20, 140, 40, function () { popHmLevel(); });
+}
+
+function drawHmPower(hm, lvl, pr, cx, headY) {
+  var bw = 230, bh = 10;
+  var barY = headY - 110;
+  if (barY < 84) barY = pr.y + 44;
+  var bx = cx - bw / 2;
+  hmText('— 力量 —', cx, barY - 32, 15, '#9fb4dd', false);
+  // 细轨道：只有线条，没有面板
+  ctx.lineCap = 'round';
+  ctx.strokeStyle = 'rgba(0,0,0,0.55)'; ctx.lineWidth = bh + 5;
+  ctx.beginPath(); ctx.moveTo(bx, barY); ctx.lineTo(bx + bw, barY); ctx.stroke();
+  var grad = ctx.createLinearGradient(bx, 0, bx + bw, 0);
+  grad.addColorStop(0, '#2f9e5b'); grad.addColorStop(0.6, '#ffd94a'); grad.addColorStop(1, '#e05252');
+  ctx.strokeStyle = grad; ctx.lineWidth = bh;
+  ctx.beginPath(); ctx.moveTo(bx, barY); ctx.lineTo(bx + bw * (hm.pass.power - 5) / 95, barY); ctx.stroke();
+  var kx = bx + bw * (hm.pass.power - 5) / 95;
+  ctx.fillStyle = '#fff';
+  ctx.beginPath(); ctx.arc(kx, barY, 11, 0, Math.PI * 2); ctx.fill();
+  ctx.strokeStyle = 'rgba(0,0,0,0.6)'; ctx.lineWidth = 3; ctx.stroke();
+  ui.powerBarRect = { x: bx, y: barY, w: bw, h: bh };
+  addClick(bx - 14, barY - 24, bw + 28, 48, function () {});
+  hmText(hm.pass.power + '%', cx + bw / 2 + 46, barY, 24, '#ffd94a');
+  var pv = hm.preview;
+  hmText(pv ? '预估落点 ±' + pv.r.toFixed(1) + ' 米' : '正在计算落点…', cx, barY + 36, 15, '#ffd94a', false);
+  var items = [
+    { label: '✅ 踢出', fn: hmConfirmPass },
+    { label: '← 返回', back: true, fn: popHmLevel }
+  ];
+  items.forEach(function (it, i) {
+    var y = barY + 74 + i * 38;
+    var sel = (lvl.sel || 0) === i;
+    hmText((sel ? '▶ ' : '') + it.label, cx, y, 21, sel ? '#ffd94a' : (it.back ? '#9fb4dd' : '#fff'));
+    (function (item, idx) {
+      addClick(cx - 100, y - 19, 200, 38, function () { lvl.sel = idx; item.fn(); });
+    })(it, i);
+  });
+}
+
+// 预估落点圈：直接画在场上（不是弹窗）
+function drawHmLanding(hm) {
+  var pv = hm.preview;
+  if (!pv) return;
+  var lp = project(pv.x, pv.y);
+  var prad = Math.max(10, pv.r * 19 * lp.s);
+  ctx.save();
+  ctx.fillStyle = 'rgba(255,217,74,0.16)';
+  ctx.beginPath(); ctx.arc(lp.x, lp.y, prad, 0, Math.PI * 2); ctx.fill();
+  ctx.strokeStyle = '#ffd94a'; ctx.lineWidth = 3; ctx.setLineDash([10, 6]);
+  ctx.beginPath(); ctx.arc(lp.x, lp.y, prad, 0, Math.PI * 2); ctx.stroke();
+  ctx.setLineDash([]);
+  var cpv = playerById(hm.playerId);
+  if (cpv) {
+    var cr = renderPos[cpv.id] || cpv;
+    var spp = project(cr.x, cr.y);
+    ctx.strokeStyle = 'rgba(255,217,74,0.55)'; ctx.lineWidth = 2; ctx.setLineDash([6, 6]);
+    ctx.beginPath(); ctx.moveTo(spp.x, spp.y - 10); ctx.lineTo(lp.x, lp.y); ctx.stroke();
+    ctx.setLineDash([]);
+  }
+  ctx.restore();
+  hmText('预估落点', lp.x, lp.y - prad - 12, 15, '#ffd94a');
+}
+
+// 头顶菜单键盘操作（决策暂停期间接管键盘）
+function headMenuKey(e) {
+  var hm = ui.hmenu, lvl = hmTop();
+  if (!hm || !lvl) return false;
+  var k = (e.key || '').toLowerCase();
+  function moveList(d) {
+    var n = lvl.items.length, i = lvl.sel == null ? 0 : lvl.sel;
+    for (var c = 0; c < n; c++) { i = (i + d + n) % n; if (lvl.items[i].enabled) break; }
+    lvl.sel = i;
+  }
+  function activateList() {
+    var it = lvl.items[lvl.sel];
+    if (it && it.enabled) it.fn();
+    else if (it) toast('体能不足或该球员无法使用');
+  }
+  function powerStep(d) {
+    hm.pass.power = Math.max(5, Math.min(100, hm.pass.power + d * 5));
+    requestHmPreview();
+  }
+  var handled = true;
+  if (lvl.kind === 'power') {
+    if (k === 'arrowleft' || k === 'a') powerStep(-1);
+    else if (k === 'arrowright' || k === 'd') powerStep(1);
+    else if (k === 'arrowup' || k === 'w' || k === 'arrowdown' || k === 's') lvl.sel = (lvl.sel || 0) === 0 ? 1 : 0;
+    else if (k === 'enter' || k === ' ') { if ((lvl.sel || 0) === 0) hmConfirmPass(); else popHmLevel(); }
+    else handled = false;
+  } else if (lvl.kind === 'dirs') {
+    var map = { arrowright: 0, arrowup: 2, arrowleft: 4, arrowdown: 6 };
+    if (Object.prototype.hasOwnProperty.call(map, k)) { lvl.dirSel = map[k]; hm.pass.dir = map[k]; requestHmPreview(); }
+    else if (k === 'enter' || k === ' ') { hm.pass.dir = (lvl.dirSel == null ? hm.pass.dir : lvl.dirSel); pushHmLevel(techLevel()); requestHmPreview(); }
+    else handled = false;
+  } else {
+    if (k === 'arrowup' || k === 'w') moveList(-1);
+    else if (k === 'arrowdown' || k === 's') moveList(1);
+    else if (k === 'enter' || k === ' ') activateList();
+    else handled = false;
+  }
+  if (handled) e.preventDefault();
+  return handled;
+}
 function togglePause(force) {
   var target = typeof force === 'boolean' ? force : !ui.pauseOpen;
   ui.pauseOpen = target;
@@ -588,8 +751,8 @@ function drawGame(t) {
   if (ui.pauseOpen) drawPauseMenu();
   drawBottomUI(t);
   drawCutin();
-  // ★ 被动决策：直接中央弹窗 + 比赛暂停（模拟在 decision 阶段本就停止）
-  if (state && state.decision && !ui.pauseOpen && !ui.overlay) drawDecisionModal(t);
+  // ★ 被动决策：头顶浮动菜单（无背景、多级嵌套，不遮挡场上内容）
+  if (state && state.decision && !ui.pauseOpen && !ui.overlay) drawHeadMenu();
   if (ui.overlay === 'status') drawStatusOverlay();
   if (ui.overlay === 'settings') drawSettingsOverlay();
   if (state && state.phase === 'fulltime') drawFulltime();
@@ -754,29 +917,6 @@ function drawActors(t) {
   var bs = 8 * bp.s * 1.6;
   ctx.drawImage(ballImg, bp.x - bs / 2, bp.y - bs - 2, bs, bs);
 
-  // ★ 传球预估落点（向导第 2 步起，在球场上画黄圈 + 持球者到落点的虚线）
-  var pf = ui.passFlow;
-  if (pf && pf.preview && pf.step >= 2 && state && state.decision) {
-    var pv = pf.preview;
-    var lp = project(pv.x, pv.y);
-    var prad = Math.max(10, pv.r * 19 * lp.s);
-    ctx.save();
-    ctx.fillStyle = 'rgba(255,217,74,0.16)';
-    ctx.beginPath(); ctx.arc(lp.x, lp.y, prad, 0, Math.PI * 2); ctx.fill();
-    ctx.strokeStyle = '#ffd94a'; ctx.lineWidth = 3; ctx.setLineDash([10, 6]);
-    ctx.beginPath(); ctx.arc(lp.x, lp.y, prad, 0, Math.PI * 2); ctx.stroke();
-    ctx.setLineDash([]);
-    var cpv = null;
-    state.players.forEach(function (pl) { if (pl.id === state.decision.playerId) cpv = pl; });
-    if (cpv) {
-      var spp = project(cpv.x, cpv.y);
-      ctx.strokeStyle = 'rgba(255,217,74,0.55)'; ctx.lineWidth = 2; ctx.setLineDash([6, 6]);
-      ctx.beginPath(); ctx.moveTo(spp.x, spp.y - 10); ctx.lineTo(lp.x, lp.y); ctx.stroke();
-      ctx.setLineDash([]);
-    }
-    ctx.restore();
-    text('预估落点', lp.x, lp.y - prad - 12, 15, '#ffd94a', 'center', true);
-  }
 }
 
 function drawScoreboard() {
@@ -811,7 +951,7 @@ function drawPauseMenu() {
     { label: '▶ 继续比赛', fn: function () {
         togglePause(false);
         // 决策点会暂停模拟：此时不是"暂停"，而是等玩家选指令
-        if (state && state.decision) toast('请先在下方指令菜单选择行动');
+        if (state && state.decision) toast('请先在球员头顶选择指令');
       } },
     { label: '⚙ 战术指令', fn: function () { ui.tacticOpen = !ui.tacticOpen; } },
     { label: '👤 球员状态', fn: function () { ui.overlay = 'status'; ui.pauseOpen = false; api.post('/api/match/' + matchId + '/pause', { paused: false }); } },
@@ -873,7 +1013,7 @@ function drawBottomUI(t) {
   var y0 = 556;
   // 球员卡
   drawPlayerCard(8, y0, 288, 92);
-  // 指令区：被动决策改为中央弹窗（drawDecisionModal），底部只保留待机提示
+  // 指令区：被动决策改为球员头顶浮动菜单（drawHeadMenu，无背景不遮挡），底部只保留待机提示
   drawIdleHint(304, y0, 636, 92);
   // 雷达 + 阵容条
   drawRadar(8, 654, 212, 58);
@@ -901,46 +1041,10 @@ function drawPlayerCard(x, y, w, h) {
 
 var CMD_ICONS = { dribble: '💨', pass: '➡️', shoot: '⚽', special: '🔥', feint: '🌀', retreat: '↩️' };
 
-// ★ 被动决策：直接中央弹窗 + 比赛暂停（点选即执行）
-function drawDecisionModal(t) {
-  var d = state.decision;
-  if (ui.passFlow) { drawPassWizard(d); return; } // 传球多阶段向导（右侧面板，球场保持可见以显示预估落点）
-  ctx.fillStyle = 'rgba(0,0,0,0.62)';
-  ctx.fillRect(0, 0, W, H);
-  var pw = 660, ph = 540, px = (W - pw) / 2, py = (H - ph) / 2;
-  panel(px, py, pw, ph);
-  var carrier = null;
-  for (var i = 0; i < state.players.length; i++) {
-    if (state.players[i].id === d.playerId) { carrier = state.players[i]; break; }
-  }
-  text('⏸ 请选择指令', px + 30, py + 46, 27, '#fff', 'left', true);
-  text((carrier ? carrier.num + ' ' + carrier.name : d.playerName) + ' 持球 · 比赛已暂停', px + 30, py + 78, 16, '#ffd94a', 'left');
-  if (ui.choosing) {
-    text('判定中…', px + pw / 2, py + ph / 2 + 20, 22, '#ffd94a', 'center');
-    return;
-  }
-  var cols = 2, bw = 280, bh = 92, gapX = 28, gapY = 18;
-  var sx = px + (pw - (bw * cols + gapX * (cols - 1))) / 2, sy = py + 112;
-  d.options.forEach(function (o, idx) {
-    var cx = sx + (idx % cols) * (bw + gapX), cy = sy + Math.floor(idx / cols) * (bh + gapY);
-    var label = (CMD_ICONS[o.id] || '•') + ' ' + o.name;
-    var sub = o.rate + '% · ' + o.cost + '体能';
-    if (o.enabled) {
-      if (o.id === 'pass') drawButton(cx, cy, bw, bh, label, function () { startPassFlow(o); }, '#12325e', 22);
-      else drawButton(cx, cy, bw, bh, label, function () { sendCommand(o); }, '#12325e', 22);
-      text(sub, cx + bw / 2, cy + bh - 16, 14, '#9fc0ff', 'center');
-    } else {
-      drawButton(cx, cy, bw, bh, label, function () {}, '#1a2030', 22, true);
-      text(sub, cx + bw / 2, cy + bh - 16, 14, '#5a6584', 'center');
-    }
-  });
-  text('点选即执行', px + pw / 2, py + ph - 24, 14, '#8fa3c8', 'center');
-}
-
 function drawIdleHint(x, y, w, h) {
   panel(x, y, w, h);
-  var msg = isTouch ? '拖左盘移动（绿圈球员）；持球遇防守时在下方选指令'
-                    : 'WASD 移动（绿圈球员）；持球遇防守时在下方选指令';
+  var msg = isTouch ? '拖左盘移动（绿圈球员）；持球遇防守时在球员头顶选指令'
+                    : 'WASD 移动（绿圈球员）；持球遇防守时在球员头顶选指令';
   if (state) {
     if (state.phase === 'kickoff') msg = '开球！';
     else if (state.phase === 'goal') msg = '⚽ 进球！';

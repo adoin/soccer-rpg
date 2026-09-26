@@ -410,5 +410,52 @@ console.log('== 行为层：无球任务 / 协防 / 盯人 / 持球调整 ==');
   ok(sd > 8, '跑位拉开层次（x 标准差 > 8 米）', sd.toFixed(1));
 })();
 
+console.log('== 传球 8 方向：DIRS/落点/自动选向一致（场地 +y 朝上） ==');
+(function () {
+  var Pass = require('../server/game/rules/pass');
+  var m = newMatch(70);
+  var passer = P(m, 'h10');
+  set(m, 'h10', 50, 34);
+  var names = ['→', '↗', '↑', '↖', '←', '↙', '↓', '↘'];
+  // 1) DIRS 与方向名一致：→(+x) ↗(+x+y) ↑(+y) ↖(-x+y) ←(-x) ↙(-x-y) ↓(-y) ↘(+x-y)
+  var qx = [1, 1, 0, -1, -1, -1, 0, 1];
+  var qy = [0, 1, 1, 1, 0, -1, -1, -1];
+  for (var d = 0; d < 8; d++) {
+    var dd = Pass.DIRS[d];
+    ok(Math.sign(dd.dx) === qx[d] && Math.sign(dd.dy) === qy[d],
+      'DIRS[' + d + ']=' + names[d] + ' 指向正确象限', JSON.stringify(dd));
+  }
+  // 2) computeLanding 落点沿所选方向偏移（短传 50% → 17 米）
+  for (var d2 = 0; d2 < 8; d2++) {
+    var land = Pass.computeLanding(passer, { kind: 'short', dir: d2, technique: 'inside', height: 'mid', power: 50 }, 80);
+    ok(Math.sign(land.x - 50) === qx[d2] && Math.sign(land.y - 34) === qy[d2],
+      '落点方向 dir=' + d2 + names[d2] + ' 正确', land.x.toFixed(1) + ',' + land.y.toFixed(1));
+  }
+  // 3) autoParams：四个斜向目标必须选中对应斜向（曾出现上下颠倒 bug）
+  var diagCases = [
+    { tx: 70, ty: 54, dir: 1, name: '↗' },
+    { tx: 30, ty: 54, dir: 3, name: '↖' },
+    { tx: 30, ty: 14, dir: 5, name: '↙' },
+    { tx: 70, ty: 14, dir: 7, name: '↘' },
+  ];
+  diagCases.forEach(function (c) {
+    m.bestPassTarget = function () { return { x: c.tx, y: c.ty }; };
+    var pm = Pass.autoParams(m, passer);
+    ok(pm.dir === c.dir, 'autoParams 目标' + c.name + ' 选中 dir=' + c.dir, '实际 dir=' + pm.dir);
+  });
+  // 4) 四个正向
+  var cardCases = [
+    { tx: 80, ty: 34, dir: 0, name: '→' },
+    { tx: 50, ty: 64, dir: 2, name: '↑' },
+    { tx: 20, ty: 34, dir: 4, name: '←' },
+    { tx: 50, ty: 4, dir: 6, name: '↓' },
+  ];
+  cardCases.forEach(function (c) {
+    m.bestPassTarget = function () { return { x: c.tx, y: c.ty }; };
+    var pm = Pass.autoParams(m, passer);
+    ok(pm.dir === c.dir, 'autoParams 目标' + c.name + ' 选中 dir=' + c.dir, '实际 dir=' + pm.dir);
+  });
+})();
+
 console.log(failures === 0 ? '\nALL TESTS PASSED' : '\n' + failures + ' TEST(S) FAILED');
 process.exit(failures === 0 ? 0 : 1);
