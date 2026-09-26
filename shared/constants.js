@@ -33,7 +33,7 @@
   };
 
   // 比赛阶段
-  var PHASES = ['kickoff', 'play', 'decision', 'goal', 'halftime', 'fulltime'];
+  var PHASES = ['kickoff', 'play', 'decision', 'goal', 'halftime', 'fulltime', 'whistle', 'penalty'];
 
   // 阶段中文名
   var PHASE_LABEL = {
@@ -43,6 +43,8 @@
     goal: '进球',
     halftime: '中场休息',
     fulltime: '终场',
+    whistle: '死球',
+    penalty: '点球',
   };
 
   return {
