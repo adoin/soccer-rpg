@@ -1,48 +1,43 @@
 // server/game/rules/offside.js
 // ============================================================
-// 越位规则引擎：100% 确定性判定，不使用任何随机数。
+// 越位裁判层：100% 确定性的纯客观判定，不使用任何随机数，
+// 也不看任何球员数值。
 //
-// 设计思想（RPG 化）：
-//  现实足球的越位是"位置 + 参与"的几何/行为判定。本引擎在传球、
-//  射门、门将扑救反弹三个瞬间做快照，流程如下：
+// 原则（用户纠正后的架构）：
+//   数值只决定球员的「行为」（跑位时机、是否收步、防线是否协同），
+//   裁判只看场上实际发生的局面吹哨——看到什么吹什么，绝不用数值
+//   去扭曲玩家亲眼看到的结果。
+//
+// 行为层的数值决策在 behavior.js，裁判层对此一无所知。
+//
+// 判定点（传球、射门、门将扑救反弹三个瞬间做快照）：
 //
 //  1. 越位位置（纯几何）：
 //     - 以进攻方向坐标 u（离本方球门越远越大）衡量；
 //     - u > 倒数第二名防守球员的 u，且 u > 球的 u，且 u > 中线，
 //       则处于越位位置（平行不越位，本方半场不越位）；
-//  2. 反越位 vs 造越位（纯数值、无随机）：
-//       跑位分 = (anti×0.55 + iq×0.25 + nerve×0.20) × 体能系数
-//       造越位分 = 后防线 avg(anti)×0.7 + avg(iq)×0.3（×体能系数）
-//     跑位分 ≥ 造越位分 + 4 →「反越位成功」，毫厘不越位，继续比赛；
-//  3. 收步（纯数值）：越位位置但球商+心态足够 → 球员急停收步不参与，
-//     传球改给最近的不越位队友；否则吹越位；
-//  4. 干扰行为（纯几何）：处于越位位置的非接球球员，若出现以下任一
+//  2. 接球：目标处于越位位置 → 越位犯规，没有任何数值可以豁免；
+//  3. 干扰行为（纯几何）：处于越位位置的非接球球员，若出现以下任一
 //     行为即判越位犯规——
 //       · 遮挡门将视线（处在球→门将的视线走廊内）
 //       · 卡位（贴住正在追球的防守球员，干扰其防守移动）
 //       · 参与进攻（进入传球线路 2.5 米内试图触球）
 //       · 假装处理球（在传球线路附近做动作干扰防守判断）
-//  5. 越位位置获益：射门被门将扑出后，处于越位位置的球员在 9 米内
+//  4. 越位位置获益：射门被门将扑出后，处于越位位置的球员在 9 米内
 //     拿到反弹球 → 吹越位（而不是让进攻继续）。
 //
-// 所有判定都是 (站位快照, 球员数值) 的纯函数：同样的局面永远得到
-// 同样的哨声，这就是"百分百绝对的结果"。
+// 所有判定都是「站位快照」的纯函数：同样的局面永远得到同样的哨声。
 // ============================================================
 'use strict';
 
 var FIELD_W = 105;
 var FIELD_H = 68;
 var HALF = FIELD_W / 2;
-var BEAT_MARGIN = 4;      // 反越位成功需要的分差
 var PATH_TOUCH = 2.5;     // 进入传球线路即视为试图触球（米）
 var PATH_DUMMY = 4.0;     // 在此范围内视为假装处理球干扰（米）
 var SIGHT_CORRIDOR = 2.0; // 门将视线走廊半宽（米）
 var SCREEN_DIST = 2.5;    // 卡位判定距离（米）
 var REBOUND_DIST = 9;     // 反弹获益判定距离（米）
-
-function effFactor(p) {
-  return 0.9 + 0.2 * (p.stamina / p.maxStamina);
-}
 
 // 进攻方向坐标：离本方球门越远，u 越大
 function uOf(p, attackingTeam) {
@@ -83,28 +78,8 @@ function isOffsidePosition(p, snap) {
   return u > snap.uSecondLast + 0.001 && u > snap.uBall + 0.001 && u > HALF + 0.001;
 }
 
-// 进攻球员跑位分：反越位意识 + 球商 + 心态
-function runScore(p) {
-  return (p.stats.anti * 0.55 + p.stats.iq * 0.25 + p.stats.nerve * 0.20) * effFactor(p);
-}
-
-// 防守方造越位分：后防线协同
-function trapScore(match, defendingTeam) {
-  var line = match.players.filter(function (p) {
-    return p.team === defendingTeam && !p.sentOff && (p.pos === 'DF' || p.pos === 'MF');
-  });
-  if (!line.length) return 50;
-  var anti = 0, iq = 0, eff = 0;
-  line.forEach(function (p) { anti += p.stats.anti; iq += p.stats.iq; eff += effFactor(p); });
-  var n = line.length;
-  return (anti / n * 0.7 + iq / n * 0.3) * (eff / n);
-}
-
-// 收步判定：球商 + 心态能否在越位位置上急停不参与
-function canHold(p, depth) {
-  var holdScore = p.stats.iq * 0.6 + p.stats.nerve * 0.4;
-  return holdScore >= 55 + depth * 6;
-}
+// 跑位分 / 造越位分 / 收步判定已移至 behavior.js（行为层）。
+// 裁判层不看数值：位置越位就是越位，没有任何数值豁免。
 
 function keeperOf(match, team) {
   for (var i = 0; i < match.players.length; i++) {
@@ -184,28 +159,17 @@ function judgePass(match, passer, target) {
     return null;
   }
 
-  // 先看接球目标
+  // 先看接球目标：处于越位位置接球 → 直接吹罚，没有任何数值豁免。
+  // （球员是否"急停收步"是行为层的决策，见 behavior.js；
+  //   裁判只看传球瞬间实际发生的局面。）
   if (isOffsidePosition(target, snap)) {
-    var rs = runScore(target);
-    var ts = trapScore(match, snap.defendingTeam);
-    if (rs >= ts + BEAT_MARGIN) {
-      // 反越位成功：毫厘之间不越位
-      var interference = scanInterference(target.id);
-      if (interference) return interference;
-      return { type: 'playon', beatTrap: true, player: target, runScore: rs, trapScore: ts };
-    }
-    var depth = uOf(target, team) - Math.max(snap.uSecondLast, snap.uBall);
-    if (canHold(target, depth)) {
-      // 球商+心态过关：急停收步，不参与这次进攻
-      return { type: 'hold', player: target, snap: snap };
-    }
     return offence(target, 'receive', snap, target.x, target.y);
   }
 
   // 目标不越位：仍要检查其他越位位置球员是否干扰
-  var interference2 = scanInterference(target.id);
-  if (interference2) return interference2;
-  return { type: 'playon', beatTrap: false };
+  var interference = scanInterference(target.id);
+  if (interference) return interference;
+  return { type: 'playon' };
 }
 
 // ---------- 射门瞬间的越位判定（干扰类） ----------
@@ -227,12 +191,14 @@ function judgeShot(match, shooter) {
       return offence(b, 'interfere-play', snap, b.x, b.y);
     }
   }
-  return { type: 'playon' };
+  return { type: 'playon', snap: snap };
 }
 
 // ---------- 门将扑救反弹后的获益判定 ----------
-function judgeRebound(match, attackingTeam) {
-  var snap = snapshot(match, attackingTeam);
+// 按射门瞬间的快照判断"越位位置"（规则如此：位置看的是队友触球瞬间，
+// 而不是反弹瞬间），再看反弹后谁在球附近获益。
+function judgeRebound(match, attackingTeam, shotSnap) {
+  var snap = shotSnap || snapshot(match, attackingTeam);
   var mates = match.players.filter(function (p) {
     return p.team === attackingTeam && !p.sentOff && isOffsidePosition(p, snap);
   });
@@ -248,8 +214,7 @@ function judgeRebound(match, attackingTeam) {
 module.exports = {
   snapshot: snapshot,
   isOffsidePosition: isOffsidePosition,
-  runScore: runScore,
-  trapScore: trapScore,
+  uOf: uOf,
   judgePass: judgePass,
   judgeShot: judgeShot,
   judgeRebound: judgeRebound,
