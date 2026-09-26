@@ -61,9 +61,20 @@ app.post('/api/match/:id/command', function (req, res) {
   if (!m.decision) {
     return res.status(400).json({ ok: false, error: '当前不需要做决策' });
   }
-  var result = m.applyCommand(m.decision.playerId, body.commandId);
+  var result = m.applyCommand(m.decision.playerId, body.commandId, body.params);
   if (!result.ok) return res.status(400).json(result);
   res.json(result);
+});
+
+// 传球预估落点：客户端多阶段菜单确认前显示（纯计算，不改状态）
+app.post('/api/match/:id/pass-preview', function (req, res) {
+  var m = getMatch(req, res);
+  if (!m) return;
+  var body = req.body || {};
+  if (!m.decision) {
+    return res.status(400).json({ ok: false, error: '当前不需要做决策' });
+  }
+  res.json(m.passPreview(m.decision.playerId, body.params));
 });
 
 // 直接操控输入：方向向量 dx/dy（-1..1）+ 加速/减速 + 切换球员。

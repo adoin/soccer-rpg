@@ -21,11 +21,13 @@
 // ============================================================
 'use strict';
 
+var FM = require('../../../shared/fm');
+
 var FIELD_W = 105;
 var FIELD_H = 68;
 
 function effFactor(p) {
-  return 0.9 + 0.2 * (p.stamina / p.maxStamina);
+  return 0.75 + 0.25 * (p.stamina / p.maxStamina);
 }
 
 function clamp(v, lo, hi) { return v < lo ? lo : v > hi ? hi : v; }
@@ -67,9 +69,9 @@ function distGoal(p, attackingTeam) {
 // ctx: { fromBehind, speedHigh, tactical, attackPromising }
 function judgeTackle(match, defender, attacker, ctx) {
   ctx = ctx || {};
-  var dEff = defender.stats.defend * effFactor(defender);
-  var aEff = attacker.stats.dribble * effFactor(attacker);
-  var aggr = defender.stats.aggr;
+  var dEff = FM.defend(defender) * effFactor(defender);
+  var aEff = FM.dribble(attacker) * effFactor(attacker);
+  var aggr = FM.aggr(defender);
 
   var pClean = clamp(0.40 + (dEff - aEff) * 0.012 - (aggr - 55) * 0.004, 0.05, 0.88);
   var pFoul = clamp(
@@ -91,7 +93,7 @@ function judgeFoul(match, defender, victim, ctx) {
   var strict = STRICTNESS[match.referee.strictness] || STRICTNESS.standard;
 
   var ctxMod = (ctx.fromBehind ? 18 : 0) + (ctx.speedHigh ? 8 : 0) + (ctx.tactical ? 6 : 0);
-  var severity = defender.stats.aggr * 0.45 + ctxMod + match.rng() * 30;
+  var severity = FM.aggr(defender) * 0.45 + ctxMod + match.rng() * 30;
 
   var defendingTeam = defender.team;
   var penalty = inBox(victim.x, victim.y, defendingTeam);

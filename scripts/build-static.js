@@ -52,6 +52,10 @@ copy(path.join(ROOT, 'client/js/sprites.js'), path.join(DOCS, 'js/sprites.js'));
 walk(path.join(ROOT, 'client/css')).forEach(function (f) {
   copy(path.join(ROOT, 'client/css', f), path.join(DOCS, 'css', f));
 });
+// 2b. 拷贝静态美术资源（结算演出图等）
+walk(path.join(ROOT, 'client/assets')).forEach(function (f) {
+  copy(path.join(ROOT, 'client/assets', f), path.join(DOCS, 'assets', f));
+});
 
 // 3. 本地 API 适配器：拦截 /api/*，直接调用页面内引擎
 var adapter = [
@@ -88,7 +92,13 @@ var adapter = [
   '      if (m) {',
   '        var mm = getMatch(m[1]);',
   "        if (!mm || !mm.decision) return Promise.resolve({ ok: false, error: '当前不需要做决策' });",
-  '        return Promise.resolve(mm.applyCommand(mm.decision.playerId, body.commandId));',
+  '        return Promise.resolve(mm.applyCommand(mm.decision.playerId, body.commandId, body.params));',
+  '      }',
+  "      m = url.match(/^\\/api\\/match\\/([^\\/]+)\\/pass-preview$/);",
+  '      if (m) {',
+  '        var pm = getMatch(m[1]);',
+  "        if (!pm || !pm.decision) return Promise.resolve({ ok: false, error: '当前不需要做决策' });",
+  '        return Promise.resolve(pm.passPreview(pm.decision.playerId, body.params));',
   '      }',
   "      m = url.match(/^\\/api\\/match\\/([^\\/]+)\\/pause$/);",
   '      if (m) {',

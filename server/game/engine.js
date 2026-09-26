@@ -3,27 +3,30 @@
 // 比赛引擎：服务器权威（Server-Authoritative）的核心。
 //
 // 防作弊设计：
-//  1. 全部关键数据（球员位置、体力/精神、比分、时钟）只存在服务器内存，
+//  1. 全部关键数据（球员位置、体能、比分、时钟）只存在服务器内存，
 //     客户端只能通过轮询读取快照，不能写入。
 //  2. 客户端唯一能发送的是 { matchId, commandId }，服务器会校验：
 //     - 是否正处于「等待该用户决策」的阶段；
-//     - 指令是否合法、精神是否足够；
+//     - 指令是否合法、体能是否足够；
 //     - 结算全部使用服务器端 RNG（server/rng.js），客户端无法预测结果。
 //  3. 对手 AI、无球跑位、成功率计算全部在服务器完成。
 //
-// ★ 体能设计（区别于《天使之翼》）：
-//  - 技能只消耗「精神」，不消耗体能；
-//  - 体能只因跑动缓慢下降、随时间缓慢恢复；
-//  - 精神随时间缓慢恢复，鼓励持续使用技能。
+// ★ 体能设计（单资源制，无精神力，2026-09-27 起）：
+//  - 全场只有「体能」一条资源（0~100）；技能与跑动统一消耗体能；
+//  - 定价按现实耗能：走 0.02/m，跑动 0.08/m，冲刺 0.25/m；
+//    静止恢复 1.2/s，中场休息恢复 45；
+//  - 体能越低实际能力越弱（系数 0.75~1.0），体能不足无法使用指令/冲刺。
 // ============================================================
 'use strict';
 
 var C = require('../../shared/constants');
 var T = require('../../shared/teams');
+var FM = require('../../shared/fm');
 var mulberry32 = require('../rng').mulberry32;
 var Offside = require('./rules/offside');
 var Foul = require('./rules/foul');
 var Behavior = require('./rules/behavior');
+var Pass = require('./rules/pass');
 
 var FIELD = C.FIELD;
 
@@ -33,9 +36,9 @@ function dist(a, b) {
   var dx = a.x - b.x, dy = a.y - b.y;
   return Math.sqrt(dx * dx + dy * dy);
 }
-// 体能修正系数：体能越低，实际能力轻微下降（0.9 ~ 1.1）
+// 体能修正系数（单资源制）：体能越低，实际能力越弱（0.75 ~ 1.0）
 function effFactor(p) {
-  return 0.9 + 0.2 * (p.stamina / p.maxStamina);
+  return 0.75 + 0.25 * (p.stamina / p.maxStamina);
 }
 
 function Match(id, options) {
@@ -107,6 +110,7 @@ Match.prototype.resetPositions = function (kickoffTeam) {
   var self = this;
   this.players.forEach(function (p) {
     p.x = p.hx; p.y = p.hy;
+    p._px = p.hx; p._py = p.hy; // 体能计费用的上一 tick 位置
     p.frozenUntil = 0; p.beatenUntil = 0; p.retreatTarget = null;
     p.holdingUntil = 0; // 急停收步中（行为层）
   });
@@ -165,10 +169,9 @@ Match.prototype.tick = function () {
       if (this.now >= this.phaseUntil) {
         this.half = 2;
         this.clock = 0;
-        // 体能/精神中场休息部分恢复
+        // 体能中场休息大幅恢复（单资源制）
         this.players.forEach(function (p) {
-          p.stamina = Math.min(p.maxStamina, p.stamina + p.maxStamina * 0.25);
-          p.spirit = Math.min(p.maxSpirit, p.spirit + p.maxSpirit * 0.5);
+          p.stamina = Math.min(p.maxStamina, p.stamina + C.STAMINA.HALFTIME_RECOVER);
         });
         this.resetPositions('away');
       }
@@ -273,31 +276,64 @@ Match.prototype.controlMove = function (p, dt) {
   if (this.now - c.activeStamp > 2000) return false; // 超时无操作：AI 接管
   if (this.now < p.frozenUntil) return true;
   if (c.dx === 0 && c.dy === 0) return true; // 松手：原地不动
-  var sp = this.playerSpeed(p, c.sprint);
+  // 体能过低蹬不动：低于阈值时加速键失效，只能普通跑
+  var wantSprint = c.sprint && p.stamina >= C.STAMINA.SPRINT_MIN;
+  var sp = this.playerSpeed(p, wantSprint);
   if (c.slow) sp *= 0.45;
   this.moveToward(p, p.x + c.dx * 30, p.y + c.dy * 30, sp, dt);
   return true;
 };
 
 Match.prototype.playerSpeed = function (p, sprint) {
-  var base = 13 * (0.8 + p.stats.speed / 250);
+  var base = 13 * (0.8 + FM.speed(p) / 250);
   if (sprint) base *= 1.08;
-  base *= 0.85 + 0.3 * (p.stamina / p.maxStamina); // 体能影响速度
+  base *= 0.7 + 0.3 * (p.stamina / p.maxStamina); // 体能影响速度：见底时只剩 7 成
   return base;
 };
 
-// ★ 体能/精神更新：体能只因跑动缓慢下降、随时间缓慢恢复；精神随时间缓慢恢复。
-Match.prototype.updateEnergy = function (p, moving, isCarrier, dt) {
-  if (moving) {
-    // 持球跑动消耗稍快，无球跑动很慢
-    p.stamina -= (isCarrier ? 1.0 : 0.3) * dt;
+// ★ 体能更新（单资源制，无精神力）：
+//   四档：散步 0.004/m、慢跑 0.010/m、高速跑 0.022/m、冲刺 0.060/m（档位 = 实际速度/个人极限）。
+//   修正：持球 ×1.35；急停变向（单 tick 转向 >70°）0.3/次；
+//   爆发（从非冲刺档突然提到冲刺档）0.4/次；身体对抗（1.2m 内有对手）1.5/s。
+//   静止恢复 1.2/s，散步一边走一边小幅恢复 0.4/s。
+Match.prototype.updateEnergy = function (p, dt) {
+  var ox = (p._px != null ? p._px : p.x), oy = (p._py != null ? p._py : p.y);
+  var dx = p.x - ox, dy = p.y - oy;
+  var moved = Math.sqrt(dx * dx + dy * dy);
+  p._px = p.x; p._py = p.y;
+  var T = C.STAMINA;
+  if (moved > 0.001 && dt > 0) {
+    var vmax = this.playerSpeed(p, true) || 1;
+    var r = (moved / dt) / vmax;
+    var tier = T.MOVE_TIERS.length - 1, perMeter = T.MOVE_TIERS[tier].perMeter;
+    for (var i = 0; i < T.MOVE_TIERS.length; i++) {
+      if (r <= T.MOVE_TIERS[i].upTo) { tier = i; perMeter = T.MOVE_TIERS[i].perMeter; break; }
+    }
+    var mul = (this.ball.ownerId === p.id) ? T.DRIBBLE_MUL : 1; // ★ 持球修正
+    p.stamina -= moved * perMeter * mul;
+    // ★ 急停变向：本 tick 位移方向相对上 tick 偏转超过阈值
+    if (p._ldx != null && moved > 0.15) {
+      var l1 = Math.sqrt(p._ldx * p._ldx + p._ldy * p._ldy);
+      if (l1 > 0.05) {
+        var cos = (p._ldx * dx + p._ldy * dy) / (l1 * moved);
+        if (Math.acos(clamp(cos, -1, 1)) > T.TURN_ANGLE) p.stamina -= T.TURN_COST;
+      }
+    }
+    p._ldx = dx; p._ldy = dy;
+    // ★ 爆发：从非冲刺档突然提到冲刺档
+    if (p._ltier != null && p._ltier < T.MOVE_TIERS.length - 1 && tier === T.MOVE_TIERS.length - 1) {
+      p.stamina -= T.BURST_COST;
+    }
+    p._ltier = tier;
+    // 散步档一边走一边小幅恢复
+    if (tier === 0) p.stamina += T.RECOVER_WALK * dt;
+  } else {
+    p.stamina += T.RECOVER_IDLE * dt;
+    p._ltier = null; p._ldx = null;
   }
-  // 体能随时间缓慢恢复
-  p.stamina += 0.5 * dt;
-  // 精神随时间缓慢恢复（技能消耗精神，靠时间回上来）
-  p.spirit += 1.2 * dt;
+  // ★ 身体对抗：1.2 米内有对手紧贴（动静都算，拼抢消耗）
+  if (this.nearestOpponent(p).dist < T.CONTACT_DIST) p.stamina -= T.CONTACT_DRAIN * dt;
   p.stamina = clamp(p.stamina, 0, p.maxStamina);
-  p.spirit = clamp(p.spirit, 0, p.maxSpirit);
 };
 
 Match.prototype.simulate = function (dt) {
@@ -306,28 +342,23 @@ Match.prototype.simulate = function (dt) {
   if (!carrier) return;
 
   var dir = carrier.team === 'home' ? 1 : -1; // 进攻方向
-  var goalX = carrier.team === 'home' ? FIELD.W - 2 : 2;
 
   // --- 持球者移动 ---
   var frozen = this.now < carrier.frozenUntil;
   var cSpeed = this.playerSpeed(carrier, true);
-  var moving = false;
   if (!frozen) {
     if (this.controlMove(carrier, dt)) {
       // ★ 被玩家直接操控：按输入方向移动，不自动推进
-      moving = (this.control.dx !== 0 || this.control.dy !== 0);
     } else if (carrier.retreatTarget) {
       var arrived = this.moveToward(carrier, carrier.retreatTarget.x, carrier.retreatTarget.y, cSpeed * 0.9, dt);
-      moving = true;
       if (arrived) carrier.retreatTarget = null;
     } else {
-      // 向对方球门推进，略微向中路靠拢
-      var ty = carrier.y * 0.75 + (FIELD.H / 2) * 0.25;
-      this.moveToward(carrier, goalX, ty, cSpeed, dt);
-      moving = true;
+      // ★ 行为层·持球者：被紧逼时减速护球并向空侧微调，不再无脑直线冲门
+      var adj = Behavior.carrierAdjust(self, carrier);
+      self.moveToward(carrier, adj.tx, adj.ty, cSpeed * adj.spMul, dt);
     }
   }
-  this.updateEnergy(carrier, moving, true, dt);
+  this.updateEnergy(carrier, dt);
 
   // --- 其他球员移动 ---
   var chaseCount = 0;
@@ -345,63 +376,61 @@ Match.prototype.simulate = function (dt) {
   var defTeam = carrier.team === 'home' ? 'away' : 'home';
   var lineTargets = Behavior.defensiveShape(self, defTeam, pressing);
   var snapAtt = Offside.snapshot(self, carrier.team);
+  // ★ 行为层·无球任务：进攻方接应/前插/拉边/拖后（带任务粘性），防守方中场盯人
+  var atkTasks = Behavior.attackTasks(self, carrier, snapAtt);
+  var manMarks = Behavior.markTargets(self, defTeam, carrier, pressing);
   this.players.forEach(function (p) {
     if (p.id === carrier.id) return;
     if (p.sentOff) return; // 罚下球员不再参与模拟
     // ★ 被玩家直接操控：按输入移动，跳过 AI 跑位
     if (self.controlMove(p, dt)) {
-      self.updateEnergy(p, self.control.dx !== 0 || self.control.dy !== 0, false, dt);
+      self.updateEnergy(p, dt);
       return;
     }
     var pFrozen = self.now < p.frozenUntil;
     var beaten = self.now < p.beatenUntil;
     var tx, ty, sp;
     if (p.team !== carrier.team) {
-      // 防守方：最近的 2 人（被晃过的不算）上抢，其余按防线行为落位
+      // 防守方：第 1 人上抢，第 2 人协防卡传球线路，其余按行为落位
       var rank = sortedOpp.indexOf(p);
-      if (rank >= 0 && rank < 2 && !beaten && !pFrozen) {
+      if (rank === 0 && !beaten && !pFrozen) {
         tx = carrier.x; ty = carrier.y;
         sp = self.playerSpeed(p, true) * 0.94;
         chaseCount++;
+      } else if (rank === 1 && !beaten && !pFrozen) {
+        // ★ 协防：卡持球者与球门连线中点偏后，断传球/推进线路
+        var gx2 = carrier.team === 'home' ? FIELD.W : 0;
+        tx = (carrier.x + gx2) / 2; ty = (carrier.y + FIELD.H / 2) / 2;
+        sp = self.playerSpeed(p, false) * 0.8;
       } else {
-        // ★ 行为层：纪律好的后卫保持平行/协同压上，纪律差的各回阵型点
+        // ★ 行为层：DF 按防线纪律落位/造越位，MF 盯人，都没有则回阵型点
         var lt = (p.pos === 'DF' && lineTargets[p.id]) ? lineTargets[p.id] : null;
+        var mk = manMarks[p.id];
         if (lt) { tx = lt.x; ty = lt.y; }
+        else if (mk) { tx = mk.x; ty = mk.y; }
         else { tx = p.hx; ty = p.hy; }
-        sp = self.playerSpeed(p, false) * 0.7;
+        sp = self.playerSpeed(p, false) * (mk ? 0.85 : 0.7);
       }
     } else if (p.pos === 'GK') {
-      tx = p.hx; ty = p.hy;
+      // ★ 行为层·门将：随球横向小范围移动
+      var kt = Behavior.keeperTarget(self, p);
+      tx = kt.x; ty = kt.y;
       sp = self.playerSpeed(p, false) * 0.7;
     } else if (self.now < p.holdingUntil) {
       // ★ 行为层：急停收步中——原地不动，不参与这次进攻
       tx = p.x; ty = p.y;
       sp = 0;
     } else {
-      // 进攻方无球跑位：前插接应
-      var push = self.mentality === 'attack' ? 16 : self.mentality === 'defend' ? 6 : 11;
-      tx = clamp(carrier.x + push * dir, 4, FIELD.W - 4);
-      ty = clamp(p.hy * 0.5 + carrier.y * 0.5 + (p.hy - FIELD.H / 2) * 0.35, 4, FIELD.H - 4);
-      if (p.pos === 'FW' || p.pos === 'MF') {
-        // ★ 行为层·反越位时机：高 anti 球员把前插目标钳制在越位线之前
-        var wantU = p.team === 'home' ? tx : FIELD.W - tx;
-        var fixedU = Behavior.timeRunU(p, wantU, snapAtt);
-        if (fixedU != null) tx = p.team === 'home' ? fixedU : FIELD.W - fixedU;
-        // ★ 行为层·越位后的决策：收步的球员快速回位，不越位/选择前插的不管
-        if (Offside.isOffsidePosition(p, snapAtt) && Behavior.attackerDecision(p, snapAtt) === 'hold') {
-          tx = clamp(p.x - 14 * dir, 4, FIELD.W - 4);
-          ty = p.hy;
-        }
-      }
-      sp = self.playerSpeed(p, false) * 0.8;
+      // ★ 行为层·无球任务：接应/前插/拉边/拖后（带任务粘性，不再全员同步前压）
+      var at = atkTasks[p.id];
+      if (at) { tx = at.x; ty = at.y; }
+      else { tx = p.hx; ty = p.hy; }
+      sp = self.playerSpeed(p, false) * (at && at.type === 'run' ? 0.9 : 0.8);
     }
-    var moved = false;
     if (!pFrozen) {
-      var ox = p.x, oy = p.y;
       self.moveToward(p, tx, ty, sp, dt);
-      moved = Math.abs(p.x - ox) + Math.abs(p.y - oy) > 0.001;
     }
-    self.updateEnergy(p, moved, false, dt);
+    self.updateEnergy(p, dt);
   });
 
   // 球跟随持球者
@@ -435,7 +464,7 @@ Match.prototype.enterDecision = function (carrier) {
   this.lastDecisionPos = { x: carrier.x, y: carrier.y };
 };
 
-// 为持球者生成 6 个指令（含服务器计算的成功率与精神消耗）
+// 为持球者生成 6 个指令（含服务器计算的成功率与体能消耗）
 Match.prototype.buildOptions = function (p) {
   var self = this;
   var near = this.nearestOpponent(p);
@@ -447,7 +476,7 @@ Match.prototype.buildOptions = function (p) {
     var def = C.COMMANDS.filter(function (c) { return c.id === id; })[0];
     var name = def.name;
     if (id === 'special' && p.special) name = '必杀技·' + p.special.name;
-    var enabled = p.spirit >= def.cost;
+    var enabled = p.stamina >= def.cost;
     if (id === 'special' && (!p.special || (p.pos !== 'FW' && p.pos !== 'MF'))) enabled = false;
     // 门将不参与射门：避免出现"门将 1% 成功率射门"这种无意义选项，引导玩家用传球组织
     if (p.pos === 'GK' && (id === 'shoot' || id === 'special')) enabled = false;
@@ -464,19 +493,35 @@ Match.prototype.buildOptions = function (p) {
   var pressure = Math.max(0, 12 - near.dist) * 1.2;
 
   return [
-    opt('dribble', 58 + ((p.stats.dribble + p.stats.speed) * ef - (near.player.stats.defend + near.player.stats.speed) * defEf) * 0.9),
-    opt('pass', 72 + (p.stats.pass * ef - 60) * 0.7 - pressure),
-    opt('shoot', 78 + (p.stats.shoot * ef - keeper.stats.keep * keepEf) * 1.1 - distGoal * 0.5),
-    opt('special', 84 + ((p.stats.shoot * ef + 8) - keeper.stats.keep * keepEf) * 1.1 - distGoal * 0.32),
-    opt('feint', 62 + (p.stats.dribble * ef - near.player.stats.defend * defEf) * 0.9),
+    opt('dribble', 58 + ((FM.dribble(p) + FM.speed(p)) * ef - (FM.defend(near.player) + FM.speed(near.player)) * defEf) * 0.9),
+    (function (o) {
+      // ★ 传球多阶段菜单：把该球员可用的脚法告诉客户端（按 technique 能力解锁）
+      o.passOpts = { techniques: Pass.availableTechniques(p) };
+      return o;
+    })(opt('pass', 72 + (FM.pass(p) * ef - 60) * 0.7 - pressure)),
+    opt('shoot', 78 + (FM.shoot(p) * ef - FM.keep(keeper) * keepEf) * 1.1 - distGoal * 0.5),
+    opt('special', 84 + ((FM.shoot(p) * ef + 8) - FM.keep(keeper) * keepEf) * 1.1 - distGoal * 0.32),
+    opt('feint', 62 + (FM.dribble(p) * ef - FM.defend(near.player) * defEf) * 0.9),
     opt('retreat', 100),
   ];
+};
+
+// ★ 传球预估落点（供客户端在确认前显示）：纯计算，不掷骰、不改状态
+Match.prototype.passPreview = function (playerId, rawParams) {
+  if (this.phase !== 'decision' || !this.decision || this.decision.playerId !== playerId) {
+    return { ok: false, error: '当前不需要做决策' };
+  }
+  var p = this.byId[playerId];
+  if (!p || p.team !== 'home') return { ok: false, error: '非法球员' };
+  var pp = Pass.validateParams(rawParams, p);
+  var land = Pass.computeLanding(p, pp, FM.pass(p) * effFactor(p));
+  return { ok: true, preview: { x: land.x, y: land.y, r: land.r, params: pp } };
 };
 
 // ---------- 指令结算（全部在服务器用服务器 RNG 完成） ----------
 
 // 客户端指令入口：做严格的合法性校验（防作弊）
-Match.prototype.applyCommand = function (playerId, commandId) {
+Match.prototype.applyCommand = function (playerId, commandId, params) {
   // 1. 必须是等待决策阶段
   if (this.phase !== 'decision' || !this.decision) {
     return { ok: false, error: '当前不需要做决策' };
@@ -493,13 +538,13 @@ Match.prototype.applyCommand = function (playerId, commandId) {
   var option = null;
   this.decision.options.forEach(function (o) { if (o.id === commandId) option = o; });
   if (!option) return { ok: false, error: '未知指令' };
-  if (!option.enabled) return { ok: false, error: '精神不足或该球员无法使用此指令' };
-  if (p.spirit < option.cost) return { ok: false, error: '精神不足' };
+  if (!option.enabled) return { ok: false, error: '体能不足或该球员无法使用此指令' };
+  if (p.stamina < option.cost) return { ok: false, error: '体能不足' };
 
-  // 4. 扣除精神（体能不受影响——体能设计）
-  p.spirit = Math.max(0, p.spirit - option.cost);
+  // 4. 扣除体能（单资源制）
+  p.stamina = Math.max(0, p.stamina - option.cost);
 
-  var result = this.resolveAction(p, commandId, option.rate);
+  var result = this.resolveAction(p, commandId, option.rate, params);
 
   // 结算后恢复比赛；若刚进了球（phase 已被 goal() 置为 'goal'），则保持进球庆祝流程
   this.decision = null;
@@ -516,12 +561,13 @@ Match.prototype.applyCommand = function (playerId, commandId) {
 };
 
 // 统一的动作结算：掷骰 -> 生效 -> 生成事件
-Match.prototype.resolveAction = function (p, commandId, rate) {
+Match.prototype.resolveAction = function (p, commandId, rate, params) {
   var roll = this.rng() * 100;
   var success = roll < rate;
   var near = this.nearestOpponent(p);
   var dir = p.team === 'home' ? 1 : -1;
   var text = '';
+  var cut = null; // ★ 结算演出图键（客户端全屏像素风演出），无则用旧版侧栏面板
 
   switch (commandId) {
     case 'dribble': {
@@ -531,20 +577,24 @@ Match.prototype.resolveAction = function (p, commandId, rate) {
         p.y = clamp(def.y + (this.rng() - 0.5) * 6, 2, FIELD.H - 2);
         def.beatenUntil = this.now + 2000;
         text = p.name + ' 用突破晃过了 ' + def.name + '！';
+        cut = 'dribble-win';
       } else {
-        // ★ 抢断对决：干净抢断 / 犯规 / 被过掉（基于数值随机）
+        // ★ 抢断对决：干净抢断 / 犯规 / 被过掉（基于数值随机）；上抢的防守方消耗体能
         var t = Foul.judgeTackle(this, def, p, {
           fromBehind: false,
           speedHigh: true,
           attackPromising: Foul.distGoal(p, p.team) < 30,
         });
+        def.stamina = Math.max(0, def.stamina - C.STAMINA.TACKLE_COST);
         if (t.outcome === 'clean') {
           this.ball.ownerId = def.id;
           text = p.name + ' 的突破被 ' + def.name + ' 干净地断下！';
+          cut = 'dribble-lose';
         } else if (t.outcome === 'beaten') {
           def.beatenUntil = this.now + 2000;
           p.x = clamp(def.x + 7 * dir, 2, FIELD.W - 2);
           text = p.name + ' 强行抹过了 ' + def.name + '！';
+          cut = 'dribble-win';
         } else {
           return this.applyFoulResult(t.foul);
         }
@@ -552,36 +602,83 @@ Match.prototype.resolveAction = function (p, commandId, rate) {
       break;
     }
     case 'pass': {
-      var target = this.bestPassTarget(p);
+      // ★ 多阶段传球：params{长/短,方向8向,脚法,高度,力量} → 预估落点 → 散布掷骰 → 球感修正
+      //   无 params（AI/测试）时自动朝最佳接应队友生成
+      var pp = Pass.validateParams(params || Pass.autoParams(this, p), p);
+      var passAb = FM.pass(p) * effFactor(p);
+      var land = Pass.computeLanding(p, pp, passAb);
+      // 实际落点：散布圈内掷骰（传球能力决定圈大小）
+      var ax = clamp(land.x + (this.rng() * 2 - 1) * land.r, 2, FIELD.W - 2);
+      var ay = clamp(land.y + (this.rng() * 2 - 1) * land.r, 2, FIELD.H - 2);
+      // ★ 球感修正：实际落点向最近队友的理想接球点靠拢
+      var corr = Pass.correctLanding(this, p, ax, ay);
+      var target = corr.target;
+      var techName = Pass.TECHNIQUES[pp.technique].name;
+      var kindName = pp.kind === 'long' ? '长传' : '短传';
       // ★ 行为层先行：接应目标若处越位位置，先看他自己的决策——
       //   急停收步（hold）还是继续前插（go）。这是球员的行为选择，
       //   不是裁判的豁免：选择前插而实际越位，哨声照吹。
-      var snapPass = Offside.snapshot(this, p.team);
-      if (Offside.isOffsidePosition(target, snapPass) &&
-          Behavior.attackerDecision(target, snapPass) === 'hold') {
-        target.holdingUntil = this.now + 2500;
-        var alt = this.bestOnsideTarget(p, snapPass);
-        if (alt) {
-          text = '⚠ ' + target.name + '识破越位陷阱，急停收步！' + p.name + '改传' + alt.name + '。';
-          target = alt;
-        } else {
-          var interceptor = this.nearestOpponent(p).player;
-          this.ball.ownerId = interceptor.id;
-          text = '⚠ ' + target.name + '急停收步，但' + p.name + '的传球线路已被' + interceptor.name + '封死！';
-          break;
+      var targetHeld = false;
+      var snapPass = null;
+      if (target) {
+        snapPass = Offside.snapshot(this, p.team);
+        targetHeld = Offside.isOffsidePosition(target, snapPass) &&
+            Behavior.attackerDecision(target, snapPass) === 'hold';
+      }
+      if (targetHeld) {
+        target.holdingUntil = this.now + 2500; // 收步：停止触球、回位、不参与
+        // ★ 收步者不参与进攻：跳过他的"越位接球"检查（skipReceive），
+        //   其他越位位置队友的干扰照常吹罚
+        var osHeld = Offside.judgePass(this, p, target, true);
+        if (osHeld.type === 'offside') {
+          return this.whistleOffside(osHeld, p);
+        }
+        // ★ 目标收步：不偷偷改传其他人。球仍沿原线路飞出，无人接应 → 被离落点最近的防守球员得到
+        var oppTeam = p.team === 'home' ? 'away' : 'home';
+        var best = null, bd = 1e9;
+        this.players.forEach(function (q) {
+          if (q.team !== oppTeam || q.sentOff) return;
+          var d = Math.sqrt((q.x - corr.x) * (q.x - corr.x) + (q.y - corr.y) * (q.y - corr.y));
+          if (d < bd) { bd = d; best = q; }
+        });
+        this.ball.ownerId = best.id;
+        this.ball.x = corr.x; this.ball.y = corr.y;
+        text = '⚠ ' + target.name + '识破越位陷阱，急停收步！' + p.name + '的' + techName + kindName + '滚向无人地带，被' + best.name + '得到。';
+        success = false;
+        cut = 'pass-lose';
+        break;
+      }
+      // ★ 裁判层：纯客观判定，不看任何数值（目标前插参与 → 越位照吹）
+      if (target) {
+        var os = Offside.judgePass(this, p, target);
+        if (os.type === 'offside') {
+          return this.whistleOffside(os, p);
         }
       }
-      // ★ 裁判层：纯客观判定，不看任何数值
-      var os = Offside.judgePass(this, p, target);
-      if (os.type === 'offside') {
-        return this.whistleOffside(os, p);
-      }
+      // ★ 成功率按本次传球参数重算（距离/高度/脚法/压迫），取代菜单预估值
+      var prate = Pass.passRate(p, pp, land, near.dist);
+      success = this.rng() * 100 < prate;
       if (success) {
-        this.ball.ownerId = target.id;
-        if (!text) text = p.name + ' 把球传给了 ' + target.name + '。';
+        var recv = target;
+        if (!recv) {
+          // 无人接应：落点附近最近的本方球员上前拿球
+          var rb = null, rd = 1e9;
+          this.players.forEach(function (q) {
+            if (q.team !== p.team || q.sentOff) return;
+            var d = Math.sqrt((q.x - corr.x) * (q.x - corr.x) + (q.y - corr.y) * (q.y - corr.y));
+            if (d < rd) { rd = d; rb = q; }
+          });
+          recv = rb || p;
+        }
+        this.ball.ownerId = recv.id;
+        this.ball.x = corr.x; this.ball.y = corr.y;
+        text = p.name + '一脚' + techName + kindName + '，' + recv.name + '稳稳接应。';
+        cut = 'pass-win';
       } else {
         this.ball.ownerId = near.player.id;
-        text = p.name + ' 的传球被 ' + near.player.name + ' 拦截！';
+        this.ball.x = corr.x; this.ball.y = corr.y;
+        text = p.name + ' 的' + techName + kindName + '被 ' + near.player.name + ' 拦截！';
+        cut = 'pass-lose';
       }
       break;
     }
@@ -598,11 +695,13 @@ Match.prototype.resolveAction = function (p, commandId, rate) {
       this.shots[p.team]++;
       if (success) {
         this.goal(p, p.team);
+        this.lastAction.cut = isSpecial ? 'special-goal' : 'shoot-goal';
         return { kind: commandId, label: label, playerName: p.name, success: true, text: this.lastAction.text };
       }
       // 失败：被扑出或偏出
       this.ball.ownerId = keeper.id;
       var saved = this.rng() < 0.55;
+      cut = isSpecial ? (saved ? 'special-save' : 'shoot-miss') : (saved ? 'shoot-save' : 'shoot-miss');
       if (saved) {
         // 球反弹到门前区域
         this.ball.x = clamp(keeper.x - 6 * dir, 2, FIELD.W - 2);
@@ -624,19 +723,23 @@ Match.prototype.resolveAction = function (p, commandId, rate) {
         d2.frozenUntil = this.now + 2500;
         p.x = clamp(p.x + 3 * dir, 2, FIELD.W - 2);
         text = p.name + ' 的假动作晃晕了 ' + d2.name + '！';
+        cut = 'feint-win';
       } else {
-        // ★ 假动作被看穿：防守方上抢，同样走抢断对决
+        // ★ 假动作被看穿：防守方上抢，同样走抢断对决；上抢消耗体能
         var t2 = Foul.judgeTackle(this, d2, p, {
           fromBehind: false,
           speedHigh: false,
           attackPromising: false,
         });
+        d2.stamina = Math.max(0, d2.stamina - C.STAMINA.TACKLE_COST);
         if (t2.outcome === 'clean') {
           this.ball.ownerId = d2.id;
           text = p.name + ' 的假动作被 ' + d2.name + ' 看穿并断下！';
+          cut = 'dribble-lose';
         } else if (t2.outcome === 'beaten') {
           d2.beatenUntil = this.now + 1500;
           text = p.name + ' 的假动作没晃开 ' + d2.name + '，但顺势抹了过去！';
+          cut = 'dribble-win';
         } else {
           return this.applyFoulResult(t2.foul);
         }
@@ -658,6 +761,7 @@ Match.prototype.resolveAction = function (p, commandId, rate) {
     team: p.team,
     success: success,
     text: text,
+    cut: cut,
     until: Date.now() + 2200,
   };
   return this.lastAction;
@@ -722,6 +826,7 @@ Match.prototype.whistleOffside = function (os, passer) {
     team: defendingTeam,
     success: false,
     text: Offside.reasonText(os.reason, os.player) + ' ' + teamName + '获得间接任意球。',
+    cut: 'offside',
     until: Date.now() + 2200,
   };
   return this.lastAction;
@@ -765,6 +870,7 @@ Match.prototype.applyFoulResult = function (foul) {
     team: foul.team,
     success: false,
     text: text,
+    cut: 'foul',
     until: Date.now() + 2400,
   };
   return this.lastAction;
@@ -785,8 +891,8 @@ Match.prototype.resolvePenalty = function (foul, prefixText) {
   this.shots[shooter.team]++;
   var sEff = effFactor(shooter), kEff = effFactor(keeper);
   var pGoal = clamp(
-    0.74 + (shooter.stats.shoot * sEff - keeper.stats.keep * kEff) * 0.01 +
-    (shooter.stats.nerve - keeper.stats.nerve) * 0.004,
+    0.74 + (FM.shoot(shooter) * sEff - FM.keep(keeper) * kEff) * 0.01 +
+    (FM.nerve(shooter) - FM.nerve(keeper)) * 0.004,
     0.4, 0.95
   );
   var roll = this.rng();
@@ -796,17 +902,20 @@ Match.prototype.resolvePenalty = function (foul, prefixText) {
     this.lastAction.kind = 'penalty';
     this.lastAction.label = '点球命中';
     this.lastAction.text = call + '球进了！' + shooter.name + '顶住压力罚入点球！';
+    this.lastAction.cut = 'shoot-goal';
     return this.lastAction;
   }
   this.ball.ownerId = keeper.id;
   this.enterStoppage('whistle', 2000, keeper.id);
+  var pSaved = roll < pGoal + 0.12;
   this.lastAction = {
     kind: 'penalty',
     label: '点球罚失',
     playerName: shooter.name,
     team: shooter.team,
     success: false,
-    text: call + (roll < pGoal + 0.12 ? '被门将' + keeper.name + '神勇扑出！' : '偏出了球门！'),
+    text: call + (pSaved ? '被门将' + keeper.name + '神勇扑出！' : '偏出了球门！'),
+    cut: pSaved ? 'shoot-save' : 'shoot-miss',
     until: Date.now() + 2000,
   };
   return this.lastAction;
@@ -820,8 +929,9 @@ Match.prototype.aiDecide = function (p) {
   var choice;
 
   if (distGoal < 24) {
-    // 射程内：有必杀技且精神够则用必杀，否则射门
-    if (p.special && p.spirit >= 60 && this.rng() < 0.55) choice = 'special';
+    // 射程内：有必杀技且体能够则用必杀，否则射门
+    var specialDef = C.COMMANDS.filter(function (c) { return c.id === 'special'; })[0];
+    if (p.special && p.stamina >= specialDef.cost && this.rng() < 0.55) choice = 'special';
     else choice = 'shoot';
   } else if (p.pos === 'GK') {
     // 门将得球：大脚开给前场队友
@@ -832,11 +942,11 @@ Match.prototype.aiDecide = function (p) {
     choice = 'dribble';
   }
 
-  // AI 同样受精神限制
+  // AI 同样受体能限制
   var def = C.COMMANDS.filter(function (c) { return c.id === choice; })[0];
-  if (!def || p.spirit < def.cost || (choice === 'special' && !p.special)) choice = 'pass';
+  if (!def || p.stamina < def.cost || (choice === 'special' && !p.special)) choice = 'pass';
   var def2 = C.COMMANDS.filter(function (c) { return c.id === choice; })[0];
-  p.spirit = Math.max(0, p.spirit - def2.cost);
+  p.stamina = Math.max(0, p.stamina - def2.cost);
 
   var rate = this.buildOptions(p).filter(function (o) { return o.id === choice; })[0].rate;
   this.resolveAction(p, choice, rate);
@@ -930,7 +1040,6 @@ Match.prototype.serialize = function () {
         level: p.level, x: +p.x.toFixed(2), y: +p.y.toFixed(2),
         stats: p.stats,
         stamina: Math.round(p.stamina), maxStamina: p.maxStamina,
-        spirit: Math.round(p.spirit), maxSpirit: p.maxSpirit,
         special: p.special ? { name: p.special.name } : null,
         hasBall: self.ball.ownerId === p.id,
         frozen: self.now < p.frozenUntil,

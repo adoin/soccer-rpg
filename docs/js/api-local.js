@@ -31,7 +31,13 @@ window.__makeLocalApi = function () {
       if (m) {
         var mm = getMatch(m[1]);
         if (!mm || !mm.decision) return Promise.resolve({ ok: false, error: '当前不需要做决策' });
-        return Promise.resolve(mm.applyCommand(mm.decision.playerId, body.commandId));
+        return Promise.resolve(mm.applyCommand(mm.decision.playerId, body.commandId, body.params));
+      }
+      m = url.match(/^\/api\/match\/([^\/]+)\/pass-preview$/);
+      if (m) {
+        var pm = getMatch(m[1]);
+        if (!pm || !pm.decision) return Promise.resolve({ ok: false, error: '当前不需要做决策' });
+        return Promise.resolve(pm.passPreview(pm.decision.playerId, body.params));
       }
       m = url.match(/^\/api\/match\/([^\/]+)\/pause$/);
       if (m) {
