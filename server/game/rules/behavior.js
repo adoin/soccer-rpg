@@ -28,9 +28,9 @@ var FM = require('../../../shared/fm');
 var FIELD_W = 105, FIELD_H = 68;
 var HALF = FIELD_W / 2;
 
-var HOLD_BAR = 65; // 保持平行线的个人纪律阈值
-var TRAP_BAR = 70; // 协同压上造越位的整线阈值
-var ANTI_BAR = 65; // 反越位跑位时机的阈值
+var HOLD_BAR = 51; // 保持平行线的个人纪律阈值（FM 聚合量级：后卫 discipline 约 50~59）
+var TRAP_BAR = 55; // 协同压上造越位的整线阈值（主队 55.9 可造，客队 52.3 不行）
+var ANTI_BAR = 65; // 反越位跑位时机的阈值（前锋 antiAtt 约 65~75）
 
 function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
 
@@ -94,20 +94,21 @@ function defensiveShape(match, team, pressing) {
   var out = {};
   if (!backs.length) return out;
 
-  // 锚点：落位后卫中最靠前（距本方球门最远）的一个
-  var anchorV = -1e9;
-  backs.forEach(function (p) { var v = vOf(p.x); if (v > anchorV) anchorV = v; });
+  // 防线整体以球为锚落位（见下），不再用后卫自身站位做锚
 
   var teamTrap = trapAbility(match.players, team);
   var vBall = vOf(match.ball.x);
-  var danger = vBall > 62; // 球已进入本方三区：只求平行站住，不压上
+  // ★ 修正：球进入本方 38 米区域才是危险（之前写成 vBall > 62，条件反了，防线从不动）
+  var danger = vBall < 38;
 
   backs.forEach(function (p) {
     var vT;
     if (discipline(p) >= HOLD_BAR) {
-      vT = anchorV; // 紧紧保持与防线平行
+      // ★ 以球为锚：防线整体保持在球的球门一侧约 8 米，随球进退、始终平行
+      //   （之前锚定后卫自身站位的最大值，自己锚自己，整条线冻结）
+      vT = clamp(vBall + 8, 10, 58);
       if (!danger && teamTrap >= TRAP_BAR) {
-        vT = Math.max(anchorV, Math.min(vBall + 10, 58)); // 整条线一起压上造越位
+        vT = Math.max(vT, Math.min(vBall + 12, 58)); // 协同压上造越位
       }
     } else {
       vT = null; // 纪律差：各回各的阵型点，防线参差不齐
@@ -174,9 +175,11 @@ function attackTasks(match, carrier, snap) {
     var task = (p._task && now < (p._taskUntil || 0)) ? p._task : null;
     if (!task) {
       var tired = (p.stamina == null ? 100 : p.stamina) < 25;
-      if (!tired && nSupport < 2 && idx < 4) { task = 'support'; nSupport++; }
-      else if (!tired && (p.pos === 'FW' || (p.pos === 'MF' && nRun < 1)) && idx >= 1) { task = 'run'; nRun++; }
-      else if (Math.abs(p.hy - FIELD_H / 2) > 13) { task = 'width'; }
+      var isDF = p.pos === 'DF';
+      // ★ 后卫不参与前插/拉边：只拖后保护，避免整条后防线跟着压上（之前边后卫会被 width 任务带到对方半场）
+      if (!tired && !isDF && nSupport < 2 && idx < 4) { task = 'support'; nSupport++; }
+      else if (!tired && !isDF && (p.pos === 'FW' || (p.pos === 'MF' && nRun < 1)) && idx >= 1) { task = 'run'; nRun++; }
+      else if (!isDF && Math.abs(p.hy - FIELD_H / 2) > 13) { task = 'width'; }
       else { task = 'cover'; }
       p._task = task;
       p._taskUntil = now + 1200 + (idHash(p.id) % 500);
@@ -218,8 +221,12 @@ function taskTarget(match, p, carrier, dir, task, snap, idx) {
     tx = carrier.x + dir * 4;
     ty = p.hy < FIELD_H / 2 ? 8 : FIELD_H - 8;
   } else {
-    // 拖后保护：阵型点与持球者之间偏后，不盲目前压
-    tx = p.hx * 0.7 + (carrier.x - dir * 18) * 0.3;
+    // 拖后保护：以阵型点为锚，只随球小幅移动；前压按球队进攻方向限幅（后卫至多 8 米），绝不盲目前压
+    var want = (carrier.x - dir * 22 - p.hx) * 0.3;
+    var fwdCap = p.pos === 'DF' ? 8 : 12;
+    if (want * dir > fwdCap) want = fwdCap * dir;
+    if (want * dir < -6) want = -6 * dir;
+    tx = p.hx + want;
     ty = p.hy;
   }
   return { x: clamp(tx, 4, FIELD_W - 4), y: clamp(ty, 4, FIELD_H - 4) };
