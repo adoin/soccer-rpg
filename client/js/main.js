@@ -445,8 +445,8 @@ function clampAim(hm) {
     if (dist < 0.001) hm.pass.aimX = p.x + AIM_MIN;
     else { hm.pass.aimX = p.x + dx / dist * AIM_MIN; hm.pass.aimY = p.y + dy / dist * AIM_MIN; }
   }
-  hm.pass.aimX = clamp(hm.pass.aimX, 2, FIELD.W - 2);
-  hm.pass.aimY = clamp(hm.pass.aimY, 2, FIELD.H - 2);
+  hm.pass.aimX = clamp(hm.pass.aimX, 2, C.FIELD.W - 2);
+  hm.pass.aimY = clamp(hm.pass.aimY, 2, C.FIELD.H - 2);
 }
 function nudgeAim(dx, dy) {
   var hm = ui.hmenu;
@@ -459,10 +459,10 @@ function nudgeAim(dx, dy) {
 function unproject(sx, sy) {
   var depth = 1 - (sy - HORIZON) / (GROUND - HORIZON);
   depth = clamp(depth, 0, 1);
-  var y = depth * FIELD.H;
+  var y = depth * C.FIELD.H;
   var persp = 0.5 + 0.5 * (1 - depth);
   var viewW = 66;
-  var cx = clamp(ballR.x - viewW * 0.45, -6, FIELD.W - viewW + 6);
+  var cx = clamp(ballR.x - viewW * 0.45, -6, C.FIELD.W - viewW + 6);
   var x = cx + viewW / 2 + (sx - W / 2) / (W * persp) * viewW;
   return { x: x, y: y };
 }
