@@ -232,16 +232,47 @@ function releaseBtn(id) {
   if (id === 'sprint') setPad(pad.dx, pad.dy, false, pad.slow);
   else if (id === 'slow') setPad(pad.dx, pad.dy, pad.sprint, false);
 }
+// ★ 头顶菜单打开时：方向盘切成菜单导航（上/下/左/右），右侧按键变成 确定/返回（复用桌面端键盘逻辑）
+function menuKeySynth(k) { headMenuKey({ key: k, preventDefault: function () {} }); }
+var menuDpadDir = null;
+function menuDpadStep(p) {
+  var dx = p.x - DPAD.x, dy = p.y - DPAD.y;
+  if (Math.hypot(dx, dy) < DPAD.r * 0.22) { menuDpadDir = null; return; } // 死区
+  var dir = Math.abs(dx) > Math.abs(dy)
+    ? (dx > 0 ? 'ArrowRight' : 'ArrowLeft')
+    : (dy > 0 ? 'ArrowDown' : 'ArrowUp');
+  if (dir !== menuDpadDir) { menuDpadDir = dir; menuKeySynth(dir); } // 进入新方向扇区才走一步
+}
+function menuBtn(id) {
+  if (id === 'sprint') menuKeySynth('Enter');                          // 确定
+  else if (id === 'slow') { if (headMenuOpen()) headMenuBack(); }      // 返回
+  else if (id === 'menu') togglePause();
+  else toast('请先完成头顶菜单选择');
+}
+function menuBtnLabel(id, def) {
+  if (!headMenuOpen()) return def;
+  if (id === 'sprint') return '确定';
+  if (id === 'slow') return '返回';
+  return def;
+}
 cv.addEventListener('touchstart', function (e) {
   if (!isTouch || screen !== 'game') return;
-  if (ui.pauseOpen || ui.overlay || headMenuOpen()) return; // 菜单/覆盖层/头顶菜单打开时手柄让路，保证菜单可点
+  if (ui.pauseOpen || ui.overlay) return; // 暂停/覆盖层打开时手柄让路，保证可点
+  var menuMode = headMenuOpen(); // 头顶菜单打开：方向盘=菜单导航，按键=确定/返回；其他触点放行以便直接点选菜单项
   var used = false;
   for (var i = 0; i < e.changedTouches.length; i++) {
     var t = e.changedTouches[i], p = touchPos(t), tid = t.identifier;
     var b = hitBtn(p);
-    if (b) { btnTouchIds[tid] = b.id; pressBtn(b.id); used = true; }
+    if (b) {
+      if (menuMode) menuBtn(b.id);
+      else { btnTouchIds[tid] = b.id; pressBtn(b.id); }
+      used = true;
+    }
     else if (padTouchId === null && Math.hypot(p.x - DPAD.x, p.y - DPAD.y) <= DPAD.r + 30) {
-      padTouchId = tid; moveDpad(p); used = true;
+      padTouchId = tid;
+      if (menuMode) { menuDpadDir = null; menuDpadStep(p); }
+      else moveDpad(p);
+      used = true;
     }
   }
   if (used) e.preventDefault();
@@ -249,7 +280,10 @@ cv.addEventListener('touchstart', function (e) {
 cv.addEventListener('touchmove', function (e) {
   for (var i = 0; i < e.changedTouches.length; i++) {
     var t = e.changedTouches[i];
-    if (t.identifier === padTouchId) { moveDpad(touchPos(t)); e.preventDefault(); }
+    if (t.identifier === padTouchId) {
+      if (headMenuOpen()) menuDpadStep(touchPos(t)); else moveDpad(touchPos(t));
+      e.preventDefault();
+    }
     else if (t.identifier === powerBarTouchId) { powerBarSet(touchPos(t).x); e.preventDefault(); }
   }
 }, { passive: false });
@@ -272,7 +306,7 @@ cv.addEventListener('touchstart', function (e) {
 function touchEnd(e) {
   for (var i = 0; i < e.changedTouches.length; i++) {
     var tid = e.changedTouches[i].identifier;
-    if (tid === padTouchId) { padTouchId = null; setPad(0, 0, pad.sprint, pad.slow); }
+    if (tid === padTouchId) { padTouchId = null; menuDpadDir = null; setPad(0, 0, pad.sprint, pad.slow); }
     if (tid === powerBarTouchId) { powerBarTouchId = null; }
     if (btnTouchIds[tid]) { releaseBtn(btnTouchIds[tid]); delete btnTouchIds[tid]; }
   }
@@ -1137,7 +1171,7 @@ function drawGamepad() {
     ctx.fillStyle = active ? 'rgba(120,255,160,0.28)' : 'rgba(255,255,255,0.08)';
     ctx.beginPath(); ctx.arc(b.x, b.y, b.r, 0, Math.PI * 2); ctx.fill();
     ctx.strokeStyle = 'rgba(255,255,255,0.28)'; ctx.lineWidth = 2; ctx.stroke();
-    text(b.label, b.x, b.y + 1, 20, 'rgba(255,255,255,0.75)', 'center', true);
+    text(menuBtnLabel(b.id, b.label), b.x, b.y + 1, 20, 'rgba(255,255,255,0.75)', 'center', true);
   });
 }
 
