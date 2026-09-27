@@ -52,6 +52,10 @@ var ui = {
 };
 var clickables = [];        // 本帧可点击区域（绘制时重建）
 var frameNo = 0;
+// ★ 调试开关：?debug=1 时在左上角显示按键/菜单/异常诊断（平时完全隐藏）
+var DEBUG = /[?&]debug=1/.test(location.search);
+var dbgKey = '', dbgErr = '';
+if (DEBUG) window.addEventListener('error', function (e) { dbgErr = 'ERR: ' + (e.message || e.type); });
 
 // ---------------- 直接操控输入 ----------------
 // 桌面端：WASD 方向 / J 加速 / K 减速 / L或Tab 切换球员 / 空格 暂停菜单
@@ -146,6 +150,7 @@ document.addEventListener('keydown', function (e) {
     if (!ui.overlay) togglePause();
   }
   if (screen !== 'game') return;
+  if (DEBUG) { var _lt = hmTop(); dbgKey = 'key=' + e.key + ' menu=' + (headMenuOpen() ? 'open' : 'shut') + ' top=' + (_lt ? (_lt.kind + '#' + _lt.sel) : 'none'); }
   if (headMenuOpen() && headMenuKey(e)) return; // 头顶菜单打开时接管键盘（方向键/回车/空格选，Esc 返回）
   var k = (e.key || '').toLowerCase();
   if ([' ', 'tab', 'w', 'a', 's', 'd', 'j', 'k', 'l'].indexOf(k) >= 0) e.preventDefault();
@@ -1399,6 +1404,16 @@ function frame(t) {
     }
   }
   drawToast();
+  if (DEBUG) { // 左上角诊断行：按键 / 菜单栈 / 异常
+    var _dlt = hmTop();
+    ctx.font = '14px monospace'; ctx.textAlign = 'left'; ctx.textBaseline = 'top';
+    ctx.fillStyle = 'rgba(0,0,0,0.7)'; ctx.fillRect(8, 8, 460, 66);
+    ctx.fillStyle = '#7dff9a';
+    ctx.fillText(dbgKey || 'key=-', 14, 12);
+    ctx.fillText('stack=' + (ui.hmenu ? ui.hmenu.stack.map(function (l) { return l.kind + '#' + l.sel; }).join('>') : 'null') + ' choosing=' + ui.choosing, 14, 32);
+    ctx.fillStyle = dbgErr ? '#ff6b6b' : '#5a6584';
+    ctx.fillText(dbgErr || 'err=-', 14, 52);
+  }
   requestAnimationFrame(frame);
 }
 
