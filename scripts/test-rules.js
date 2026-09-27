@@ -201,8 +201,12 @@ console.log('== 引擎集成：行为 → 局面 → 判罚 ==');
   var t9 = P(m, 'h9'); set(m, 'h9', 82, 30); ['decisions','vision','composure','determination'].forEach(function(k){ t9.stats[k] = 17; });
   set(m, 'h7', 58, 20); set(m, 'h11', 58, 48); set(m, 'h8', 55, 34); // 不越位的备选
   var r = m.resolveAction(P(m, 'h10'), 'pass', 100);
-  ok(r.kind === 'pass' && /急停收步/.test(r.text) && m.ball.ownerId !== 'h9' && m.ball.ownerId[0] === 'a',
-    '高球商目标收步，空传被防守方得到（不偷偷改传）', JSON.stringify({ kind: r.kind, owner: m.ball.ownerId }));
+  ok(r.kind === 'pass' && r.pending === true && m.phase === 'passflight' && m.ball.ownerId === null,
+    '收步改传：先进入传球飞行、球不瞬移', JSON.stringify({ kind: r.kind, phase: m.phase }));
+  var guard = 0;
+  while (m.phase === 'passflight' && guard++ < 1000) m.tick();
+  ok(/急停收步/.test(m.lastAction.text) && m.ball.ownerId !== 'h9' && m.ball.ownerId[0] === 'a',
+    '高球商目标收步，空传被防守方得到（不偷偷改传）', JSON.stringify({ text: m.lastAction.text, owner: m.ball.ownerId }));
 })();
 
 // 14. 传球给越位目标：低球商目标继续前插，裁判照吹
@@ -414,51 +418,58 @@ console.log('== 行为层：无球任务 / 协防 / 盯人 / 持球调整 ==');
   ok(sd > 8, '跑位拉开层次（x 标准差 > 8 米）', sd.toFixed(1));
 })();
 
-console.log('== 传球 8 方向：DIRS/落点/自动选向一致（场地 +y 朝上） ==');
+console.log('== 传球自由落点：输入即意图，能力只定散布（场地 +y 朝上） ==');
 (function () {
   var Pass = require('../server/game/rules/pass');
   var m = newMatch(70);
   var passer = P(m, 'h10');
   set(m, 'h10', 50, 34);
-  var names = ['→', '↗', '↑', '↖', '←', '↙', '↓', '↘'];
-  // 1) DIRS 与方向名一致：→(+x) ↗(+x+y) ↑(+y) ↖(-x+y) ←(-x) ↙(-x-y) ↓(-y) ↘(+x-y)
-  var qx = [1, 1, 0, -1, -1, -1, 0, 1];
-  var qy = [0, 1, 1, 1, 0, -1, -1, -1];
-  for (var d = 0; d < 8; d++) {
-    var dd = Pass.DIRS[d];
-    ok(Math.sign(dd.dx) === qx[d] && Math.sign(dd.dy) === qy[d],
-      'DIRS[' + d + ']=' + names[d] + ' 指向正确象限', JSON.stringify(dd));
-  }
-  // 2) computeLanding 落点沿所选方向偏移（短传 50% → 17 米）
-  for (var d2 = 0; d2 < 8; d2++) {
-    var land = Pass.computeLanding(passer, { kind: 'short', dir: d2, technique: 'inside', height: 'mid', power: 50 }, 80);
-    ok(Math.sign(land.x - 50) === qx[d2] && Math.sign(land.y - 34) === qy[d2],
-      '落点方向 dir=' + d2 + names[d2] + ' 正确', land.x.toFixed(1) + ',' + land.y.toFixed(1));
-  }
-  // 3) autoParams：四个斜向目标必须选中对应斜向（曾出现上下颠倒 bug）
+  // 1) 任意非 45° 角落点：输入是什么落点就是什么（不再量化到 8 向）
+  var land = Pass.computeLanding(passer, { aimX: 73.3, aimY: 41.7, technique: 'inside', height: 'mid' }, 80);
+  ok(Math.abs(land.x - 73.3) < 0.01 && Math.abs(land.y - 41.7) < 0.01,
+    '落点 = 玩家输入（73.3,41.7，非 45° 角）', land.x.toFixed(2) + ',' + land.y.toFixed(2));
+  var land2 = Pass.computeLanding(passer, { aimX: 20.5, aimY: 60.2, technique: 'inside', height: 'mid' }, 80);
+  ok(Math.abs(land2.x - 20.5) < 0.01 && Math.abs(land2.y - 60.2) < 0.01,
+    '落点 = 玩家输入（20.5,60.2）', land2.x.toFixed(2) + ',' + land2.y.toFixed(2));
+  // 2) 距离连续映射力量：远近即力量，无档位
+  var near = Pass.computeLanding(passer, { aimX: 58, aimY: 34, technique: 'inside', height: 'mid' }, 80);
+  var far = Pass.computeLanding(passer, { aimX: 95, aimY: 34, technique: 'inside', height: 'mid' }, 80);
+  ok(Math.abs(near.dist - 8) < 0.01 && Math.abs(far.dist - 45) < 0.01,
+    '距离连续：8 米 vs 45 米', near.dist.toFixed(1) + ' / ' + far.dist.toFixed(1));
+  ok(far.r > near.r * 1.5, '越远越飘（散布随距离增大）', 'r=' + near.r.toFixed(2) + ' / ' + far.r.toFixed(2));
+  // 3) 能力只影响散布，不扭曲玩家选点
+  var weak = Pass.computeLanding(passer, { aimX: 73.3, aimY: 41.7, technique: 'inside', height: 'mid' }, 20);
+  var strong = Pass.computeLanding(passer, { aimX: 73.3, aimY: 41.7, technique: 'inside', height: 'mid' }, 95);
+  ok(Math.abs(weak.x - strong.x) < 0.01 && Math.abs(weak.y - strong.y) < 0.01,
+    '弱/强球员预估落点中心一致（能力不改意图）');
+  ok(weak.r > strong.r * 2, '弱球员散布圈大得多', 'r=' + weak.r.toFixed(2) + ' / ' + strong.r.toFixed(2));
+  // 4) 服务端钳制：超射程/出界落点被拉回合法范围
+  var vp = Pass.validateParams({ aimX: 500, aimY: -30, technique: 'inside', height: 'mid' }, passer);
+  var vd = Math.sqrt((vp.aimX - 50) * (vp.aimX - 50) + (vp.aimY - 34) * (vp.aimY - 34));
+  ok(vd <= 60.01 && vp.aimX <= 103 && vp.aimY >= 2,
+    '超远/出界落点被钳制（60 米内、场内）', vd.toFixed(1) + ' / ' + vp.aimX.toFixed(1) + ',' + vp.aimY.toFixed(1));
+  var vp2 = Pass.validateParams({ aimX: 50.5, aimY: 34, technique: 'inside', height: 'mid' }, passer);
+  var vd2 = Math.sqrt((vp2.aimX - 50) * (vp2.aimX - 50) + (vp2.aimY - 34) * (vp2.aimY - 34));
+  ok(Math.abs(vd2 - 4) < 0.01, '过近落点推到 4 米', vd2.toFixed(2));
+  // 非法脚法/高度被钳制到合法值
+  var vp3 = Pass.validateParams({ aimX: 70, aimY: 34, technique: 'nope', height: 'nope' }, passer);
+  ok(vp3.technique === 'inside' && vp3.height === 'mid', '非法脚法/高度被钳制', vp3.technique + '/' + vp3.height);
+  // 5) autoParams：AI 直接提交最佳接应点坐标（不再量化 8 向）
   var diagCases = [
-    { tx: 70, ty: 54, dir: 1, name: '↗' },
-    { tx: 30, ty: 54, dir: 3, name: '↖' },
-    { tx: 30, ty: 14, dir: 5, name: '↙' },
-    { tx: 70, ty: 14, dir: 7, name: '↘' },
+    { tx: 70, ty: 54 }, { tx: 30, ty: 54 }, { tx: 30, ty: 14 }, { tx: 70, ty: 14 },
+    { tx: 80, ty: 34 }, { tx: 50, ty: 64 }, { tx: 20, ty: 34 }, { tx: 50, ty: 4 },
   ];
   diagCases.forEach(function (c) {
     m.bestPassTarget = function () { return { x: c.tx, y: c.ty }; };
     var pm = Pass.autoParams(m, passer);
-    ok(pm.dir === c.dir, 'autoParams 目标' + c.name + ' 选中 dir=' + c.dir, '实际 dir=' + pm.dir);
+    ok(pm.aimX === c.tx && pm.aimY === c.ty,
+      'autoParams 目标(' + c.tx + ',' + c.ty + ') 原样提交', pm.aimX + ',' + pm.aimY);
   });
-  // 4) 四个正向
-  var cardCases = [
-    { tx: 80, ty: 34, dir: 0, name: '→' },
-    { tx: 50, ty: 64, dir: 2, name: '↑' },
-    { tx: 20, ty: 34, dir: 4, name: '←' },
-    { tx: 50, ty: 4, dir: 6, name: '↓' },
-  ];
-  cardCases.forEach(function (c) {
-    m.bestPassTarget = function () { return { x: c.tx, y: c.ty }; };
-    var pm = Pass.autoParams(m, passer);
-    ok(pm.dir === c.dir, 'autoParams 目标' + c.name + ' 选中 dir=' + c.dir, '实际 dir=' + pm.dir);
-  });
+  // 6) 外脚背弧线：落点向垂直方向偏（距离越远偏越多）
+  var straight = Pass.computeLanding(passer, { aimX: 80, aimY: 34, technique: 'inside', height: 'mid' }, 80);
+  var curved = Pass.computeLanding(passer, { aimX: 80, aimY: 34, technique: 'outside', height: 'mid' }, 80);
+  ok(Math.abs(curved.x - straight.x) < 0.01 && curved.y > straight.y + 0.5,
+    '外脚背落点带弧线偏移', 'dy=' + (curved.y - straight.y).toFixed(2));
 })();
 
 console.log(failures === 0 ? '\nALL TESTS PASSED' : '\n' + failures + ' TEST(S) FAILED');

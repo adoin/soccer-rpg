@@ -144,7 +144,7 @@ cv.addEventListener('click', function (e) {
   for (var i = clickables.length - 1; i >= 0; i--) {
     var c = clickables[i];
     if (mx >= c.x && mx <= c.x + c.w && my >= c.y && my <= c.y + c.h) {
-      c.action();
+      c.action(mx, my);
       return;
     }
   }
@@ -186,32 +186,6 @@ function updatePadFromKeys() {
 
 // ---- 触屏虚拟手柄 ----
 
-// ★ 头顶菜单力量条拖拽（桌面端鼠标；力量选择时可拖动）
-var powerBarDrag = false;
-function powerBarSet(mx) {
-  var hm = ui.hmenu, r = ui.powerBarRect, lvl = hmTop();
-  if (!hm || !r || !lvl || lvl.kind !== 'power') return;
-  var p = Math.round((mx - r.x) / r.w * 95 + 5);
-  p = Math.max(5, Math.min(100, p));
-  if (p !== hm.pass.power) { hm.pass.power = p; requestHmPreview(); }
-}
-cv.addEventListener('mousedown', function (e) {
-  var lvl = hmTop();
-  if (!headMenuOpen() || !lvl || lvl.kind !== 'power' || !ui.powerBarRect) return;
-  var r = ui.powerBarRect, rect = cv.getBoundingClientRect();
-  var mx = (e.clientX - rect.left) * (W / rect.width);
-  var my = (e.clientY - rect.top) * (H / rect.height);
-  if (mx >= r.x - 14 && mx <= r.x + r.w + 14 && my >= r.y - 24 && my <= r.y + r.h + 24) {
-    powerBarDrag = true;
-    powerBarSet(mx);
-  }
-});
-cv.addEventListener('mousemove', function (e) {
-  if (!powerBarDrag) return;
-  var rect = cv.getBoundingClientRect();
-  powerBarSet((e.clientX - rect.left) * (W / rect.width));
-});
-document.addEventListener('mouseup', function () { powerBarDrag = false; });
 
 function touchPos(t) {
   var rect = cv.getBoundingClientRect();
@@ -249,15 +223,11 @@ function menuDpadStep(p) {
   var dx = p.x - DPAD.x, dy = p.y - DPAD.y;
   if (Math.hypot(dx, dy) < DPAD.r * 0.22) { menuDpadDir = null; return; } // 死区
   var lvl0 = hmTop();
-  // ★ 方向罗盘层：方向盘按触摸角度直接选中 8 向（含斜向），不用逐格走
-  if (lvl0 && lvl0.kind === 'dirs' && ui.hmenu) {
-    var ang = Math.atan2(-dy, dx); // 屏幕上为正：右=0，上=π/2
-    var idx = ((Math.round(ang / (Math.PI / 4)) % 8) + 8) % 8;
-    if (idx !== menuDpadDir) {
-      menuDpadDir = idx;
-      ui.hmenu.pass.dir = idx; lvl0.dirSel = idx;
-      requestHmPreview();
-    }
+  // ★ 落点层：方向盘推动光标（按住连推，touchmove 持续触发）
+  if (lvl0 && lvl0.kind === 'aim' && ui.hmenu) {
+    var ax = Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? 1.4 : -1.4) : 0;
+    var ay = Math.abs(dy) >= Math.abs(dx) ? (dy > 0 ? -1.4 : 1.4) : 0; // 屏幕下为正 → 场地 -y
+    if (ax || ay) nudgeAim(ax, ay);
     return;
   }
   var dir = Math.abs(dx) > Math.abs(dy)
@@ -296,6 +266,11 @@ cv.addEventListener('touchstart', function (e) {
       else moveDpad(p);
       used = true;
     }
+    // ★ 落点层：点场上任意位置直接放置落点光标（按钮/方向盘优先）
+    else if (menuMode && hmTop() && hmTop().kind === 'aim' && p.y < 556) {
+      setAimFromScreen(p.x, p.y);
+      used = true;
+    }
   }
   if (used) e.preventDefault();
 }, { passive: false });
@@ -306,30 +281,12 @@ cv.addEventListener('touchmove', function (e) {
       if (headMenuOpen()) menuDpadStep(touchPos(t)); else moveDpad(touchPos(t));
       e.preventDefault();
     }
-    else if (t.identifier === powerBarTouchId) { powerBarSet(touchPos(t).x); e.preventDefault(); }
-  }
-}, { passive: false });
-// ★ 触屏拖动头顶菜单的力量条
-var powerBarTouchId = null;
-cv.addEventListener('touchstart', function (e) {
-  if (!isTouch || screen !== 'game' || !headMenuOpen()) return;
-  var lvl = hmTop();
-  if (!lvl || lvl.kind !== 'power' || !ui.powerBarRect) return;
-  var r = ui.powerBarRect;
-  for (var i = 0; i < e.changedTouches.length; i++) {
-    var t = e.changedTouches[i], p = touchPos(t);
-    if (p.x >= r.x - 20 && p.x <= r.x + r.w + 20 && p.y >= r.y - 30 && p.y <= r.y + r.h + 30) {
-      powerBarTouchId = t.identifier;
-      powerBarSet(p.x);
-      e.preventDefault();
-    }
   }
 }, { passive: false });
 function touchEnd(e) {
   for (var i = 0; i < e.changedTouches.length; i++) {
     var tid = e.changedTouches[i].identifier;
     if (tid === padTouchId) { padTouchId = null; menuDpadDir = null; setPad(0, 0, pad.sprint, pad.slow); }
-    if (tid === powerBarTouchId) { powerBarTouchId = null; }
     if (btnTouchIds[tid]) { releaseBtn(btnTouchIds[tid]); delete btnTouchIds[tid]; }
   }
 }
@@ -407,16 +364,17 @@ function sendCommand(opt, params) {
 }
 // ---------------- 浮动头顶菜单（无背景、多级嵌套） ----------------
 // 决策触发时，选项直接浮现在该球员头顶：零面板、零遮挡，场上内容全可见。
-// ui.hmenu = { playerId, passOpt, pass:{kind,dir,technique,height,power}, preview, previewAt, stack:[level] }
-// level: { kind:'cmds'|'passKind'|'tech'|'height', title, items:[{label,sub,enabled,back,fn}], sel }
-//        { kind:'dirs', title, dirSel } | { kind:'power', title, sel }（sel: 0=踢出 1=返回）
-var PASS_DIR_NAMES = ['→', '↗', '↑', '↖', '←', '↙', '↓', '↘'];
+// ui.hmenu = { playerId, passOpt, pass:{aimX,aimY,technique,height}, preview, previewAt, stack:[level] }
+// level: { kind:'cmds'|'tech'|'height'|'confirm', title, items:[{label,sub,enabled,back,fn}], sel }
+//        { kind:'aim', title }（落点自由光标：方向键/WASD 微调、点击/触摸场上放置）
 var PASS_HEIGHTS = [
   { id: 'low', name: '低球', desc: '贴地快 · 易被断' },
   { id: 'mid', name: '中球', desc: '标准弧线' },
   { id: 'high', name: '高球', desc: '越过防守' },
   { id: 'vhigh', name: '超高球', desc: '很飘 · 难控制' },
 ];
+// 落点范围（米）：与服务端 pass.js 的 AIM_MIN/AIM_MAX 一致
+var AIM_MIN = 4, AIM_MAX = 60;
 
 function headMenuOpen() { return !!(ui.hmenu && ui.hmenu.stack && ui.hmenu.stack.length && state && state.decision); }
 function hmTop() { var h = ui.hmenu; return h ? h.stack[h.stack.length - 1] : null; }
@@ -440,29 +398,66 @@ function openHeadMenu(d) {
       sub: o.rate + '% · ' + o.cost + '体能',
       enabled: o.enabled,
       fn: function () {
-        if (o.id === 'pass') { ui.hmenu.passOpt = o; pushHmLevel(passKindLevel()); }
+        if (o.id === 'pass') { ui.hmenu.passOpt = o; initAim(ui.hmenu); pushHmLevel({ kind: 'aim', title: '落点', sel: 0 }); requestHmPreview(); }
         else sendCommand(o);
       }
     };
   });
   ui.hmenu = {
     playerId: d.playerId, passOpt: null,
-    pass: { kind: 'short', dir: 0, technique: 'inside', height: 'mid', power: 50 },
+    pass: { aimX: 0, aimY: 0, technique: 'inside', height: 'mid' },
     preview: null, previewAt: 0,
     stack: [{ kind: 'cmds', title: null, items: items, sel: firstEnabled(items, 0) }]
   };
 }
-function passKindLevel() {
-  function go(kind) {
-    return function () {
-      ui.hmenu.pass.kind = kind;
-      pushHmLevel({ kind: 'dirs', title: '方向', dirSel: 0 });
-      requestHmPreview();
-    };
+// ★ 落点自由光标（天使之翼式）：方向+力量由"传球者→落点"向量同时决定。
+//   输入是精确意图，能力只决定散布（与服务端 pass.js 一致）。
+function initAim(hm) {
+  var p = playerById(hm.playerId);
+  if (!p) return;
+  var s = hm.passOpt && hm.passOpt.passOpts && hm.passOpt.passOpts.suggest;
+  hm.pass.aimX = s ? s.x : p.x + 15;
+  hm.pass.aimY = s ? s.y : p.y;
+  clampAim(hm);
+}
+function clampAim(hm) {
+  var p = playerById(hm.playerId);
+  if (!p) return;
+  var dx = hm.pass.aimX - p.x, dy = hm.pass.aimY - p.y;
+  var dist = Math.sqrt(dx * dx + dy * dy);
+  if (dist > AIM_MAX) { hm.pass.aimX = p.x + dx / dist * AIM_MAX; hm.pass.aimY = p.y + dy / dist * AIM_MAX; }
+  else if (dist < AIM_MIN) {
+    if (dist < 0.001) hm.pass.aimX = p.x + AIM_MIN;
+    else { hm.pass.aimX = p.x + dx / dist * AIM_MIN; hm.pass.aimY = p.y + dy / dist * AIM_MIN; }
   }
-  return { kind: 'passKind', title: '传球', items: [backItem(),
-    { label: '⚡ 短传', sub: '6~28 米 · 好控制', enabled: true, fn: go('short') },
-    { label: '🚀 长传', sub: '12~60 米 · 更飘', enabled: true, fn: go('long') }], sel: 1 };
+  hm.pass.aimX = clamp(hm.pass.aimX, 2, FIELD.W - 2);
+  hm.pass.aimY = clamp(hm.pass.aimY, 2, FIELD.H - 2);
+}
+function nudgeAim(dx, dy) {
+  var hm = ui.hmenu;
+  if (!hm) return;
+  hm.pass.aimX += dx; hm.pass.aimY += dy;
+  clampAim(hm);
+  requestHmPreview();
+}
+// 屏幕坐标 → 场地坐标（project 的逆运算）
+function unproject(sx, sy) {
+  var depth = 1 - (sy - HORIZON) / (GROUND - HORIZON);
+  depth = clamp(depth, 0, 1);
+  var y = depth * FIELD.H;
+  var persp = 0.5 + 0.5 * (1 - depth);
+  var viewW = 66;
+  var cx = clamp(ballR.x - viewW * 0.45, -6, FIELD.W - viewW + 6);
+  var x = cx + viewW / 2 + (sx - W / 2) / (W * persp) * viewW;
+  return { x: x, y: y };
+}
+function setAimFromScreen(sx, sy) {
+  var hm = ui.hmenu;
+  if (!hm) return;
+  var f = unproject(sx, sy);
+  hm.pass.aimX = f.x; hm.pass.aimY = f.y;
+  clampAim(hm);
+  requestHmPreview();
 }
 function techLevel() {
   var techs = (ui.hmenu.passOpt.passOpts && ui.hmenu.passOpt.passOpts.techniques) || [];
@@ -480,14 +475,14 @@ function heightLevel() {
   PASS_HEIGHTS.forEach(function (h) {
     items.push({
       label: h.name, sub: h.desc, enabled: true,
-      fn: (function (id) { return function () { ui.hmenu.pass.height = id; pushHmLevel({ kind: 'power', title: '力量', sel: 0 }); requestHmPreview(); }; })(h.id)
+      fn: (function (id) { return function () { ui.hmenu.pass.height = id; pushHmLevel({ kind: 'confirm', title: '确认', sel: 0 }); requestHmPreview(); }; })(h.id)
     });
   });
   return { kind: 'height', title: '高度', items: items, sel: 1 };
 }
 function hmConfirmPass() {
   var hm = ui.hmenu;
-  sendCommand(hm.passOpt, { kind: hm.pass.kind, dir: hm.pass.dir, technique: hm.pass.technique, height: hm.pass.height, power: hm.pass.power });
+  sendCommand(hm.passOpt, { aimX: Math.round(hm.pass.aimX * 10) / 10, aimY: Math.round(hm.pass.aimY * 10) / 10, technique: hm.pass.technique, height: hm.pass.height });
 }
 function requestHmPreview() {
   var hm = ui.hmenu;
@@ -495,7 +490,7 @@ function requestHmPreview() {
   var now = Date.now();
   if (now - hm.previewAt < 250) return; // 节流
   hm.previewAt = now;
-  var body = { params: { kind: hm.pass.kind, dir: hm.pass.dir, technique: hm.pass.technique, height: hm.pass.height, power: hm.pass.power } };
+  var body = { params: { aimX: Math.round(hm.pass.aimX * 10) / 10, aimY: Math.round(hm.pass.aimY * 10) / 10, technique: hm.pass.technique, height: hm.pass.height } };
   api.post('/api/match/' + matchId + '/pass-preview', body).then(function (r) {
     if (r.ok && ui.hmenu === hm) {
       hm.preview = r.preview;
@@ -539,8 +534,8 @@ function drawHeadMenu() {
   var headY = pr.y - 24 * s * 1.9 - 14;
   var cx = clamp(pr.x, 150, W - 150);
   var lvl = hmTop();
-  if (lvl.kind === 'dirs') drawHmDirs(hm, lvl, pr, cx);
-  else if (lvl.kind === 'power') drawHmPower(hm, lvl, pr, cx, headY);
+  if (lvl.kind === 'aim') drawHmAim(hm, lvl, pr, cx, headY);
+  else if (lvl.kind === 'confirm') drawHmConfirm(hm, lvl, pr, cx, headY);
   else drawHmList(lvl, pr, cx, headY);
   drawHmLanding(hm);
 }
@@ -566,66 +561,75 @@ function drawHmList(lvl, pr, cx, headY) {
   });
 }
 
-function drawHmDirs(hm, lvl, pr, cx) {
-  var R = 82;
-  var cy = pr.y - 34;
-  hmText('— 方向 —', clamp(pr.x, 150, W - 150), cy - R - 24, 15, '#9fb4dd', false);
-  for (var dir = 0; dir < 8; dir++) {
-    var a = -dir * Math.PI / 4; // dir0=→ 屏幕右；逆时针排布
-    var x = pr.x + Math.cos(a) * R, y = cy + Math.sin(a) * R;
-    var sel = (lvl.dirSel == null ? hm.pass.dir : lvl.dirSel) === dir;
-    hmText(PASS_DIR_NAMES[dir], x, y, sel ? 36 : 28, sel ? '#ffd94a' : '#fff');
-    (function (dd, xx, yy) {
-      addClick(xx - 36, yy - 36, 72, 72, function () {
-        hm.pass.dir = dd; lvl.dirSel = dd;
-        pushHmLevel(techLevel()); requestHmPreview();
-      });
-    })(dir, x, y);
-  }
-  // ←返回放在罗盘下方足够远处，避免与 ↓ 箭头点击区重叠
-  var backY = pr.y + 128;
-  hmText('← 返回', pr.x, backY, 17, '#9fb4dd', false);
-  addClick(pr.x - 70, backY - 20, 140, 40, function () { popHmLevel(); });
-}
-
-function drawHmPower(hm, lvl, pr, cx, headY) {
-  var bw = 230, bh = 10;
-  var barY = headY - 110;
-  if (barY < 84) barY = pr.y + 44;
-  var bx = cx - bw / 2;
-  hmText('— 力量 —', cx, barY - 32, 15, '#9fb4dd', false);
-  // 细轨道：只有线条，没有面板
-  ctx.lineCap = 'round';
-  ctx.strokeStyle = 'rgba(0,0,0,0.55)'; ctx.lineWidth = bh + 5;
-  ctx.beginPath(); ctx.moveTo(bx, barY); ctx.lineTo(bx + bw, barY); ctx.stroke();
-  var grad = ctx.createLinearGradient(bx, 0, bx + bw, 0);
-  grad.addColorStop(0, '#2f9e5b'); grad.addColorStop(0.6, '#ffd94a'); grad.addColorStop(1, '#e05252');
-  ctx.strokeStyle = grad; ctx.lineWidth = bh;
-  ctx.beginPath(); ctx.moveTo(bx, barY); ctx.lineTo(bx + bw * (hm.pass.power - 5) / 95, barY); ctx.stroke();
-  var kx = bx + bw * (hm.pass.power - 5) / 95;
-  ctx.fillStyle = '#fff';
-  ctx.beginPath(); ctx.arc(kx, barY, 11, 0, Math.PI * 2); ctx.fill();
-  ctx.strokeStyle = 'rgba(0,0,0,0.6)'; ctx.lineWidth = 3; ctx.stroke();
-  ui.powerBarRect = { x: bx, y: barY, w: bw, h: bh };
-  addClick(bx - 14, barY - 24, bw + 28, 48, function () {});
-  hmText(hm.pass.power + '%', cx + bw / 2 + 46, barY, 24, '#ffd94a');
-  var pv = hm.preview;
-  hmText(pv ? '预估落点 ±' + pv.r.toFixed(1) + ' 米' : '正在计算落点…', cx, barY + 36, 15, '#ffd94a', false);
+// ★ 落点自由光标：场上十字光标 + 传球者→落点连线 + 距离/力量读数
+//   点击/触摸场上任意点直接放置光标（兜底点击先注册，菜单按钮后注册优先）
+function drawHmAim(hm, lvl, pr, cx, headY) {
+  var p = playerById(hm.playerId);
+  if (!p) return;
+  // 兜底：点场上任意位置放置落点（先注册=低优先级，按钮优先；只覆盖场上区域 y<556，底部 UI 不受影响）
+  addClick(0, 0, W, 556, function (mx, my) { setAimFromScreen(mx, my); });
+  var rp = renderPos[p.id] || p;
+  var pp = project(rp.x, rp.y);
+  var ap = project(hm.pass.aimX, hm.pass.aimY);
+  // 传球者→落点连线
+  ctx.strokeStyle = 'rgba(255,217,74,0.6)'; ctx.lineWidth = 2; ctx.setLineDash([8, 6]);
+  ctx.beginPath(); ctx.moveTo(pp.x, pp.y - 8); ctx.lineTo(ap.x, ap.y); ctx.stroke();
+  ctx.setLineDash([]);
+  // 十字光标
+  var cr = 15;
+  ctx.strokeStyle = '#ffd94a'; ctx.lineWidth = 3;
+  ctx.beginPath(); ctx.arc(ap.x, ap.y, cr, 0, Math.PI * 2); ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(ap.x - cr - 9, ap.y); ctx.lineTo(ap.x - cr + 5, ap.y);
+  ctx.moveTo(ap.x + cr - 5, ap.y); ctx.lineTo(ap.x + cr + 9, ap.y);
+  ctx.moveTo(ap.x, ap.y - cr - 9); ctx.lineTo(ap.x, ap.y - cr + 5);
+  ctx.moveTo(ap.x, ap.y + cr - 5); ctx.lineTo(ap.x, ap.y + cr + 9);
+  ctx.stroke();
+  // 距离·力量读数（力量由距离导出）
+  var dx = hm.pass.aimX - p.x, dy = hm.pass.aimY - p.y;
+  var dist = Math.sqrt(dx * dx + dy * dy);
+  var pow = Math.round((dist - AIM_MIN) / (AIM_MAX - AIM_MIN) * 100);
+  hmText('\u2014 落点 \u2014', cx, headY - 128, 15, '#9fb4dd', false);
+  hmText(dist.toFixed(0) + '米 \u00b7 力量' + pow + '%', cx, headY - 100, 20, '#ffd94a');
+  hmText('方向键/WASD 微调 \u00b7 Shift更精细 \u00b7 点击场上放置', cx, headY - 72, 13, '#9fb4dd', false);
   var items = [
-    { label: '✅ 踢出', fn: hmConfirmPass },
-    { label: '← 返回', back: true, fn: popHmLevel }
+    { label: '\u2705 继续', fn: function () { pushHmLevel(techLevel()); requestHmPreview(); } },
+    { label: '\u2190 返回', back: true, fn: popHmLevel }
   ];
   items.forEach(function (it, i) {
-    var y = barY + 74 + i * 38;
+    var y = headY - 32 + i * 38;
     var sel = (lvl.sel || 0) === i;
-    hmText((sel ? '▶ ' : '') + it.label, cx, y, 21, sel ? '#ffd94a' : (it.back ? '#9fb4dd' : '#fff'));
+    hmText((sel ? '\u25b6 ' : '') + it.label, cx, y, 21, sel ? '#ffd94a' : (it.back ? '#9fb4dd' : '#fff'));
     (function (item, idx) {
       addClick(cx - 100, y - 19, 200, 38, function () { lvl.sel = idx; item.fn(); });
     })(it, i);
   });
 }
 
-// 预估落点圈：直接画在场上（不是弹窗）
+// ★ 确认：预估落点 + 散布 + 踢出/返回
+function drawHmConfirm(hm, lvl, pr, cx, headY) {
+  var pv = hm.preview;
+  var techName = '', heightName = '';
+  var techs = (hm.passOpt.passOpts && hm.passOpt.passOpts.techniques) || [];
+  techs.forEach(function (t) { if (t.id === hm.pass.technique) techName = t.name; });
+  PASS_HEIGHTS.forEach(function (h) { if (h.id === hm.pass.height) heightName = h.name; });
+  hmText('\u2014 确认 \u2014', cx, headY - 118, 15, '#9fb4dd', false);
+  hmText(techName + ' \u00b7 ' + heightName, cx, headY - 90, 17, '#ffffff', false);
+  hmText(pv ? ('预估落点 \u00b1' + pv.r.toFixed(1) + ' 米') : '正在计算落点\u2026', cx, headY - 62, 15, '#ffd94a', false);
+  var items = [
+    { label: '\u2705 踢出', fn: hmConfirmPass },
+    { label: '\u2190 返回', back: true, fn: popHmLevel }
+  ];
+  items.forEach(function (it, i) {
+    var y = headY - 22 + i * 38;
+    var sel = (lvl.sel || 0) === i;
+    hmText((sel ? '\u25b6 ' : '') + it.label, cx, y, 21, sel ? '#ffd94a' : (it.back ? '#9fb4dd' : '#fff'));
+    (function (item, idx) {
+      addClick(cx - 100, y - 19, 200, 38, function () { lvl.sel = idx; item.fn(); });
+    })(it, i);
+  });
+}
+
 function drawHmLanding(hm) {
   var pv = hm.preview;
   if (!pv) return;
@@ -664,32 +668,19 @@ function headMenuKey(e) {
     if (it && it.enabled) it.fn();
     else if (it) toast('体能不足或该球员无法使用');
   }
-  function powerStep(d) {
-    hm.pass.power = Math.max(5, Math.min(100, hm.pass.power + d * 5));
-    requestHmPreview();
-  }
   var handled = true;
-  if (lvl.kind === 'power') {
-    if (k === 'arrowleft' || k === 'a') powerStep(-1);
-    else if (k === 'arrowright' || k === 'd') powerStep(1);
-    else if (k === 'arrowup' || k === 'w' || k === 'arrowdown' || k === 's') lvl.sel = (lvl.sel || 0) === 0 ? 1 : 0;
+  if (lvl.kind === 'aim') {
+    // ★ 落点光标：方向键/WASD 精细移动（Shift 更精细），回车确认
+    var step = e.shiftKey ? 0.4 : 1.5;
+    if (k === 'arrowup' || k === 'w') nudgeAim(0, step);
+    else if (k === 'arrowdown' || k === 's') nudgeAim(0, -step);
+    else if (k === 'arrowleft' || k === 'a') nudgeAim(-step, 0);
+    else if (k === 'arrowright' || k === 'd') nudgeAim(step, 0);
+    else if (k === 'enter' || k === ' ') { pushHmLevel(techLevel()); requestHmPreview(); }
+    else handled = false;
+  } else if (lvl.kind === 'confirm') {
+    if (k === 'arrowup' || k === 'w' || k === 'arrowdown' || k === 's') lvl.sel = (lvl.sel || 0) === 0 ? 1 : 0;
     else if (k === 'enter' || k === ' ') { if ((lvl.sel || 0) === 0) hmConfirmPass(); else popHmLevel(); }
-    else handled = false;
-  } else if (lvl.kind === 'dirs') {
-    var map = { arrowright: 0, arrowup: 2, arrowleft: 4, arrowdown: 6 };
-    if (Object.prototype.hasOwnProperty.call(map, k)) { lvl.dirSel = map[k]; hm.pass.dir = map[k]; requestHmPreview(); }
-    else if (k === 'enter' || k === ' ') { hm.pass.dir = (lvl.dirSel == null ? hm.pass.dir : lvl.dirSel); pushHmLevel(techLevel()); requestHmPreview(); }
-    // ★ Q/E 在 8 向罗盘上旋转选择（含斜向），方向键只管上/下/左/右四正向
-    else if (k === 'q' || k === 'e') {
-      var cur = lvl.dirSel == null ? hm.pass.dir : lvl.dirSel;
-      var nd = (cur + (k === 'e' ? 1 : 7)) % 8;
-      lvl.dirSel = nd; hm.pass.dir = nd; requestHmPreview();
-    }
-    else handled = false;
-  } else {
-    if (k === 'arrowup' || k === 'w') moveList(-1);
-    else if (k === 'arrowdown' || k === 's') moveList(1);
-    else if (k === 'enter' || k === ' ') activateList();
     else handled = false;
   }
   if (handled) e.preventDefault();
