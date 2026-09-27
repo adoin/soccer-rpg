@@ -146,9 +146,15 @@ function correctLanding(match, passer, ax, ay) {
   var touch = (s.firstTouch == null ? 10 : s.firstTouch);
   var k = 0.35 + 0.45 * (rawTechnique(passer) / 20) * (0.6 + 0.4 * touch / 20);
   k = clamp(k, 0, 0.85);
+  // ★ 理想接球点：按接应队员的移动方向做提前量（lead），而不是他的当前位置。
+  //   _px/_py 是上一 tick 位置（tick=100ms），提前 0.6 秒（6 tick），钳制在场内。
+  var vx = (best._px != null ? best.x - best._px : 0);
+  var vy = (best._py != null ? best.y - best._py : 0);
+  var idealX = clamp(best.x + vx * 6, 2, FIELD_W - 2);
+  var idealY = clamp(best.y + vy * 6, 2, FIELD_H - 2);
   return {
-    x: ax + (best.x - ax) * k,
-    y: ay + (best.y - ay) * k,
+    x: ax + (idealX - ax) * k,
+    y: ay + (idealY - ay) * k,
     target: best,
   };
 }

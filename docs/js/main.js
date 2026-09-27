@@ -238,6 +238,18 @@ var menuDpadDir = null;
 function menuDpadStep(p) {
   var dx = p.x - DPAD.x, dy = p.y - DPAD.y;
   if (Math.hypot(dx, dy) < DPAD.r * 0.22) { menuDpadDir = null; return; } // 死区
+  var lvl0 = hmTop();
+  // ★ 方向罗盘层：方向盘按触摸角度直接选中 8 向（含斜向），不用逐格走
+  if (lvl0 && lvl0.kind === 'dirs' && ui.hmenu) {
+    var ang = Math.atan2(-dy, dx); // 屏幕上为正：右=0，上=π/2
+    var idx = ((Math.round(ang / (Math.PI / 4)) % 8) + 8) % 8;
+    if (idx !== menuDpadDir) {
+      menuDpadDir = idx;
+      ui.hmenu.pass.dir = idx; lvl0.dirSel = idx;
+      requestHmPreview();
+    }
+    return;
+  }
   var dir = Math.abs(dx) > Math.abs(dy)
     ? (dx > 0 ? 'ArrowRight' : 'ArrowLeft')
     : (dy > 0 ? 'ArrowDown' : 'ArrowUp');
@@ -644,6 +656,12 @@ function headMenuKey(e) {
     var map = { arrowright: 0, arrowup: 2, arrowleft: 4, arrowdown: 6 };
     if (Object.prototype.hasOwnProperty.call(map, k)) { lvl.dirSel = map[k]; hm.pass.dir = map[k]; requestHmPreview(); }
     else if (k === 'enter' || k === ' ') { hm.pass.dir = (lvl.dirSel == null ? hm.pass.dir : lvl.dirSel); pushHmLevel(techLevel()); requestHmPreview(); }
+    // ★ Q/E 在 8 向罗盘上旋转选择（含斜向），方向键只管上/下/左/右四正向
+    else if (k === 'q' || k === 'e') {
+      var cur = lvl.dirSel == null ? hm.pass.dir : lvl.dirSel;
+      var nd = (cur + (k === 'e' ? 1 : 7)) % 8;
+      lvl.dirSel = nd; hm.pass.dir = nd; requestHmPreview();
+    }
     else handled = false;
   } else {
     if (k === 'arrowup' || k === 'w') moveList(-1);
@@ -1065,7 +1083,7 @@ function drawPlayerCard(x, y, w, h) {
   text('Lv.' + p.level + '  ' + skill, x + 68, y + 66, 12, '#ffd94a', 'left');
 }
 
-var CMD_ICONS = { dribble: '💨', pass: '➡️', shoot: '⚽', special: '🔥', feint: '🌀', retreat: '↩️' };
+var CMD_ICONS = { dribble: '💨', pass: '➡️', protect: '🛡️', shoot: '⚽', special: '🔥', feint: '🌀', retreat: '↩️' };
 
 function drawIdleHint(x, y, w, h) {
   panel(x, y, w, h);

@@ -503,6 +503,8 @@ Match.prototype.buildOptions = function (p) {
       o.passOpts = { techniques: Pass.availableTechniques(p) };
       return o;
     })(opt('pass', 72 + (FM.pass(p) * ef - 60) * 0.7 - pressure)),
+    // ★ 护球：身体对抗（强壮+平衡）对抢断，成功则卡住逼抢者
+    opt('protect', 68 + ((FM.v(p, 'strength') + FM.v(p, 'balance')) / 2 * ef - FM.defend(near.player) * defEf) * 0.7),
     opt('shoot', 78 + (FM.shoot(p) * ef - FM.keep(keeper) * keepEf) * 1.1 - distGoal * 0.5),
     opt('special', 84 + ((FM.shoot(p) * ef + 8) - FM.keep(keeper) * keepEf) * 1.1 - distGoal * 0.32),
     opt('feint', 62 + (FM.dribble(p) * ef - FM.defend(near.player) * defEf) * 0.9),
@@ -683,6 +685,21 @@ Match.prototype.resolveAction = function (p, commandId, rate, params) {
         this.ball.x = corr.x; this.ball.y = corr.y;
         text = p.name + ' 的' + techName + kindName + '被 ' + near.player.name + ' 拦截！';
         cut = 'pass-lose';
+      }
+      break;
+    }
+    case 'protect': {
+      // ★ 护球：用身体卡住位置，不推进；成功则逼抢者被挡开 1.8 秒，为队友跑位争取时间
+      var presser = near.player;
+      if (success) {
+        presser.beatenUntil = this.now + 1800;
+        var awayA = Math.atan2(p.y - presser.y, p.x - presser.x);
+        p.x = clamp(p.x + Math.cos(awayA) * 1.2, 2, FIELD.W - 2);
+        p.y = clamp(p.y + Math.sin(awayA) * 1.2, 2, FIELD.H - 2);
+        text = p.name + ' 用身体护住皮球，' + presser.name + ' 被卡在身后！';
+      } else {
+        this.ball.ownerId = presser.id;
+        text = p.name + ' 护球失误，被 ' + presser.name + ' 从身后捅掉！';
       }
       break;
     }

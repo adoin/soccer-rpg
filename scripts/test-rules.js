@@ -151,16 +151,20 @@ console.log('== 行为层：数值驱动决策（确定性，零随机） ==');
   ok(r1 === 78.5 && r2 === null && r3 === null, '反越位时机：高手压线、低手照跑、安全目标不管', JSON.stringify({ r1: r1, r2: r2, r3: r3 }));
 })();
 
-// 10. defensiveShape：高纪律防线保持平行
+// 10. defensiveShape：高纪律防线保持平行（以球为锚，随球进退）
 (function () {
   var m = newMatch(31);
   m.now = 0;
   set(m, 'a2', 70, 36); set(m, 'a3', 66, 34); set(m, 'a4', 62, 30); // 参差不齐
   ['a2', 'a3', 'a4'].forEach(function (id) { var q = P(m, id); ['anticipation','positioning','decisions','vision'].forEach(function(k){ q.stats[k] = 17; }); });
-  ball(m, 40, 34); // 球在远处
+  ball(m, 40, 34); // 球在远处：vBall=65 → 防线压上到距本方球门 58 米处（x=47），三人平行
   var out = Behavior.defensiveShape(m, 'away', {});
   var xs = ['a2', 'a3', 'a4'].map(function (id) { return out[id].x; });
-  ok(xs[0] === 62 && xs[1] === 62 && xs[2] === 62, '高纪律防线向锚点对齐保持平行', JSON.stringify(xs));
+  ok(xs[0] === 47 && xs[1] === 47 && xs[2] === 47, '高纪律防线以球为锚保持平行', JSON.stringify(xs));
+  ball(m, 90, 34); // 球逼近本方球门：vBall=15（危险）→ 防线退到距球门 23 米（x=82），不压上造越位
+  var out2 = Behavior.defensiveShape(m, 'away', {});
+  var xs2 = ['a2', 'a3', 'a4'].map(function (id) { return out2[id].x; });
+  ok(xs2[0] === 82 && xs2[1] === 82 && xs2[2] === 82, '危险时防线随球回退、只平行站住', JSON.stringify(xs2));
 })();
 
 // 11. defensiveShape：低纪律防线各回各家
