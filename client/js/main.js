@@ -377,6 +377,19 @@ function refresh() {
     state.players.forEach(function (p) {
       if (!renderPos[p.id]) renderPos[p.id] = { x: p.x, y: p.y };
     });
+    // ★ 球权转换提示：己方持球 → 对方持球（比赛中），toast 提示，避免"我的人被断了却没任何事件"的困惑
+    //   说明：被动决策菜单只在"我方持球被压迫"时触发；对方断球后不弹菜单，直接继续比赛
+    var homeBall = false, awayBall = false;
+    state.players.forEach(function (p) {
+      if (p.hasBall) { if (p.team === 'home') homeBall = true; else awayBall = true; }
+    });
+    if (ui._prevHomeBall && !homeBall && awayBall && state.phase === 'play') {
+      toast('⚠️ 对方断球！');
+    }
+    if (ui._prevAwayBall && !awayBall && homeBall && state.phase === 'play') {
+      toast('⚽ 夺回球权！');
+    }
+    ui._prevHomeBall = homeBall; ui._prevAwayBall = awayBall;
     // 输入心跳：保持操控输入新鲜（服务器 2 秒无有效操作则 AI 接管）
     sendInput();
   }).catch(function () {});
@@ -940,15 +953,8 @@ function drawActors(t) {
       ctx.ellipse(pr.x, pr.y + 2, 16 * s, 6 * s, 0, 0, Math.PI * 2);
       ctx.stroke();
     }
-    // 被玩家直接操控标记（绿圈）
-    if (state.controlledId && p.id === state.controlledId) {
-      ctx.strokeStyle = '#51ff9a'; ctx.lineWidth = 3;
-      ctx.setLineDash([8, 5]);
-      ctx.beginPath();
-      ctx.ellipse(pr.x, pr.y + 2, 22 * s, 9 * s, 0, 0, Math.PI * 2);
-      ctx.stroke();
-      ctx.setLineDash([]);
-    }
+    // ★ 被玩家直接操控标记（绿圈）改到所有球员画完后统一置顶绘制，避免被身前球员精灵遮挡
+    //   （之前画在各自脚下，会被更靠前的对方球员盖住，看起来像"在控制红方"）
     var frames = framesFor(p);
     var img = frames[animFrame];
     var dw = 16 * s * 1.9, dh = 24 * s * 1.9;
@@ -970,6 +976,29 @@ function drawActors(t) {
   var bp = project(ballR.x, ballR.y);
   var bs = 8 * bp.s * 1.6;
   ctx.drawImage(ballImg, bp.x - bs / 2, bp.y - bs - 2, bs, bs);
+
+  // ★ 被玩家直接操控标记（绿圈）：置顶绘制，不被任何球员遮挡
+  if (state.controlledId) {
+    for (var ci2 = 0; ci2 < state.players.length; ci2++) {
+      var cp = state.players[ci2];
+      if (cp.id !== state.controlledId) continue;
+      var crp = renderPos[cp.id] || cp;
+      var cpr = project(crp.x, crp.y);
+      ctx.strokeStyle = '#51ff9a'; ctx.lineWidth = 3;
+      ctx.setLineDash([8, 5]);
+      ctx.beginPath();
+      ctx.ellipse(cpr.x, cpr.y + 2, 22 * cpr.s, 9 * cpr.s, 0, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      // 头顶小三角，进一步标明"这是你的人"
+      ctx.fillStyle = '#51ff9a';
+      var ty = cpr.y - 34 * cpr.s - 10;
+      ctx.beginPath();
+      ctx.moveTo(cpr.x, ty + 10); ctx.lineTo(cpr.x - 7, ty); ctx.lineTo(cpr.x + 7, ty);
+      ctx.closePath(); ctx.fill();
+      break;
+    }
+  }
 
 }
 
