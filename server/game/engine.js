@@ -116,6 +116,18 @@ Match.prototype.resetPositions = function (kickoffTeam) {
     p.holdingUntil = 0; // 急停收步中（行为层）
   });
   this.ball.x = FIELD.W / 2; this.ball.y = FIELD.H / 2;
+  // ★ 开球规则：非开球方球员必须在 9.15 米开外（之前客队前锋按阵型站在 5 米处，
+  //   保护期一过决策菜单立刻弹出劫持键盘，用户还没带两步球）
+  var bx = this.ball.x, by = this.ball.y;
+  this.players.forEach(function (p) {
+    if ((kickoffTeam === 'home' ? p.team !== 'home' : p.team !== 'away')) {
+      var d = Math.sqrt(Math.pow(p.x - bx, 2) + Math.pow(p.y - by, 2));
+      if (d < 9.15 && d > 0.001) {
+        p.x = bx + (p.x - bx) / d * 9.15;
+        p.y = by + (p.y - by) / d * 9.15;
+      } else if (d <= 0.001) { p.x = bx + 9.15; }
+    }
+  });
   // 开球球员：开球方的 10 号
   var kicker = this.byId[(kickoffTeam === 'home' ? 'h' : 'a') + '10'];
   this.ball.ownerId = kicker.id;
@@ -654,10 +666,11 @@ Match.prototype.simulate = function (dt) {
   this.ball.y = carrier.y + 1.0;
 
   // --- 决策点判定（仅用户球队） ---
+  // ★ 逼近半径 6 米：防守队员真贴上来才暂停弹菜单（之前 15 米，开球 4 秒就弹，键盘全被菜单劫持）
   if (carrier.team === 'home' && this.now >= this.nextDecisionAt) {
     var near = this.nearestOpponent(carrier);
     var traveled = dist(carrier, this.lastDecisionPos);
-    if (near.dist < 15 || carrier.x > 76 || traveled > 24) {
+    if (near.dist < 6 || carrier.x > 76 || traveled > 24) {
       this.enterDecision(carrier);
       return;
     }
