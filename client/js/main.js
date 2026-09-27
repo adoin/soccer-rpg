@@ -682,6 +682,12 @@ function headMenuKey(e) {
     if (k === 'arrowup' || k === 'w' || k === 'arrowdown' || k === 's') lvl.sel = (lvl.sel || 0) === 0 ? 1 : 0;
     else if (k === 'enter' || k === ' ') { if ((lvl.sel || 0) === 0) hmConfirmPass(); else popHmLevel(); }
     else handled = false;
+  } else {
+    // 普通列表（顶层指令/脚法/高度）：方向键/WASD 移动，回车/空格确认
+    if (k === 'arrowup' || k === 'w') moveList(-1);
+    else if (k === 'arrowdown' || k === 's') moveList(1);
+    else if (k === 'enter' || k === ' ') activateList();
+    else handled = false;
   }
   if (handled) e.preventDefault();
   return handled;
