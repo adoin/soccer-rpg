@@ -67,7 +67,8 @@ function distGoal(p, attackingTeam) {
 
 // ---------- 抢断判定（随机层） ----------
 // ctx: { fromBehind, speedHigh, tactical, attackPromising }
-function judgeTackle(match, defender, attacker, ctx) {
+// ★ tacklePreview：纯计算干净抢断/犯规概率（不掷骰），供防守决策菜单显示成功率
+function tacklePreview(match, defender, attacker, ctx) {
   ctx = ctx || {};
   var dEff = FM.defend(defender) * effFactor(defender);
   var aEff = FM.dribble(attacker) * effFactor(attacker);
@@ -78,6 +79,11 @@ function judgeTackle(match, defender, attacker, ctx) {
     0.08 + (aggr - 55) * 0.010 + (ctx.fromBehind ? 0.18 : 0) + (ctx.speedHigh ? 0.06 : 0) + (ctx.tactical ? 0.05 : 0),
     0.02, 0.55
   );
+  return { pClean: pClean, pFoul: pFoul };
+}
+function judgeTackle(match, defender, attacker, ctx) {
+  var prev = tacklePreview(match, defender, attacker, ctx);
+  var pClean = prev.pClean, pFoul = prev.pFoul;
 
   var r = match.rng();
   if (r < pClean) return { outcome: 'clean', pClean: pClean, pFoul: pFoul };
@@ -183,6 +189,7 @@ module.exports = {
   inBox: inBox,
   distGoal: distGoal,
   judgeTackle: judgeTackle,
+  tacklePreview: tacklePreview,
   judgeFoul: judgeFoul,
   applyCards: applyCards,
   cardText: cardText,

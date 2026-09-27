@@ -86,6 +86,7 @@ function Match(id, options) {
   };
 
   this.nextDecisionAt = 0;  // 下次允许触发决策点的时间
+  this.nextDefDecisionAt = 0; // 下次允许触发防守决策（上抢菜单）的时间
   this.lastDecisionPos = { x: 0, y: 0 };
   this.aiCooldownUntil = 0; // AI 决策冷却
   this.kickoffTeam = 'home';
@@ -318,6 +319,7 @@ Match.prototype.tick = function () {
         this.phase = 'play';
         // 开球保护：从真正开球（进入 play）起算 4.5 秒，避免对方 10 号贴脸瞬间触发决策
         this.nextDecisionAt = this.now + 4500;
+        this.nextDefDecisionAt = this.now + 4500;
       }
       break;
     case 'play':
@@ -661,6 +663,19 @@ Match.prototype.simulate = function (dt) {
     }
   }
 
+  // --- 防守决策（用户球队）：玩家正直接操控的防守球员贴近对方持球者 → 暂停并弹出上抢/卡位菜单
+  //   与进攻决策对称：触发权在玩家手里（贴上去才会弹，不想抢就别贴），AI 接管/门将/被晃倒时不触发
+  if (carrier.team === 'away' && this.now >= this.nextDefDecisionAt) {
+    var c = this.control;
+    var dp = this.byId[c.playerId];
+    if (dp && dp.team === 'home' && dp.pos !== 'GK' && !dp.sentOff &&
+        this.now >= dp.beatenUntil && this.now >= dp.frozenUntil &&
+        this.now - c.activeStamp <= 2000 && dist(dp, carrier) < 4) {
+      this.enterDefDecision(dp, carrier);
+      return;
+    }
+  }
+
   // --- AI 决策（客队持球） ---
   if (carrier.team === 'away' && this.now >= this.aiCooldownUntil) {
     this.aiDecide(carrier);
@@ -676,6 +691,31 @@ Match.prototype.enterDecision = function (carrier) {
     options: this.buildOptions(carrier),
   };
   this.lastDecisionPos = { x: carrier.x, y: carrier.y };
+};
+
+// ★ 防守决策：玩家操控的防守球员贴近对方持球者时触发（对称于进攻决策）。
+//   选项：上抢（抢断对决，干净断下/被过掉/犯规）/ 卡位（不贸然出脚，继续比赛）。
+Match.prototype.enterDefDecision = function (defender, carrier) {
+  this.phase = 'decision';
+  // 从身后下脚更容易犯规：防守方在持球者身后（远离对方进攻方向一侧）则 fromBehind
+  var behind = defender.x > carrier.x + 1; // 客队向左攻，身后 = 更靠右
+  var prev = Foul.tacklePreview(this, defender, carrier, { fromBehind: behind, speedHigh: true });
+  function dopt(id, rate) {
+    var def = C.COMMANDS.filter(function (c) { return c.id === id; })[0];
+    return {
+      id: id, name: def.name, cost: def.cost, desc: def.desc,
+      rate: Math.round(clamp(rate, 1, 99)),
+      enabled: defender.stamina >= def.cost,
+    };
+  }
+  this.decision = {
+    playerId: defender.id,
+    def: true, // 防守决策标记：结算后走防守冷却，不影响进攻决策计时
+    options: [
+      dopt('tackle', prev.pClean * 100),
+      dopt('jockey', 100),
+    ],
+  };
 };
 
 // 为持球者生成 6 个指令（含服务器计算的成功率与体能消耗）
@@ -765,9 +805,11 @@ Match.prototype.applyCommand = function (playerId, commandId, params) {
   p.stamina = Math.max(0, p.stamina - option.cost);
 
   var result = this.resolveAction(p, commandId, option.rate, params);
+  var wasDef = !!(this.decision && this.decision.def);
 
   // 结算后恢复比赛；若刚进了球（phase 已被 goal() 置为 'goal'），则保持进球庆祝流程
   this.decision = null;
+  if (wasDef) this.nextDefDecisionAt = this.now + 4000; // 防守决策冷却，避免菜单连弹
   if (this.phase === 'decision') {
     this.phase = 'play';
     this.nextDecisionAt = this.now + 2200;
@@ -978,6 +1020,37 @@ Match.prototype.resolveAction = function (p, commandId, rate, params) {
     case 'retreat': {
       p.retreatTarget = { x: clamp(p.x - 16 * dir, 6, FIELD.W - 6), y: FIELD.H / 2 };
       text = p.name + ' 带球回撤，稳住节奏。';
+      success = true;
+      break;
+    }
+    case 'tackle': {
+      // ★ 防守决策·上抢：与持球者的抢断对决（干净断下 / 被过掉 / 犯规），直接走 judgeTackle 的三段掷骰
+      var carrier = this.byId[this.ball.ownerId];
+      if (!carrier || carrier.team !== 'away' || carrier.id === p.id) {
+        text = p.name + ' 收住动作，继续卡位。';
+        success = true;
+        break;
+      }
+      var behind = p.x > carrier.x + 1;
+      var t = Foul.judgeTackle(this, p, carrier, { fromBehind: behind, speedHigh: true });
+      if (t.outcome === 'clean') {
+        this.ball.ownerId = p.id;
+        text = p.name + ' 干净地从 ' + carrier.name + ' 脚下断下皮球！';
+        cut = 'dribble-lose'; // 复用拼抢对决演出图（防守方获胜视角）
+        success = true;
+      } else if (t.outcome === 'beaten') {
+        p.beatenUntil = this.now + 2000;
+        text = p.name + ' 上抢落空，被 ' + carrier.name + ' 闪了过去！';
+        cut = 'dribble-win'; // 复用拼抢对决演出图（进攻方获胜视角）
+        success = false;
+      } else {
+        return this.applyFoulResult(t.foul);
+      }
+      break;
+    }
+    case 'jockey': {
+      // ★ 防守决策·卡位：不贸然出脚，继续比赛
+      text = p.name + ' 稳住重心，继续卡位防守。';
       success = true;
       break;
     }
@@ -1278,6 +1351,7 @@ Match.prototype.serialize = function () {
     }),
     referee: { name: this.referee.name, strictness: this.referee.strictness },
     controlledId: this.control.playerId, // 当前被玩家直接操控的球员
+    controlActive: (this.now - this.control.activeStamp) <= 2000, // 2 秒内有有效操作→玩家实控，否则 AI 接管
     ball: { x: +this.ball.x.toFixed(2), y: +this.ball.y.toFixed(2) },
     decision: this.decision ? {
       playerId: this.decision.playerId,

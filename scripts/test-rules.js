@@ -472,5 +472,67 @@ console.log('== 传球自由落点：输入即意图，能力只定散布（场�
     '外脚背落点带弧线偏移', 'dy=' + (curved.y - straight.y).toFixed(2));
 })();
 
+// ---------- 防守决策（上抢菜单） ----------
+(function () {
+  function defMatch(seed) {
+    var m = newMatch(seed);
+    m.phase = 'play';
+    m.aiCooldownUntil = 1e15;   // 压住客队 AI 决策
+    m.nextDecisionAt = 1e15;    // 压住进攻决策
+    m.nextDefDecisionAt = 0;
+    // 客队 a10 持球在中场
+    set(m, 'a10', 60, 34); m.ball.ownerId = 'a10'; ball(m, 60, 34);
+    // 主队 h4 贴上去（2 米内），其余全部摆远
+    set(m, 'h4', 62, 34);
+    ['h2', 'h3', 'h5', 'h6', 'h7', 'h8', 'h9', 'h10', 'h11', 'h1'].forEach(function (id, i) { set(m, id, 20, 8 + i * 5); });
+    ['a2', 'a3', 'a4', 'a5', 'a6', 'a7', 'a8', 'a9', 'a11', 'a1'].forEach(function (id, i) { set(m, id, 90, 8 + i * 5); });
+    m.control.playerId = 'h4';
+    m.control.activeStamp = m.now; // 正在被玩家操控
+    return m;
+  }
+  // 1) 贴近 + 主动操控 → 触发防守决策，选项为上抢/卡位
+  var m = defMatch(701);
+  m.tick();
+  ok(m.phase === 'decision' && !!m.decision && m.decision.def === true && m.decision.playerId === 'h4',
+    '防守球员贴近对方持球者触发防守决策', m.phase);
+  var ids = (m.decision.options || []).map(function (o) { return o.id; });
+  ok(ids.join(',') === 'tackle,jockey', '防守决策选项为上抢/卡位', ids.join(','));
+  var tk = m.decision.options[0];
+  ok(tk.rate >= 1 && tk.rate <= 99 && tk.cost === 4, '上抢显示成功率与体能消耗', tk.rate + '/' + tk.cost);
+  // 2) tacklePreview 纯计算：同一局面两次调用结果一致（不掷骰）
+  var p1 = Foul.tacklePreview(m, P(m, 'h4'), P(m, 'a10'), {});
+  var p2 = Foul.tacklePreview(m, P(m, 'h4'), P(m, 'a10'), {});
+  ok(p1.pClean === p2.pClean && p1.pClean >= 0.05 && p1.pClean <= 0.88, 'tacklePreview 确定性纯计算', p1.pClean.toFixed(3));
+  // 3) 执行上抢：三种结局各自状态正确
+  var r = m.applyCommand('h4', 'tackle');
+  ok(r.ok === true, '上抢指令被接受');
+  var la = m.lastAction;
+  var sane = (la && /断下|落空|犯规|点球|任意球|卡/.test(la.text || ''));
+  ok(!!sane, '上抢结算文字合理', la && la.text);
+  // 4) 结算后有防守冷却，不会原地连弹
+  ok(m.nextDefDecisionAt > m.now, '上抢后进入防守冷却', String(m.nextDefDecisionAt - m.now));
+  // 5) 玩家 2 秒无操作（AI 接管）→ 不触发
+  var m2 = defMatch(702);
+  m2.control.activeStamp = m2.now - 3000;
+  m2.tick();
+  ok(m2.phase === 'play' && !m2.decision, 'AI 接管的防守球员不触发防守决策', m2.phase);
+  // 6) 距离远 → 不触发
+  var m3 = defMatch(703);
+  set(m3, 'h4', 75, 34);
+  m3.tick();
+  ok(m3.phase === 'play' && !m3.decision, '距离过远不触发防守决策', m3.phase);
+  // 7) 门将不能触发防守决策
+  var m4 = defMatch(704);
+  m4.control.playerId = 'h1';
+  set(m4, 'h1', 62, 34);
+  m4.tick();
+  ok(m4.phase === 'play' && !m4.decision, '门将不触发防守决策', m4.phase);
+  // 8) 卡位：直接恢复比赛
+  var m5 = defMatch(705);
+  m5.tick();
+  var r5 = m5.applyCommand('h4', 'jockey');
+  ok(r5.ok === true && m5.phase === 'play' && m5.ball.ownerId === 'a10', '卡位后比赛继续、球权不变', m5.phase);
+})();
+
 console.log(failures === 0 ? '\nALL TESTS PASSED' : '\n' + failures + ' TEST(S) FAILED');
 process.exit(failures === 0 ? 0 : 1);

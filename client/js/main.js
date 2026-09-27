@@ -87,6 +87,7 @@ function setPad(dx, dy, sprint, slow) {
   if (dx !== pad.dx || dy !== pad.dy || sprint !== pad.sprint || slow !== pad.slow) {
     pad.dx = dx; pad.dy = dy; pad.sprint = sprint; pad.slow = slow;
     sendInput();
+    pokeRefresh();
   }
 }
 
@@ -315,8 +316,16 @@ function startMatch() {
     for (var k in keys) keys[k] = false;
     ui.pauseOpen = false; ui.overlay = null; ui.choosing = false; ui.exitArm = 0;
     refresh();
-    setInterval(refresh, 300);
+    // ★ 状态轮询从 300ms 提到 120ms（与服务器 tick 对齐）：直接操控时按键→画面的延迟明显缩短
+    if (ui.refreshTimer) clearInterval(ui.refreshTimer);
+    ui.refreshTimer = setInterval(refresh, 120);
   });
+}
+// ★ 输入变化后 60ms 内补拉一次状态：让转向/启停立刻反映到画面上，而不是等下一个轮询周期
+var _pokeT = null;
+function pokeRefresh() {
+  if (_pokeT || screen !== 'game' || !matchId) return;
+  _pokeT = setTimeout(function () { _pokeT = null; refresh(); }, 60);
 }
 function refresh() {
   if (screen !== 'game' || !matchId) return;
@@ -360,6 +369,7 @@ function sendCommand(opt, params) {
   if (params) body.params = params;
   api.post('/api/match/' + matchId + '/command', body).then(function (r) {
     if (!r.ok) { toast(r.error || '指令发送失败'); ui.choosing = false; }
+    pokeRefresh(); // 指令秒出结果（本地引擎），立刻拉状态播演出
   }).catch(function () { ui.choosing = false; });
 }
 // ---------------- 浮动头顶菜单（无背景、多级嵌套） ----------------
@@ -975,12 +985,15 @@ function drawActors(t) {
   ctx.drawImage(ballImg, bp.x - bs / 2, bp.y - bs - 2, bs, bs);
 
   // ★ 被玩家直接操控标记（绿圈）：置顶绘制，不被任何球员遮挡
+  //   2 秒无操作被 AI 接管时变暗，提示"动一下方向键拿回控制"
   if (state.controlledId) {
     for (var ci2 = 0; ci2 < state.players.length; ci2++) {
       var cp = state.players[ci2];
       if (cp.id !== state.controlledId) continue;
       var crp = renderPos[cp.id] || cp;
       var cpr = project(crp.x, crp.y);
+      ctx.save();
+      if (!state.controlActive) ctx.globalAlpha = 0.35;
       ctx.strokeStyle = '#51ff9a'; ctx.lineWidth = 3;
       ctx.setLineDash([8, 5]);
       ctx.beginPath();
@@ -993,6 +1006,7 @@ function drawActors(t) {
       ctx.beginPath();
       ctx.moveTo(cpr.x, ty + 10); ctx.lineTo(cpr.x - 7, ty); ctx.lineTo(cpr.x + 7, ty);
       ctx.closePath(); ctx.fill();
+      ctx.restore();
       break;
     }
   }
@@ -1124,17 +1138,18 @@ function drawPlayerCard(x, y, w, h) {
   text('Lv.' + p.level + '  ' + skill, x + 68, y + 66, 12, '#ffd94a', 'left');
 }
 
-var CMD_ICONS = { dribble: '💨', pass: '➡️', protect: '🛡️', shoot: '⚽', special: '🔥', feint: '🌀', retreat: '↩️' };
+var CMD_ICONS = { dribble: '💨', pass: '➡️', protect: '🛡️', shoot: '⚽', special: '🔥', feint: '🌀', retreat: '↩️', tackle: '🦵', jockey: '🧱' };
 
 function drawIdleHint(x, y, w, h) {
   panel(x, y, w, h);
-  var msg = isTouch ? '拖左盘移动（绿圈球员）；持球遇防守时在球员头顶选指令'
-                    : 'WASD 移动（绿圈球员）；持球遇防守时在球员头顶选指令';
+  var msg = isTouch ? '拖左盘移动（绿圈球员）；持球遇防守时在球员头顶选指令；防守贴近对方持球者可上抢'
+                    : 'WASD 移动（绿圈球员）；持球遇防守时在球员头顶选指令；防守贴近对方持球者可上抢';
   if (state) {
     if (state.phase === 'kickoff') msg = '开球！';
     else if (state.phase === 'goal') msg = '⚽ 进球！';
     else if (state.phase === 'halftime') msg = '中场休息…';
     else if (state.paused) msg = '已暂停';
+    else if (state.controlActive === false) msg = '绿圈球员正由 AI 接管——动一下方向键拿回控制';
   }
   text(msg, x + w / 2, y + h / 2, 17, '#9fb4dd', 'center');
 }
@@ -1289,25 +1304,46 @@ function drawCutscene(a, im) {
 // ---------------- 覆盖层 ----------------
 function drawStatusOverlay() {
   ctx.fillStyle = 'rgba(4,6,14,0.75)'; ctx.fillRect(0, 0, W, H);
-  var x = 340, y = 110, w = 600, h = 500;
+  var x = 250, y = 56, w = 780, h = 608;
   panel(x, y, w, h);
-  text('球员状态 - 青鹰高校', x + w / 2, y + 32, 24, '#fff', 'center', true);
-  text('号码  姓名        位置  Lv   体能          必杀技', x + 30, y + 66, 15, '#9fb4dd', 'left');
+  text('球员状态 - 青鹰高校', x + w / 2, y + 30, 24, '#fff', 'center', true);
+  text('号码  姓名        位置  Lv   体能', x + 30, y + 60, 15, '#9fb4dd', 'left');
   if (state) {
     for (var i = 0; i < 11; i++) {
       var p = homePlayer(i);
-      var py = y + 92 + i * 36;
+      var py = y + 88 + i * 46;
       text(p.num + '', x + 34, py, 15, '#fff', 'left', true);
       text(p.name, x + 80, py, 15, '#fff', 'left');
       text(p.pos, x + 200, py, 15, '#9fb4dd', 'left');
       text('' + p.level, x + 250, py, 15, '#ffd94a', 'left');
-      bar(x + 290, py - 7, 130, 12, p.stamina / p.maxStamina, '#51d651');
-      text(p.special ? p.special.name : '-', x + 440, py, 14, '#ffd94a', 'left');
+      bar(x + 290, py - 7, 120, 12, p.stamina / p.maxStamina, '#51d651');
+      text(p.stamina + '/' + p.maxStamina, x + 416, py, 12, '#cfe0ff', 'left');
+      // ★ 第二行：FM 关键属性（1-20）+ 必杀技，颜色区分强弱
+      drawAttrChips(p, x + 80, py + 20);
+      text(p.special ? p.special.name : '-', x + w - 24, py + 20, 13, '#ffd94a', 'right');
     }
   }
   ctx.fillStyle = '#2b5fe3'; rr(x + w / 2 - 70, y + h - 52, 140, 36, 6); ctx.fill();
   text('关闭', x + w / 2, y + h - 34, 18, '#fff', 'center', true);
   addClick(x + w / 2 - 70, y + h - 52, 140, 36, function () { ui.overlay = null; });
+}
+
+// FM 属性小标签：速/盘/传/射/防（门将显示扑救/制空/大脚），≥15 绿 ≥12 黄 ≥8 灰，否则红
+function drawAttrChips(p, ax, ay) {
+  var s = p.stats || {};
+  function g(k) { var v = s[k]; return v == null ? 10 : v; }
+  function avg(keys) { var t = 0; for (var i = 0; i < keys.length; i++) t += g(keys[i]); return Math.round(t / keys.length); }
+  var chips = p.pos === 'GK'
+    ? [['扑救', avg(['reflexes', 'handling', 'positioning', 'oneOnOne'])], ['制空', g('aerial')], ['大脚', g('kicking')]]
+    : [['速', avg(['pace', 'acceleration'])], ['盘', avg(['dribbling', 'technique', 'agility'])],
+       ['传', avg(['passing', 'vision', 'technique'])], ['射', avg(['finishing', 'longShots', 'composure'])],
+       ['防', avg(['tackling', 'marking', 'positioning'])], ['体', g('stamina')]];
+  var cx = ax;
+  chips.forEach(function (c) {
+    var col = c[1] >= 15 ? '#51d651' : c[1] >= 12 ? '#ffd94a' : c[1] >= 8 ? '#9fb4dd' : '#ff9a9a';
+    text(c[0] + c[1], cx, ay, 13, col, 'left', true);
+    cx += 52;
+  });
 }
 
 function drawSettingsOverlay() {
