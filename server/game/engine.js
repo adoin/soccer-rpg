@@ -203,6 +203,7 @@ Match.prototype.startShotFlight = function (p, keeper, o) {
   };
   this.ball.ownerId = null;
   this.ball.x = x0; this.ball.y = y0;
+  this.lastAction = null; // 飞行期间不出演出遮罩，保证场上动作可见
   this.phase = 'shotflight';
   this.phaseUntil = this.now + durMs;
 };
