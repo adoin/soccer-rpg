@@ -252,6 +252,61 @@ Match.prototype.finishShotFlight = function () {
   this.lastDecisionPos = c ? { x: c.x, y: c.y } : { x: this.ball.x, y: this.ball.y };
 };
 
+// ★ 传球飞行：掷骰只定结果（接到 / 被断），过程走飞行阶段演出——
+//   球按高度飞行时间飞向落点，接应队员跑向落点准备接球，
+//   预定拦截者 + 两名防守球员追球/卡落点，落地后再按既定结果结算。
+//   （解决"传球瞬间球直接瞬移到对方脚下、全程没有轨迹和追球"的问题）
+Match.prototype.startPassFlight = function (p, o) {
+  // 追球的防守球员：离落点最近的对方球员（不含已指定的拦截者），取 2 名
+  var chasers = [];
+  var cands = this.players.filter(function (q) {
+    return q.team !== p.team && !q.sentOff && q.id !== o.interceptorId;
+  });
+  cands.sort(function (a, b) {
+    var da = (a.x - o.x1) * (a.x - o.x1) + (a.y - o.y1) * (a.y - o.y1);
+    var db = (b.x - o.x1) * (b.x - o.x1) + (b.y - o.y1) * (b.y - o.y1);
+    return da - db;
+  });
+  for (var i = 0; i < Math.min(2, cands.length); i++) chasers.push(cands[i].id);
+  this.passFlight = {
+    passerId: p.id, team: p.team,
+    x0: p.x, y0: p.y, x1: o.x1, y1: o.y1,
+    startAt: this.now, durMs: o.durMs,
+    outcome: o.outcome, receiverId: o.receiverId, interceptorId: o.interceptorId,
+    chasers: chasers,
+    text: o.text, cut: o.cut, success: o.success, label: o.label,
+  };
+  this.ball.ownerId = null;
+  this.ball.x = p.x; this.ball.y = p.y;
+  this.lastAction = null; // 飞行期间不出演出遮罩，保证场上动作可见
+  this.phase = 'passflight';
+  this.phaseUntil = this.now + o.durMs;
+};
+
+// 传球飞行结束：按既定结果结算（接应队员得球 / 被拦截）
+Match.prototype.finishPassFlight = function () {
+  var pf = this.passFlight;
+  this.passFlight = null;
+  if (!pf) {
+    if (this.phase === 'passflight') this.phase = 'play';
+    return;
+  }
+  var passer = this.byId[pf.passerId];
+  this.ball.x = pf.x1; this.ball.y = pf.y1;
+  if (pf.outcome === 'recv') this.ball.ownerId = pf.receiverId;
+  else this.ball.ownerId = pf.interceptorId;
+  this.lastAction = {
+    kind: 'pass', label: pf.label || '传球',
+    playerName: passer ? passer.name : '', team: pf.team,
+    success: pf.success, cut: pf.cut, text: pf.text,
+    until: Date.now() + 2600,
+  };
+  this.phase = 'play';
+  this.nextDecisionAt = this.now + 2200;
+  var c = this.carrier();
+  this.lastDecisionPos = c ? { x: c.x, y: c.y } : { x: this.ball.x, y: this.ball.y };
+};
+
 Match.prototype.tick = function () {
   if (this.paused) return;
   var dt = this.config.tickMs / 1000;
@@ -294,6 +349,33 @@ Match.prototype.tick = function () {
         }
       }
       if (this.now >= this.phaseUntil) this.finishShotFlight();
+      break;
+    }
+    case 'passflight': {
+      // ★ 传球飞行：球飞向落点，接应者跑向落点，拦截者与防守球员追球；落地后按既定结果结算
+      this.now += dt * 1000;
+      this.clock += dt;
+      var pf = this.passFlight;
+      if (pf) {
+        var pk = clamp((this.now - pf.startAt) / pf.durMs, 0, 1);
+        this.ball.x = pf.x0 + (pf.x1 - pf.x0) * pk;
+        this.ball.y = pf.y0 + (pf.y1 - pf.y0) * pk;
+        var rc = pf.receiverId && this.byId[pf.receiverId];
+        if (rc && !rc.sentOff && this.now >= rc.frozenUntil) {
+          this.moveToward(rc, pf.x1, pf.y1, this.playerSpeed(rc, true), dt);
+        }
+        var ic = pf.interceptorId && this.byId[pf.interceptorId];
+        if (ic && !ic.sentOff && this.now >= ic.frozenUntil) {
+          this.moveToward(ic, pf.x1, pf.y1, this.playerSpeed(ic, true), dt);
+        }
+        for (var pi = 0; pi < pf.chasers.length; pi++) {
+          var pch = this.byId[pf.chasers[pi]];
+          if (pch && !pch.sentOff && this.now >= pch.frozenUntil) {
+            this.moveToward(pch, this.ball.x, this.ball.y, this.playerSpeed(pch, true), dt);
+          }
+        }
+      }
+      if (this.now >= this.phaseUntil) this.finishPassFlight();
       break;
     }
     case 'halftime':
@@ -627,8 +709,12 @@ Match.prototype.buildOptions = function (p) {
   return [
     opt('dribble', 58 + ((FM.dribble(p) + FM.speed(p)) * ef - (FM.defend(near.player) + FM.speed(near.player)) * defEf) * 0.9),
     (function (o) {
-      // ★ 传球多阶段菜单：把该球员可用的脚法告诉客户端（按 technique 能力解锁）
-      o.passOpts = { techniques: Pass.availableTechniques(p) };
+      // ★ 传球多阶段菜单：该球员可用的脚法（按 technique 解锁）+ 推荐落点（AI 选的最佳接应点，光标初始位置）
+      var tgt = self.bestPassTarget(p);
+      o.passOpts = {
+        techniques: Pass.availableTechniques(p),
+        suggest: { x: Math.round(tgt.x * 10) / 10, y: Math.round(tgt.y * 10) / 10 },
+      };
       return o;
     })(opt('pass', 72 + (FM.pass(p) * ef - 60) * 0.7 - pressure)),
     // ★ 护球：身体对抗（强壮+平衡）对抢断，成功则卡住逼抢者
@@ -738,6 +824,8 @@ Match.prototype.resolveAction = function (p, commandId, rate, params) {
     case 'pass': {
       // ★ 多阶段传球：params{长/短,方向8向,脚法,高度,力量} → 预估落点 → 散布掷骰 → 球感修正
       //   无 params（AI/测试）时自动朝最佳接应队友生成
+      // ★ 掷骰只定结果（接到 / 被断），过程走"传球飞行"阶段演出：
+      //   球按高度飞行时间飞向落点、接应者跑向落点、拦截者与防守球员追球，落地再结算。
       var pp = Pass.validateParams(params || Pass.autoParams(this, p), p);
       var passAb = FM.pass(p) * effFactor(p);
       var land = Pass.computeLanding(p, pp, passAb);
@@ -748,7 +836,8 @@ Match.prototype.resolveAction = function (p, commandId, rate, params) {
       var corr = Pass.correctLanding(this, p, ax, ay);
       var target = corr.target;
       var techName = Pass.TECHNIQUES[pp.technique].name;
-      var kindName = pp.kind === 'long' ? '长传' : '短传';
+      var kindName = land.dist > 26 ? '长传' : '短传'; // 距离即力量：远为长传、近为短传
+      var passLabel = labelOf(commandId, p);
       // ★ 行为层先行：接应目标若处越位位置，先看他自己的决策——
       //   急停收步（hold）还是继续前插（go）。这是球员的行为选择，
       //   不是裁判的豁免：选择前插而实际越位，哨声照吹。
@@ -775,12 +864,13 @@ Match.prototype.resolveAction = function (p, commandId, rate, params) {
           var d = Math.sqrt((q.x - corr.x) * (q.x - corr.x) + (q.y - corr.y) * (q.y - corr.y));
           if (d < bd) { bd = d; best = q; }
         });
-        this.ball.ownerId = best.id;
-        this.ball.x = corr.x; this.ball.y = corr.y;
-        text = '⚠ ' + target.name + '识破越位陷阱，急停收步！' + p.name + '的' + techName + kindName + '滚向无人地带，被' + best.name + '得到。';
-        success = false;
-        cut = 'pass-lose';
-        break;
+        this.startPassFlight(p, {
+          x1: corr.x, y1: corr.y, durMs: land.flightMs,
+          outcome: 'intercept', receiverId: null, interceptorId: best.id,
+          text: '⚠ ' + target.name + '识破越位陷阱，急停收步！' + p.name + '的' + techName + kindName + '滚向无人地带，被' + best.name + '得到。',
+          cut: 'pass-lose', success: false, label: passLabel,
+        });
+        return { kind: commandId, label: passLabel, playerName: p.name, success: false, pending: true, text: '' };
       }
       // ★ 裁判层：纯客观判定，不看任何数值（目标前插参与 → 越位照吹）
       if (target) {
@@ -792,6 +882,7 @@ Match.prototype.resolveAction = function (p, commandId, rate, params) {
       // ★ 成功率按本次传球参数重算（距离/高度/脚法/压迫），取代菜单预估值
       var prate = Pass.passRate(p, pp, land, near.dist);
       success = this.rng() * 100 < prate;
+      var pfOutcome, pfReceiverId = null, pfInterceptorId = null, pfText, pfCut;
       if (success) {
         var recv = target;
         if (!recv) {
@@ -804,17 +895,20 @@ Match.prototype.resolveAction = function (p, commandId, rate, params) {
           });
           recv = rb || p;
         }
-        this.ball.ownerId = recv.id;
-        this.ball.x = corr.x; this.ball.y = corr.y;
-        text = p.name + '一脚' + techName + kindName + '，' + recv.name + '稳稳接应。';
-        cut = 'pass-win';
+        pfOutcome = 'recv'; pfReceiverId = recv.id;
+        pfText = p.name + '一脚' + techName + kindName + '，' + recv.name + '稳稳接应。';
+        pfCut = 'pass-win';
       } else {
-        this.ball.ownerId = near.player.id;
-        this.ball.x = corr.x; this.ball.y = corr.y;
-        text = p.name + ' 的' + techName + kindName + '被 ' + near.player.name + ' 拦截！';
-        cut = 'pass-lose';
+        pfOutcome = 'intercept'; pfInterceptorId = near.player.id;
+        pfText = p.name + ' 的' + techName + kindName + '被 ' + near.player.name + ' 拦截！';
+        pfCut = 'pass-lose';
       }
-      break;
+      this.startPassFlight(p, {
+        x1: corr.x, y1: corr.y, durMs: land.flightMs,
+        outcome: pfOutcome, receiverId: pfReceiverId, interceptorId: pfInterceptorId,
+        text: pfText, cut: pfCut, success: success, label: passLabel,
+      });
+      return { kind: commandId, label: passLabel, playerName: p.name, success: success, pending: true, text: '' };
     }
     case 'protect': {
       // ★ 护球：用身体卡住位置，不推进；成功则逼抢者被挡开 1.8 秒，为队友跑位争取时间

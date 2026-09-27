@@ -2,14 +2,17 @@
 // ============================================================
 // 多阶段传球规则（纯函数，确定性部分；实际落点散布由引擎掷骰）。
 //
-// 流程：长传/短传 → 方向（8向） → 脚法（内脚背/脚面/外脚背，按 technique 能力解锁）
-//       → 高度（低/中/高/超高） → 力量条（任意力量） → 预估落点 → 确认。
+// 流程：落点选择（场上自由光标，方向键/点击/拖拽精细移动）
+//       → 脚法（内脚背/脚面/外脚背，按 technique 能力解锁）
+//       → 高度（低/中/高/超高） → 预估落点 → 确认。
 //
-// 数值影响：
-//   · 落点散布半径由传球能力（passing/vision/technique 聚合）决定；
-//   · 脚法修正散布（内脚背最稳、外脚背带弧线但更飘）；
-//   · 高度影响飞行时间与被拦截风险；
-//   · 实际落点掷骰后，再按 technique/firstTouch 向最近队友的理想接球点修正。
+// 天使之翼式：落点光标同时决定方向与力量（传球者→落点的向量），
+// 不再有点数式的 8 向罗盘和力量条。
+// 输入与能力分开：玩家输入的是"我想传到哪"（精确意图），
+// 球员能力只决定两件事——
+//   · 实际落点散布半径（传球/视野/技术聚合，距离越远越飘）；
+//   · 脚法修正散布（内脚背最稳、外脚背带弧线但更飘）。
+// 实际落点掷骰后，再按 technique/firstTouch 向最近队友的理想接球点修正。
 // ============================================================
 'use strict';
 
@@ -17,18 +20,8 @@ var FM = require('../../../shared/fm');
 
 var FIELD_W = 105, FIELD_H = 68;
 
-// 8 向（field 坐标：x 向右（对方球门），y 向上；与客户端 project()/手柄一致）。0=→，逆时针。
-var DIRS = [
-  { dx: 1, dy: 0 },
-  { dx: 0.7071, dy: 0.7071 },
-  { dx: 0, dy: 1 },
-  { dx: -0.7071, dy: 0.7071 },
-  { dx: -1, dy: 0 },
-  { dx: -0.7071, dy: -0.7071 },
-  { dx: 0, dy: -1 },
-  { dx: 0.7071, dy: -0.7071 },
-];
-var DIR_NAMES = ['→', '↗', '↑', '↖', '←', '↙', '↓', '↘'];
+// 落点距离范围（米）：统一 4~60，远近即力量；能力只影响散布，不锁距离
+var AIM_MIN = 4, AIM_MAX = 60;
 
 var TECHNIQUES = {
   inside:  { name: '内脚背', scatterMul: 0.8,  curve: 0,   minTec: 1,  desc: '最稳，不带弧线' },
@@ -64,60 +57,63 @@ function availableTechniques(p) {
   });
 }
 
-// 清洗客户端传来的 params（防作弊：全部钳制到合法范围）
+// 清洗客户端传来的 params（防作弊：落点钳制到场内 + 合法距离范围）
 function validateParams(raw, p) {
   raw = raw || {};
-  var kinds = { long: 1, short: 1 };
-  var kind = kinds[raw.kind] ? raw.kind : 'short';
-  var dir = clamp(Math.round(+raw.dir) || 0, 0, 7);
+  var ax = clamp(+raw.aimX || p.x, 2, FIELD_W - 2);
+  var ay = clamp(+raw.aimY || p.y, 2, FIELD_H - 2);
+  var dx = ax - p.x, dy = ay - p.y;
+  var dist = Math.sqrt(dx * dx + dy * dy);
+  if (dist > AIM_MAX) {
+    ax = p.x + dx / dist * AIM_MAX; ay = p.y + dy / dist * AIM_MAX; dist = AIM_MAX;
+  } else if (dist < AIM_MIN) {
+    if (dist < 0.001) { ax = p.x + AIM_MIN; ay = p.y; }
+    else { ax = p.x + dx / dist * AIM_MIN; ay = p.y + dy / dist * AIM_MIN; }
+    dist = AIM_MIN;
+  }
   var techs = availableTechniques(p);
   var technique = 'inside';
   techs.forEach(function (t) { if (t.id === raw.technique && t.enabled) technique = t.id; });
   var heights = { low: 1, mid: 1, high: 1, vhigh: 1 };
   var height = heights[raw.height] ? raw.height : 'mid';
-  var power = clamp(Math.round(+raw.power) || 50, 5, 100);
-  return { kind: kind, dir: dir, technique: technique, height: height, power: power };
+  return { aimX: ax, aimY: ay, technique: technique, height: height };
 }
 
-// AI / 默认：朝最佳接应队友传球，自动生成 params
+// 由落点向量导出的力量（0-100，供显示与成功率用）：距离即力量
+function aimPower(p, params) {
+  var dx = params.aimX - p.x, dy = params.aimY - p.y;
+  var dist = Math.sqrt(dx * dx + dy * dy);
+  return clamp(Math.round((dist - AIM_MIN) / (AIM_MAX - AIM_MIN) * 100), 0, 100);
+}
+
+// AI / 默认：朝最佳接应队友传球，瞄准其当前位置（correctLanding 会再做移动提前量）
 function autoParams(match, p) {
   var target = match.bestPassTarget(p);
-  var dx = target.x - p.x, dy = target.y - p.y;
-  var dist = Math.sqrt(dx * dx + dy * dy) || 1;
-  // 选最接近目标方向的 8 向
-  var ang = Math.atan2(dy, dx);
-  var dir = Math.round(ang / (Math.PI / 4));
-  dir = ((dir % 8) + 8) % 8;
-  var kind = dist > 26 ? 'long' : 'short';
-  var power = kind === 'long'
-    ? clamp(Math.round((dist - 12) / 48 * 100), 5, 100)
-    : clamp(Math.round((dist - 6) / 22 * 100), 5, 100);
   var techs = availableTechniques(p);
   var technique = 'inside';
   for (var i = techs.length - 1; i >= 0; i--) {
     if (techs[i].enabled) { technique = techs[i].id; break; }
   }
-  return { kind: kind, dir: dir, technique: technique, height: 'mid', power: power };
+  return { aimX: target.x, aimY: target.y, technique: technique, height: 'mid' };
 }
 
 // 预估落点（确定性）：给客户端画预估圈用。返回 { x, y, r, flightMs, dist }
 function computeLanding(passer, params, passAb) {
-  var d = DIRS[params.dir];
-  var dist = params.kind === 'long'
-    ? 12 + (params.power / 100) * 48
-    : 6 + (params.power / 100) * 22;
-  var x = passer.x + d.dx * dist;
-  var y = passer.y + d.dy * dist;
+  var x = params.aimX, y = params.aimY;
+  var dx = x - passer.x, dy = y - passer.y;
+  var dist = Math.sqrt(dx * dx + dy * dy) || 1;
   var tech = TECHNIQUES[params.technique];
   var h = HEIGHTS[params.height];
-  // 外脚背弧线：落点向垂直方向偏
+  // 外脚背弧线：落点向传球方向的垂直方向偏，距离越远偏得越多
   if (tech.curve) {
-    x += -d.dy * tech.curve * (params.power / 100);
-    y += d.dx * tech.curve * (params.power / 100);
+    var k = tech.curve * clamp(dist / 48, 0, 1);
+    x += -dy / dist * k;
+    y += dx / dist * k;
   }
   x = clamp(x, 2, FIELD_W - 2);
   y = clamp(y, 2, FIELD_H - 2);
-  var baseR = params.kind === 'long' ? 2.5 + 5 * (1 - passAb / 100) : 1.2 + 2.5 * (1 - passAb / 100);
+  // 散布：距离越远越飘；能力越高圈越小（与输入分开，纯能力项）
+  var baseR = (1.2 + dist * 0.09) * (1.5 - passAb / 100);
   var r = baseR * tech.scatterMul * h.scatterMul;
   return { x: x, y: y, r: r, flightMs: h.flightMs, dist: dist, rateAdj: h.rateAdj };
 }
@@ -160,13 +156,14 @@ function correctLanding(match, passer, ax, ay) {
 }
 
 module.exports = {
-  DIRS: DIRS,
-  DIR_NAMES: DIR_NAMES,
+  AIM_MIN: AIM_MIN,
+  AIM_MAX: AIM_MAX,
   TECHNIQUES: TECHNIQUES,
   HEIGHTS: HEIGHTS,
   rawTechnique: rawTechnique,
   availableTechniques: availableTechniques,
   validateParams: validateParams,
+  aimPower: aimPower,
   autoParams: autoParams,
   computeLanding: computeLanding,
   passRate: passRate,
