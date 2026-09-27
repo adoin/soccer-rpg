@@ -1044,11 +1044,16 @@ function homePlayer(i) {
   return homes[i];
 }
 function focusPlayer() {
-  // 指令决策中 -> 决策球员；否则阵容条选中球员
+  // 指令决策中 -> 决策球员；否则实际被操控球员（绿圈）；再否则阵容条选中球员
   if (state && state.decision) {
     var dp = null;
     state.players.forEach(function (p) { if (p.id === state.decision.playerId) dp = p; });
     if (dp) return dp;
+  }
+  if (state && state.controlledId) {
+    var cp = null;
+    state.players.forEach(function (p) { if (p.id === state.controlledId) cp = p; });
+    if (cp) return cp;
   }
   return homePlayer(selectedHomeIdx);
 }

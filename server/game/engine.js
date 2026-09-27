@@ -145,6 +145,112 @@ Match.prototype.goal = function (scorer, team) {
   this.concedeTeam = team === 'home' ? 'away' : 'home';
 };
 
+// ★ 射门飞行阶段：球按瞄准点飞向球门，门将飞身扑救、防守球员回追，落地后按既定结果结算
+Match.prototype.startShotFlight = function (p, keeper, o) {
+  var dir = p.team === 'home' ? 1 : -1;
+  var goalX = p.team === 'home' ? FIELD.W : 0;
+  var gy = FIELD.H / 2, goalHalf = 3.66;
+  var x0 = p.x, y0 = p.y, x1, y1;
+  var shotSide = this.rng() < 0.5 ? -1 : 1;
+  if (o.outcome === 'goal') {
+    // 瞄死角：打进球门内
+    x1 = goalX;
+    y1 = clamp(gy + shotSide * (goalHalf - 0.5 - this.rng() * 1.4), gy - goalHalf + 0.3, gy + goalHalf - 0.3);
+  } else if (o.outcome === 'saved') {
+    // 朝门将方向打：落点在门将可及范围
+    x1 = goalX;
+    y1 = clamp(keeper.y + (this.rng() - 0.5) * 5, gy - goalHalf + 0.3, gy + goalHalf - 0.3);
+  } else {
+    // 偏出：飞出门框范围
+    x1 = goalX + dir * 2.5;
+    y1 = gy + shotSide * (goalHalf + 1.4 + this.rng() * 2.6);
+  }
+  var dist = Math.sqrt((x1 - x0) * (x1 - x0) + (y1 - y0) * (y1 - y0));
+  var ballSpd = o.isSpecial ? 34 : 27;
+  var durMs = clamp(Math.round(dist / ballSpd * 1000), 450, 1500);
+  // 门将扑救目标：
+  //   goal → 大概率判断错方向（扑反角 / 扑近角但够不着），演出"门将尽力但鞭长莫及"；
+  //   saved/miss → 扑向来球线路
+  var kx, ky, kSpd;
+  if (o.outcome === 'goal') {
+    var wrongSide = this.rng() < 0.7 ? -shotSide : shotSide;
+    kx = goalX - dir * 1.2;
+    ky = clamp(gy + wrongSide * (goalHalf - 1.2), gy - goalHalf, gy + goalHalf);
+    kSpd = 13;
+  } else {
+    kx = clamp(x1 - dir * 0.8, 2, FIELD.W - 2);
+    ky = clamp(y1, 2, FIELD.H - 2);
+    var kd = Math.sqrt((kx - keeper.x) * (kx - keeper.x) + (ky - keeper.y) * (ky - keeper.y));
+    kSpd = clamp(kd / (durMs / 1000) * (o.outcome === 'saved' ? 1.02 : 0.9), 8, 24);
+  }
+  // 两名回追的防守球员（不含门将）：离落点最近的对方球员
+  var chasers = [];
+  var cands = this.players.filter(function (q) {
+    return q.team !== p.team && q.id !== keeper.id && !q.sentOff;
+  });
+  cands.sort(function (a, b) {
+    var da = (a.x - x1) * (a.x - x1) + (a.y - y1) * (a.y - y1);
+    var db = (b.x - x1) * (b.x - x1) + (b.y - y1) * (b.y - y1);
+    return da - db;
+  });
+  for (var i = 0; i < Math.min(2, cands.length); i++) chasers.push(cands[i].id);
+  this.shotFlight = {
+    shooterId: p.id, keeperId: keeper.id, team: p.team,
+    isSpecial: o.isSpecial, label: o.label, outcome: o.outcome, snap: o.snap,
+    x0: x0, y0: y0, x1: x1, y1: y1,
+    startAt: this.now, durMs: durMs,
+    kx: kx, ky: ky, kSpd: kSpd, chasers: chasers,
+  };
+  this.ball.ownerId = null;
+  this.ball.x = x0; this.ball.y = y0;
+  this.phase = 'shotflight';
+  this.phaseUntil = this.now + durMs;
+};
+
+// 射门飞行结束：按既定结果结算（进球 / 被扑 / 偏出门球）
+Match.prototype.finishShotFlight = function () {
+  var sf = this.shotFlight;
+  this.shotFlight = null;
+  if (!sf) {
+    if (this.phase === 'shotflight') this.phase = 'play';
+    return;
+  }
+  var shooter = this.byId[sf.shooterId];
+  var keeper = this.byId[sf.keeperId];
+  this.ball.x = sf.x1; this.ball.y = sf.y1;
+  if (sf.outcome === 'goal') {
+    this.goal(shooter, sf.team);
+    this.lastAction.cut = sf.isSpecial ? 'special-goal' : 'shoot-goal';
+    return;
+  }
+  if (sf.outcome === 'saved') {
+    this.ball.ownerId = keeper.id;
+    // ★ 门将扑救反弹：以射门瞬间快照判断越位位置获益 → 吹越位
+    var osReb = Offside.judgeRebound(this, sf.team, sf.snap);
+    if (osReb.type === 'offside') return this.whistleOffside(osReb, shooter);
+    this.lastAction = {
+      kind: 'shoot', label: '射门', playerName: shooter.name, team: sf.team, success: false,
+      cut: sf.isSpecial ? 'special-save' : 'shoot-save',
+      text: shooter.name + ' 的' + sf.label + '被门将 ' + keeper.name + ' 扑出！',
+      until: Date.now() + 2600,
+    };
+  } else {
+    // 偏出 → 门球
+    this.lastAction = {
+      kind: 'shoot', label: '射门', playerName: shooter.name, team: sf.team, success: false,
+      cut: 'shoot-miss',
+      text: shooter.name + ' 的' + sf.label + '偏出了球门……',
+      until: Date.now() + 2600,
+    };
+    this.enterStoppage('whistle', 1600, keeper.id);
+    return;
+  }
+  this.phase = 'play';
+  this.nextDecisionAt = this.now + 2200;
+  var c = this.carrier();
+  this.lastDecisionPos = c ? { x: c.x, y: c.y } : { x: this.ball.x, y: this.ball.y };
+};
+
 Match.prototype.tick = function () {
   if (this.paused) return;
   var dt = this.config.tickMs / 1000;
@@ -168,6 +274,27 @@ Match.prototype.tick = function () {
       this.now += dt * 1000;
       if (this.now >= this.phaseUntil) this.resetPositions(this.concedeTeam);
       break;
+    case 'shotflight': {
+      // ★ 射门飞行：球飞向瞄准点，门将飞身扑救、防守球员回追；落地后按既定结果结算
+      this.now += dt * 1000;
+      this.clock += dt;
+      var sf = this.shotFlight;
+      if (sf) {
+        var k = clamp((this.now - sf.startAt) / sf.durMs, 0, 1);
+        this.ball.x = sf.x0 + (sf.x1 - sf.x0) * k;
+        this.ball.y = sf.y0 + (sf.y1 - sf.y0) * k;
+        var kp = this.byId[sf.keeperId];
+        if (kp && !kp.sentOff) this.moveToward(kp, sf.kx, sf.ky, sf.kSpd, dt);
+        for (var ci = 0; ci < sf.chasers.length; ci++) {
+          var ch = this.byId[sf.chasers[ci]];
+          if (ch && !ch.sentOff && this.now >= ch.frozenUntil) {
+            this.moveToward(ch, this.ball.x, this.ball.y, this.playerSpeed(ch, true), dt);
+          }
+        }
+      }
+      if (this.now >= this.phaseUntil) this.finishShotFlight();
+      break;
+    }
     case 'halftime':
       this.now += dt * 1000;
       if (this.now >= this.phaseUntil) {
@@ -714,29 +841,15 @@ Match.prototype.resolveAction = function (p, commandId, rate, params) {
         return this.whistleOffside(osShot, p);
       }
       this.shots[p.team]++;
-      if (success) {
-        this.goal(p, p.team);
-        this.lastAction.cut = isSpecial ? 'special-goal' : 'shoot-goal';
-        return { kind: commandId, label: label, playerName: p.name, success: true, text: this.lastAction.text };
-      }
-      // 失败：被扑出或偏出
-      this.ball.ownerId = keeper.id;
-      var saved = this.rng() < 0.55;
-      cut = isSpecial ? (saved ? 'special-save' : 'shoot-miss') : (saved ? 'shoot-save' : 'shoot-miss');
-      if (saved) {
-        // 球反弹到门前区域
-        this.ball.x = clamp(keeper.x - 6 * dir, 2, FIELD.W - 2);
-        this.ball.y = clamp(keeper.y + (this.rng() - 0.5) * 10, 2, FIELD.H - 2);
-        // ★ 门将扑救反弹：以射门瞬间快照判断越位位置获益 → 吹越位
-        var osReb = Offside.judgeRebound(this, p.team, osShot.snap);
-        if (osReb.type === 'offside') {
-          return this.whistleOffside(osReb, p);
-        }
-        text = p.name + ' 的' + label + '被门将 ' + keeper.name + ' 扑出！';
-      } else {
-        text = p.name + ' 的' + label + '偏出了球门……';
-      }
-      break;
+      // ★ 掷骰只决定结果，过程走"射门飞行"阶段演出：
+      //   球按瞄准点飞向球门、门将飞身扑救、防守球员回追，落地后再按既定结果结算。
+      //   （解决"中圈射门直接判进球、全程没有任何动作"的问题）
+      var outcome = success ? 'goal' : (this.rng() < 0.55 ? 'saved' : 'miss');
+      this.startShotFlight(p, keeper, {
+        isSpecial: isSpecial, label: label, outcome: outcome,
+        snap: osShot.snap,
+      });
+      return { kind: commandId, label: label, playerName: p.name, success: success, pending: true, text: '' };
     }
     case 'feint': {
       var d2 = near.player;
