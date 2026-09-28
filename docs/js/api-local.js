@@ -14,6 +14,8 @@ function newId() {
 
 function getMatch(id) { return matches[id] || null; }
 
+  if (/[?&]debug=1/.test(location.search)) { window.__getMatch = getMatch; window.__matches = matches; }
+
 window.__makeLocalApi = function () {
   var Match = window.SoccerEngine.Match;
   return {
