@@ -1122,15 +1122,17 @@ function drawActors(t) {
   }
   for (var bti = 0; bti < ballTrail.length; bti++) {
     var btp = project(ballTrail[bti].x, ballTrail[bti].y);
-    var trz = (ballTrail[bti].z || 0) * 30 * btp.s;
+    var trz = Math.min(ballTrail[bti].z || 0, 5) * 30 * btp.s;
     ctx.fillStyle = 'rgba(255,255,255,' + (0.05 + 0.20 * bti / ballTrail.length) + ')';
     ctx.beginPath(); ctx.arc(btp.x, btp.y - 4 - trz, 3.2 * btp.s, 0, Math.PI * 2); ctx.fill();
   }
   var bp = project(bbx, bby);
-  var rise = ballZ * 30 * bp.s; // 1 米 ≈ 30*s px
+  // ★ 视觉压缩：真实 11 米按 5 米封顶画（≈150px），保证球始终在画面内；
+  //   球与地面阴影的分离距离仍能读出"很高"，不压缩会直接飞出视野。
+  var rise = Math.min(ballZ, 5) * 30 * bp.s; // 1 米 ≈ 30*s px，封顶 5 米
   if (ballZ > 0.4) {
     // 地面投影：球飞得越高，影越淡越小，地面位置始终可读
-    var shA = Math.max(0.08, 0.32 - ballZ * 0.02);
+    var shA = Math.max(0.10, 0.35 - ballZ * 0.02);
     ctx.fillStyle = 'rgba(0,0,0,' + shA.toFixed(2) + ')';
     ctx.beginPath(); ctx.ellipse(bp.x, bp.y + 2, 9 * bp.s, 3.6 * bp.s, 0, 0, Math.PI * 2); ctx.fill();
   }
