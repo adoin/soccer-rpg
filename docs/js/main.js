@@ -18,6 +18,35 @@ ctx.imageSmoothingEnabled = false;
 function clamp(v, lo, hi) { return v < lo ? lo : v > hi ? hi : v; }
 function $(id) { return document.getElementById(id); }
 
+// ---------------- 序列帧精灵（sprite-gen 管线产出，真像素风，非代码拼图） ----------------
+// 4 套 × 5 帧：run_0..run_3（跑动循环）+ idle（站立），48×72/帧，整表 48×360 纵排
+var SPR_V = 'spr1'; // 精灵资源版本，换图时 bump 防手机缓存
+var spriteAtlas = {};
+['home', 'away', 'gk_home', 'gk_away'].forEach(function (kit) {
+  var im = new Image();
+  im.src = 'assets/sprites/' + kit + '/sprite-sheet-alpha.png?v=' + SPR_V;
+  spriteAtlas[kit] = im;
+});
+var animClock = {}; // playerId -> {x,y} 上一帧渲染位置（跑/站判定用）
+function spriteFrameFor(p, t) {
+  var kit = (p.pos === 'GK' ? 'gk_' : '') + p.team;
+  var img = spriteAtlas[kit];
+  if (!img || !img.complete || !img.naturalWidth) return null; // 未加载完→兜底代码帧
+  var rp = renderPos[p.id] || p;
+  var st = animClock[p.id] || (animClock[p.id] = { x: rp.x, y: rp.y });
+  var moved = Math.abs(rp.x - st.x) + Math.abs(rp.y - st.y);
+  st.x = rp.x; st.y = rp.y;
+  var row;
+  if (moved > 0.02) {
+    // 跑动循环：位移越大帧率越高（慢跑 6fps → 冲刺 16fps）
+    var fps = 6 + Math.min(10, moved * 30);
+    row = Math.floor(t / (1000 / fps)) % 4;
+  } else {
+    row = 4; // idle 站立帧
+  }
+  return { img: img, row: row };
+}
+
 // ---------------- 结算演出图（像素风拼贴特写） ----------------
 // 引擎 lastAction.cut 给出键名，这里预加载对应图片；drawCutin 播全屏演出。
 var CUT_KEYS = ['dribble-win', 'dribble-lose', 'pass-win', 'pass-lose',
@@ -120,8 +149,15 @@ var crowdCv = (function () {
 
 // ---------------- 2.5D 投影 ----------------
 var HORIZON = 150, GROUND = 548;
+// ★ 镜头：有限视野跟随球（场地显得大），全场只在小地图里看
+//   传球选落点（aim 层）时临时拉远，方便点选远处落点
+function curViewW() {
+  var lvl = (typeof hmTop === 'function') ? hmTop() : null;
+  if (ui.hmenu && lvl && lvl.kind === 'aim') return 70;
+  return 38;
+}
 function project(x, y) {
-  var viewW = 66;
+  var viewW = curViewW();
   var cx = clamp(ballR.x - viewW * 0.45, -6, C.FIELD.W - viewW + 6);
   var depth = clamp(y / C.FIELD.H, 0, 1); // 0 近 1 远
   var persp = 0.5 + 0.5 * (1 - depth);
@@ -451,7 +487,7 @@ function unproject(sx, sy) {
   depth = clamp(depth, 0, 1);
   var y = depth * C.FIELD.H;
   var persp = 0.5 + 0.5 * (1 - depth);
-  var viewW = 66;
+  var viewW = curViewW();
   var cx = clamp(ballR.x - viewW * 0.45, -6, C.FIELD.W - viewW + 6);
   var x = cx + viewW / 2 + (sx - W / 2) / (W * persp) * viewW;
   return { x: x, y: y };
@@ -815,6 +851,7 @@ function drawGame(t) {
   drawGoals();
   drawActors(t);
   drawScoreboard();
+  drawMinimap(); // ★ 小地图：全场只在这里看（球员点/球/镜头框/被操控绿圈）
   drawPauseButton();
   if (isTouch) drawGamepad(); // 移动端/Pad：透明虚拟手柄（画在菜单下层）
   if (ui.pauseOpen) drawPauseMenu();
@@ -957,18 +994,34 @@ function drawActors(t) {
     }
     // ★ 被玩家直接操控标记（绿圈）改到所有球员画完后统一置顶绘制，避免被身前球员精灵遮挡
     //   （之前画在各自脚下，会被更靠前的对方球员盖住，看起来像"在控制红方"）
-    var frames = framesFor(p);
-    var img = frames[animFrame];
-    var dw = 16 * s * 1.9, dh = 24 * s * 1.9;
-    if (p.team === 'away') {
-      // 客队朝左：水平翻转
-      ctx.save();
-      ctx.translate(pr.x, pr.y - dh);
-      ctx.scale(-1, 1);
-      ctx.drawImage(img, -dw / 2, 0, dw, dh);
-      ctx.restore();
+    // ★ 序列帧绘制：跑动播 run 循环 / 静止播 idle；精灵未就绪时兜底用旧代码帧
+    var spr = spriteFrameFor(p, t);
+    var dw = 16 * s * 1.9, dh = 24 * s * 1.9; // 2:3，与 48×72 帧同比例
+    if (spr) {
+      var sy = spr.row * 72;
+      if (p.team === 'away') {
+        // 客队朝左：水平翻转
+        ctx.save();
+        ctx.translate(pr.x, pr.y - dh);
+        ctx.scale(-1, 1);
+        ctx.drawImage(spr.img, 0, sy, 48, 72, -dw / 2, 0, dw, dh);
+        ctx.restore();
+      } else {
+        ctx.drawImage(spr.img, 0, sy, 48, 72, pr.x - dw / 2, pr.y - dh, dw, dh);
+      }
     } else {
-      ctx.drawImage(img, pr.x - dw / 2, pr.y - dh, dw, dh);
+      var frames = framesFor(p);
+      var img = frames[animFrame];
+      if (p.team === 'away') {
+        // 客队朝左：水平翻转
+        ctx.save();
+        ctx.translate(pr.x, pr.y - dh);
+        ctx.scale(-1, 1);
+        ctx.drawImage(img, -dw / 2, 0, dw, dh);
+        ctx.restore();
+      } else {
+        ctx.drawImage(img, pr.x - dw / 2, pr.y - dh, dw, dh);
+      }
     }
     // 冻结标记
     if (p.frozen) text('💫', pr.x, pr.y - dh - 8, 14 * s, '#fff', 'center');
@@ -1023,6 +1076,46 @@ function drawScoreboard() {
   // 时间
   ctx.fillStyle = '#0a0d18'; ctx.fillRect(484, y, 150, h);
   text(state.halfLabel + '  ' + state.clockLabel, 559, y + h / 2, 22, '#fff', 'center', true);
+}
+
+// ★ 小地图：全场只在这里看。右上角：球员点（蓝/红）、球（白点）、
+//   镜头视野框（白框）、被操控球员（绿圈）
+function drawMinimap() {
+  if (!state) return;
+  var mw = 200, mh = mw * C.FIELD.H / C.FIELD.W;
+  var mx = W - mw - 14, my = 60;
+  var kx = mw / C.FIELD.W, ky = mh / C.FIELD.H;
+  ctx.save();
+  ctx.fillStyle = 'rgba(6,20,10,0.85)';
+  ctx.fillRect(mx, my, mw, mh);
+  ctx.strokeStyle = '#3f6b4f'; ctx.lineWidth = 2;
+  ctx.strokeRect(mx + 1, my + 1, mw - 2, mh - 2);
+  ctx.strokeStyle = 'rgba(220,235,220,0.45)'; ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(mx + mw / 2, my + 3); ctx.lineTo(mx + mw / 2, my + mh - 3); ctx.stroke();
+  ctx.beginPath(); ctx.arc(mx + mw / 2, my + mh / 2, 9.15 * kx, 0, Math.PI * 2); ctx.stroke();
+  state.players.forEach(function (p) {
+    if (p.sentOff) return;
+    ctx.fillStyle = p.team === 'home' ? '#5b8cff' : '#ff6b6b';
+    ctx.beginPath();
+    ctx.arc(mx + p.x * kx, my + p.y * ky, p.pos === 'GK' ? 3.4 : 2.6, 0, Math.PI * 2);
+    ctx.fill();
+  });
+  if (state.controlledId) {
+    for (var i = 0; i < state.players.length; i++) {
+      var cp = state.players[i];
+      if (cp.id !== state.controlledId) continue;
+      ctx.strokeStyle = '#51ff9a'; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.arc(mx + cp.x * kx, my + cp.y * ky, 5.5, 0, Math.PI * 2); ctx.stroke();
+      break;
+    }
+  }
+  ctx.fillStyle = '#ffffff';
+  ctx.beginPath(); ctx.arc(mx + state.ball.x * kx, my + state.ball.y * ky, 3, 0, Math.PI * 2); ctx.fill();
+  var viewW = curViewW();
+  var cx = clamp(ballR.x - viewW * 0.45, -6, C.FIELD.W - viewW + 6);
+  ctx.strokeStyle = 'rgba(255,255,255,0.8)'; ctx.lineWidth = 1.5;
+  ctx.strokeRect(mx + cx * kx, my + 2, viewW * kx, mh - 4);
+  ctx.restore();
 }
 
 function drawPauseButton() {

@@ -397,8 +397,9 @@ console.log('== 行为层：无球任务 / 协防 / 盯人 / 持球调整 ==');
   ok(same, '任务粘性：1.2s 内不跳变');
   // 持球者被紧逼：减速护球
   set(m, 'a8', 56.5, 34);
-  var adj = Behavior.carrierAdjust(m, carrier);
-  ok(adj.spMul === 0.55, '被紧逼时持球者减速护球');
+  var spMulPressed = Behavior.carrierAdjust(m, carrier).spMul;
+  ok(spMulPressed < 1 && spMulPressed >= 0.55 && spMulPressed <= 0.80,
+    '被紧逼时持球者减速护球（spMul 按冷静度 0.55~0.80）', spMulPressed.toFixed(2));
   m.players.forEach(function (q) { if (q.team === 'away') { q.x = 95; q.y = 34; } });
   ok(Behavior.carrierAdjust(m, carrier).spMul === 1, '无人紧逼时正常推进');
   // 防守盯人：MF 跟最近的对方无球队员
