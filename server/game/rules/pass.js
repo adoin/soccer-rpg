@@ -30,10 +30,10 @@ var TECHNIQUES = {
 };
 
 var HEIGHTS = {
-  low:   { name: '低',   flightMs: 450,  scatterMul: 0.9,  rateAdj: -5, desc: '贴地，易被断' },
-  mid:   { name: '中',   flightMs: 650,  scatterMul: 1.0,  rateAdj: 0,  desc: '标准' },
-  high:  { name: '高',   flightMs: 950,  scatterMul: 1.1,  rateAdj: 2,  desc: '越过防守' },
-  vhigh: { name: '超高', flightMs: 1300, scatterMul: 1.25, rateAdj: -2, desc: '很飘，难控制' },
+  low:   { name: '低',   flightMs: 450,  scatterMul: 0.9,  rateAdj: -5, peak: 0.4,  desc: '贴地，易被断' },
+  mid:   { name: '中',   flightMs: 650,  scatterMul: 1.0,  rateAdj: 0,  peak: 2.2,  desc: '标准' },
+  high:  { name: '高',   flightMs: 950,  scatterMul: 1.1,  rateAdj: 2,  peak: 5.5,  desc: '越过防守' },
+  vhigh: { name: '超高', flightMs: 1300, scatterMul: 1.25, rateAdj: -2, peak: 11,   desc: '很飘，难控制' },
 };
 
 function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
@@ -86,7 +86,8 @@ function aimPower(p, params) {
   return clamp(Math.round((dist - AIM_MIN) / (AIM_MAX - AIM_MIN) * 100), 0, 100);
 }
 
-// AI / 默认：朝最佳接应队友传球，瞄准其当前位置（correctLanding 会再做移动提前量）
+// AI / 默认：朝最佳接应队友传球，瞄准其当前位置（correctLanding 会再做移动提前量）。
+//   若 mid 高度走廊被防守队员封死，改用高球越过，而不是一头撞进拦截网。
 function autoParams(match, p) {
   var target = match.bestPassTarget(p);
   var techs = availableTechniques(p);
@@ -94,7 +95,51 @@ function autoParams(match, p) {
   for (var i = techs.length - 1; i >= 0; i--) {
     if (techs[i].enabled) { technique = techs[i].id; break; }
   }
-  return { aimX: target.x, aimY: target.y, technique: technique, height: 'mid' };
+  var height = 'mid';
+  if (corridorBlocked(match, p, target, HEIGHTS.mid) > 0) height = 'high';
+  return { aimX: target.x, aimY: target.y, technique: technique, height: height };
+}
+
+// 静态走廊检查：按给定高度档，传球线段上有多少对方球员处在可拦截包络内。
+// 用于 AI 选高度、菜单成功率预估（确定性，不掷骰）。
+function corridorBlocked(match, passer, target, hDef) {
+  var peak = hDef.peak;
+  var n = 0;
+  for (var i = 0; i < match.players.length; i++) {
+    var q = match.players[i];
+    if (q.team === passer.team || q.sentOff || q.id === passer.id) continue;
+    var sd = segDistTo(q.x, q.y, passer.x, passer.y, target.x, target.y);
+    if (sd.d > 2.0) continue;
+    var z = 4 * peak * sd.t * (1 - sd.t);
+    if (z < (q.pos === 'GK' ? 3.4 : 2.6)) n++;
+  }
+  return n;
+}
+
+function segDistTo(px, py, x0, y0, x1, y1) {
+  var dx = x1 - x0, dy = y1 - y0;
+  var len2 = dx * dx + dy * dy, t = 0;
+  if (len2 > 1e-9) t = Math.max(0, Math.min(1, ((px - x0) * dx + (py - y0) * dy) / len2));
+  var cx = x0 + dx * t, cy = y0 + dy * t;
+  var ddx = px - cx, ddy = py - cy;
+  return { d: Math.sqrt(ddx * ddx + ddy * ddy), t: t };
+}
+
+// 线路成功率预估（菜单显示用，确定性）：
+//   走廊内可拦截的对方球员越多、贴身压迫越近，成功率越低。
+//   这是"线路危险度"的诚实估计，不再是开球掷骰的伪成功率。
+function laneRate(match, passer, params, land) {
+  var hDef = HEIGHTS[params.height] || HEIGHTS.mid;
+  var n = corridorBlocked(match, passer, { x: land.x, y: land.y }, hDef);
+  var nearD = 99;
+  for (var i = 0; i < match.players.length; i++) {
+    var q = match.players[i];
+    if (q.team === passer.team || q.sentOff) continue;
+    var d = Math.sqrt((q.x - passer.x) * (q.x - passer.x) + (q.y - passer.y) * (q.y - passer.y));
+    if (d < nearD) nearD = d;
+  }
+  var rate = 90 - n * 15 - (nearD < 3 ? 12 : 0);
+  return Math.max(5, Math.min(97, rate));
 }
 
 // 预估落点（确定性）：给客户端画预估圈用。返回 { x, y, r, flightMs, dist }
@@ -167,5 +212,7 @@ module.exports = {
   autoParams: autoParams,
   computeLanding: computeLanding,
   passRate: passRate,
+  laneRate: laneRate,           // ★ 线路成功率预估（菜单显示，确定性）
+  corridorBlocked: corridorBlocked,
   correctLanding: correctLanding,
 };

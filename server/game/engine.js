@@ -27,6 +27,7 @@ var Offside = require('./rules/offside');
 var Foul = require('./rules/foul');
 var Behavior = require('./rules/behavior');
 var Pass = require('./rules/pass');
+var Intercept = require('./rules/intercept');
 
 var FIELD = C.FIELD;
 
@@ -63,7 +64,10 @@ function Match(id, options) {
   var self = this;
   this.players.forEach(function (p) { self.byId[p.id] = p; });
 
-  this.ball = { x: FIELD.W / 2, y: FIELD.H / 2, ownerId: null };
+  this.ball = { x: FIELD.W / 2, y: FIELD.H / 2, ownerId: null,
+    z: 0,          // ★ 球高度（米）：传球/射门飞行时按抛物线起落，客户端按此画升空
+    vx: 0, vy: 0  // ★ 自由球滚动速度（米/秒）：拦截弹开、无人接应的落点用
+  };
 
   this.phase = 'kickoff';
   this.half = 1;
@@ -217,10 +221,14 @@ Match.prototype.startShotFlight = function (p, keeper, o) {
     isSpecial: o.isSpecial, label: o.label, outcome: o.outcome, snap: o.snap,
     x0: x0, y0: y0, x1: x1, y1: y1,
     startAt: this.now, durMs: durMs,
+    peak: 1.0, // ★ 射门弹道低平：线路上的后卫可堵枪眼（z<1.0m 地面可断）
+    ballSpeed: ballSpd, // 米/秒
     kx: kx, ky: ky, kSpd: kSpd, chasers: chasers,
   };
   this.ball.ownerId = null;
-  this.ball.x = x0; this.ball.y = y0;
+  this.ball.x = x0; this.ball.y = y0; this.ball.z = 0;
+  this.ball.vx = 0; this.ball.vy = 0;
+  this.lastInterceptK = null; // 测试用
   this.lastAction = null; // 飞行期间不出演出遮罩，保证场上动作可见
   this.phase = 'shotflight';
   this.phaseUntil = this.now + durMs;
@@ -270,38 +278,39 @@ Match.prototype.finishShotFlight = function () {
   this.lastDecisionPos = c ? { x: c.x, y: c.y } : { x: this.ball.x, y: this.ball.y };
 };
 
-// ★ 传球飞行：掷骰只定结果（接到 / 被断），过程走飞行阶段演出——
-//   球按高度飞行时间飞向落点，接应队员跑向落点准备接球，
-//   预定拦截者 + 两名防守球员追球/卡落点，落地后再按既定结果结算。
-//   （解决"传球瞬间球直接瞬移到对方脚下、全程没有轨迹和追球"的问题）
+// ★ 传球飞行（2026-09-28 改为实时拦截）：
+//   开球瞬间不再掷骰定结果。球按高度抛物线飞向落点，飞行途中每 tick
+//   做 swept-segment 实时拦截判定（rules/intercept）：
+//     - 防守队员在线路上 + 球在其可及高度内 → 按能力掷骰 断/弹开/扑空；
+//     - 超高球中段在高空无人能及，初段/末段才能断；
+//   落地时按落点 1.6m 内最近球员归属（争抢看 anticipation+firstTouch），
+//   无人则成自由球。完成/拦截都不播全屏演出 —— 断球是开放比赛的一部分，
+//   场上看得见，不需要遮罩。
 Match.prototype.startPassFlight = function (p, o) {
-  // 追球的防守球员：离落点最近的对方球员（不含已指定的拦截者），取 2 名
-  var chasers = [];
-  var cands = this.players.filter(function (q) {
-    return q.team !== p.team && !q.sentOff && q.id !== o.interceptorId;
-  });
-  cands.sort(function (a, b) {
-    var da = (a.x - o.x1) * (a.x - o.x1) + (a.y - o.y1) * (a.y - o.y1);
-    var db = (b.x - o.x1) * (b.x - o.x1) + (b.y - o.y1) * (b.y - o.y1);
-    return da - db;
-  });
-  for (var i = 0; i < Math.min(2, cands.length); i++) chasers.push(cands[i].id);
+  var peak = (Pass.HEIGHTS[o.height] || Pass.HEIGHTS.mid).peak;
+  var dx = o.x1 - p.x, dy = o.y1 - p.y;
+  var dist = Math.sqrt(dx * dx + dy * dy) || 1;
   this.passFlight = {
     passerId: p.id, team: p.team,
     x0: p.x, y0: p.y, x1: o.x1, y1: o.y1,
     startAt: this.now, durMs: o.durMs,
-    outcome: o.outcome, receiverId: o.receiverId, interceptorId: o.interceptorId,
-    chasers: chasers,
-    text: o.text, cut: o.cut, success: o.success, label: o.label,
+    peak: peak, ballSpeed: dist / (o.durMs / 1000), // 米/秒，供拦截难度用
+    receiverId: o.receiverId || null, // 意向接应者（跑落点用），不代表结果
+    holderId: o.holderId || null,   // 收步者：不参与进攻，落点结算时排除
   };
   this.ball.ownerId = null;
-  this.ball.x = p.x; this.ball.y = p.y;
+  this.ball.x = p.x; this.ball.y = p.y; this.ball.z = 0;
+  this.ball.vx = 0; this.ball.vy = 0;
+  this.lastInterceptK = null; // 测试用：本次飞行发生拦截时的进度
   this.lastAction = null; // 飞行期间不出演出遮罩，保证场上动作可见
   this.phase = 'passflight';
   this.phaseUntil = this.now + o.durMs;
 };
 
 // 传球飞行结束：按既定结果结算（接应队员得球 / 被拦截）
+// ★ 落点结算（实时制）：落地瞬间看落点 1.6m 内最近的球员归属；
+//   两人贴身争抢（0.4m 内）看 anticipation+firstTouch，意向接应者有身位优势；
+//   无人 → 自由球。完成传球是常规动作，不播全屏演出。
 Match.prototype.finishPassFlight = function () {
   var pf = this.passFlight;
   this.passFlight = null;
@@ -309,20 +318,102 @@ Match.prototype.finishPassFlight = function () {
     if (this.phase === 'passflight') this.phase = 'play';
     return;
   }
-  var passer = this.byId[pf.passerId];
-  this.ball.x = pf.x1; this.ball.y = pf.y1;
-  if (pf.outcome === 'recv') this.ball.ownerId = pf.receiverId;
-  else this.ball.ownerId = pf.interceptorId;
-  this.lastAction = {
-    kind: 'pass', label: pf.label || '传球',
-    playerName: passer ? passer.name : '', team: pf.team,
-    success: pf.success, cut: pf.cut, text: pf.text,
-    until: Date.now() + 2600,
-  };
+  this.ball.x = pf.x1; this.ball.y = pf.y1; this.ball.z = 0;
+  var cands = [];
+  for (var i = 0; i < this.players.length; i++) {
+    var q = this.players[i];
+    if (q.sentOff) continue;
+    if (q.id === pf.holderId) continue; // ★ 收步者不参与进攻：不接球
+    var d = Math.sqrt((q.x - pf.x1) * (q.x - pf.x1) + (q.y - pf.y1) * (q.y - pf.y1));
+    if (d <= 1.6) cands.push({ p: q, d: d });
+  }
+  cands.sort(function (a, b) { return a.d - b.d; });
+  var winner = null;
+  if (cands.length === 1) {
+    winner = cands[0].p;
+  } else if (cands.length > 1) {
+    var a0 = cands[0], a1 = cands[1];
+    if (a0.p.team !== a1.p.team && (a1.d - a0.d) < 0.4) {
+      // 贴身争抢：预判+停球，意向接应者占先
+      var s0 = FM.v(a0.p, 'anticipation') + FM.v(a0.p, 'firstTouch') + (a0.p.id === pf.receiverId ? 3 : 0);
+      var s1 = FM.v(a1.p, 'anticipation') + FM.v(a1.p, 'firstTouch') + (a1.p.id === pf.receiverId ? 3 : 0);
+      winner = s0 >= s1 ? a0.p : a1.p;
+    } else {
+      winner = a0.p;
+    }
+  }
+  if (winner) {
+    this.ball.ownerId = winner.id;
+  } else {
+    this.ball.ownerId = null; // 无人接应 → 自由球
+    this.ball.vx = 0; this.ball.vy = 0;
+  }
   this.phase = 'play';
   this.nextDecisionAt = this.now + 2200;
   var c = this.carrier();
   this.lastDecisionPos = c ? { x: c.x, y: c.y } : { x: this.ball.x, y: this.ball.y };
+};
+
+// ★ 干净拦截：防守队员得球，比赛继续。不播全屏演出 ——
+//   断球是开放比赛的一部分，场上动作本身就是演出；只留一条侧栏文字。
+Match.prototype.interceptClean = function (def, kind) {
+  this.passFlight = null;
+  this.shotFlight = null;
+  this.ball.ownerId = def.id;
+  this.ball.z = 0; this.ball.vx = 0; this.ball.vy = 0;
+  this.phase = 'play';
+  this.nextDecisionAt = this.now + 2200;
+  var verb = kind === 'shot' ? '挡下了这脚射门' : '断下了这脚传球';
+  this.lastAction = {
+    kind: 'intercept', label: '拦截', playerName: def.name, team: def.team,
+    success: true, cut: null, text: def.name + ' ' + verb + '！',
+    until: Date.now() + 1800,
+  };
+  var c = this.carrier();
+  this.lastDecisionPos = c ? { x: c.x, y: c.y } : { x: this.ball.x, y: this.ball.y };
+};
+
+// ★ 弹开：球从防守队员身上弹出成自由球（带滚动速度），双方就近追球。
+Match.prototype.interceptDeflect = function (hit, ballSpeed) {
+  var def = hit.player;
+  this.passFlight = null;
+  this.shotFlight = null;
+  var ang = Math.atan2(this.ball.y - def.y, this.ball.x - def.x) + (this.rng() - 0.5) * 1.2;
+  var spd = Math.max(2, ballSpeed * 0.35);
+  this.ball.ownerId = null;
+  this.ball.vx = Math.cos(ang) * spd;
+  this.ball.vy = Math.sin(ang) * spd;
+  this.ball.z = 0;
+  def.beatenUntil = this.now + 600; // 挡了一下，顿一下
+  this.phase = 'play';
+  this.nextDecisionAt = this.now + 2200;
+  this.lastAction = {
+    kind: 'deflect', label: '挡出', playerName: def.name, team: def.team,
+    success: true, cut: null, text: def.name + ' 把球挡了出去！',
+    until: Date.now() + 1800,
+  };
+  this.lastDecisionPos = { x: this.ball.x, y: this.ball.y };
+};
+
+// ★ 飞行阶段全员跑位：意向接应者跑落点；防守方（除门将）追球；
+//   门将按 Behavior 选位；进攻方其余人向落点方向移动接应。
+Match.prototype.moveFlightPlayers = function (pf, dt) {
+  var self = this;
+  this.players.forEach(function (p) {
+    if (p.sentOff) return;
+    if (self.now < p.frozenUntil) { p._vx = 0; p._vy = 0; return; }
+    if (p.id === pf.receiverId) {
+      self.moveToward(p, pf.x1, pf.y1, self.playerSpeed(p, true), dt);
+    } else if (p.team !== pf.team && p.pos !== 'GK') {
+      self.moveToward(p, self.ball.x, self.ball.y, self.playerSpeed(p, true) * 0.9, dt);
+    } else if (p.pos === 'GK') {
+      var kt = Behavior.keeperTarget(self, p);
+      self.moveToward(p, kt.x, kt.y, self.playerSpeed(p, false) * 0.7, dt);
+    } else {
+      self.moveToward(p, (p.x + pf.x1) / 2, (p.y + pf.y1) / 2, self.playerSpeed(p, false) * 0.6, dt);
+    }
+    self.updateEnergy(p, dt);
+  });
 };
 
 Match.prototype.tick = function () {
@@ -350,14 +441,31 @@ Match.prototype.tick = function () {
       if (this.now >= this.phaseUntil) this.resetPositions(this.concedeTeam);
       break;
     case 'shotflight': {
-      // ★ 射门飞行：球飞向瞄准点，门将飞身扑救、防守球员回追；落地后按既定结果结算
+      // ★ 射门飞行：球低平飞向瞄准点，门将飞身扑救；
+      //   线路上的防守队员可实时堵枪眼（同传球拦截规则，门将走自己的扑救演出不参与）。
       this.now += dt * 1000;
       this.clock += dt;
       var sf = this.shotFlight;
       if (sf) {
+        var k0 = clamp((this.now - dt * 1000 - sf.startAt) / sf.durMs, 0, 1);
         var k = clamp((this.now - sf.startAt) / sf.durMs, 0, 1);
+        var spx = this.ball.x, spy = this.ball.y;
         this.ball.x = sf.x0 + (sf.x1 - sf.x0) * k;
         this.ball.y = sf.y0 + (sf.y1 - sf.y0) * k;
+        this.ball.z = Intercept.heightAt(sf.peak, k);
+        // ★ 堵枪眼：门将跳过（keeperId 借 receiverId 位），其余防守队员实时判定
+        var blk = Intercept.checkInterception(this, {
+          px: spx, py: spy, x: this.ball.x, y: this.ball.y,
+          k0: k0, k1: k, peak: sf.peak, team: sf.team,
+          passerId: sf.shooterId, receiverId: sf.keeperId,
+        });
+        if (blk) {
+          this.lastInterceptK = blk.k; // 测试用
+          var bres = Intercept.resolveContest(this, blk, sf.ballSpeed, 'shot');
+          if (bres === 'clean') { this.interceptClean(blk.player, 'shot'); break; }
+          if (bres === 'deflect') { this.interceptDeflect(blk, sf.ballSpeed); break; }
+          blk.player.beatenUntil = this.now + 700;
+        }
         var kp = this.byId[sf.keeperId];
         if (kp && !kp.sentOff) this.moveToward(kp, sf.kx, sf.ky, sf.kSpd, dt);
         for (var ci = 0; ci < sf.chasers.length; ci++) {
@@ -371,28 +479,33 @@ Match.prototype.tick = function () {
       break;
     }
     case 'passflight': {
-      // ★ 传球飞行：球飞向落点，接应者跑向落点，拦截者与防守球员追球；落地后按既定结果结算
+      // ★ 传球飞行（实时拦截）：球按高度抛物线飞向落点；
+      //   每 tick 用 swept-segment 检查防守队员是否在线路上且球在其可及高度内，
+      //   触发则按能力掷骰：干净断下 / 弹开（自由球）/ 扑空（踉跄 0.7s）。
+      //   全员参与跑位（不再只动 3 人、其余冻结）。
       this.now += dt * 1000;
       this.clock += dt;
       var pf = this.passFlight;
       if (pf) {
+        var pk0 = clamp((this.now - dt * 1000 - pf.startAt) / pf.durMs, 0, 1);
         var pk = clamp((this.now - pf.startAt) / pf.durMs, 0, 1);
+        var ppx = this.ball.x, ppy = this.ball.y; // 上 tick 球位：swept 起点
         this.ball.x = pf.x0 + (pf.x1 - pf.x0) * pk;
         this.ball.y = pf.y0 + (pf.y1 - pf.y0) * pk;
-        var rc = pf.receiverId && this.byId[pf.receiverId];
-        if (rc && !rc.sentOff && this.now >= rc.frozenUntil) {
-          this.moveToward(rc, pf.x1, pf.y1, this.playerSpeed(rc, true), dt);
+        this.ball.z = Intercept.heightAt(pf.peak, pk);
+        var hit = Intercept.checkInterception(this, {
+          px: ppx, py: ppy, x: this.ball.x, y: this.ball.y,
+          k0: pk0, k1: pk, peak: pf.peak, team: pf.team,
+          passerId: pf.passerId, receiverId: pf.receiverId,
+        });
+        if (hit) {
+          this.lastInterceptK = hit.k; // 测试用：记录拦截发生时的飞行进度
+          var res = Intercept.resolveContest(this, hit, pf.ballSpeed, 'pass');
+          if (res === 'clean') { this.interceptClean(hit.player, 'pass'); break; }
+          if (res === 'deflect') { this.interceptDeflect(hit, pf.ballSpeed); break; }
+          hit.player.beatenUntil = this.now + 700; // 扑空：踉跄一下
         }
-        var ic = pf.interceptorId && this.byId[pf.interceptorId];
-        if (ic && !ic.sentOff && this.now >= ic.frozenUntil) {
-          this.moveToward(ic, pf.x1, pf.y1, this.playerSpeed(ic, true), dt);
-        }
-        for (var pi = 0; pi < pf.chasers.length; pi++) {
-          var pch = this.byId[pf.chasers[pi]];
-          if (pch && !pch.sentOff && this.now >= pch.frozenUntil) {
-            this.moveToward(pch, this.ball.x, this.ball.y, this.playerSpeed(pch, true), dt);
-          }
-        }
+        this.moveFlightPlayers(pf, dt);
       }
       if (this.now >= this.phaseUntil) this.finishPassFlight();
       break;
@@ -595,7 +708,62 @@ Match.prototype.updateEnergy = function (p, dt) {
 Match.prototype.simulate = function (dt) {
   var self = this;
   var carrier = this.carrier();
-  if (!carrier) return;
+  if (!carrier) {
+    // ★ 自由球（拦截弹开 / 无人接应的落点）：球按速度滚动、摩擦减速；
+    //   双方最近的 3 人追球，其余回位。
+    var bv = Math.sqrt(this.ball.vx * this.ball.vx + this.ball.vy * this.ball.vy);
+    if (bv > 0.25) {
+      this.ball.x += this.ball.vx * dt;
+      this.ball.y += this.ball.vy * dt;
+      var fr = Math.max(0, 1 - 3.2 * dt);
+      this.ball.vx *= fr; this.ball.vy *= fr;
+      if (this.ball.x < 1) { this.ball.x = 1; this.ball.vx = 0; }
+      if (this.ball.x > FIELD.W - 1) { this.ball.x = FIELD.W - 1; this.ball.vx = 0; }
+      if (this.ball.y < 1) { this.ball.y = 1; this.ball.vy = 0; }
+      if (this.ball.y > FIELD.H - 1) { this.ball.y = FIELD.H - 1; this.ball.vy = 0; }
+    } else {
+      this.ball.vx = 0; this.ball.vy = 0;
+    }
+    var byTeam = { home: [], away: [] };
+    this.players.forEach(function (p) {
+      if (p.sentOff) return;
+      var d = Math.sqrt((p.x - self.ball.x) * (p.x - self.ball.x) + (p.y - self.ball.y) * (p.y - self.ball.y));
+      byTeam[p.team].push({ p: p, d: d });
+    });
+    ['home', 'away'].forEach(function (t) {
+      byTeam[t].sort(function (a, b) { return a.d - b.d; });
+      byTeam[t].forEach(function (e, idx) {
+        var p = e.p;
+        if (self.now < p.frozenUntil) { p._vx = 0; p._vy = 0; return; }
+        if (idx < 3 && p.pos !== 'GK') {
+          self.moveToward(p, self.ball.x, self.ball.y, self.playerSpeed(p, true) * 0.95, dt);
+        } else if (p.pos === 'GK') {
+          var kt = Behavior.keeperTarget(self, p);
+          self.moveToward(p, kt.x, kt.y, self.playerSpeed(p, false) * 0.7, dt);
+        } else {
+          self.moveToward(p, p.hx, p.hy, self.playerSpeed(p, false) * 0.7, dt);
+        }
+        self.updateEnergy(p, dt);
+      });
+    });
+    // ★ 拾取：进入 0.9m 控制半径的最近球员得球（之前引擎从没有自由球，无此机制）
+    //   收步中（holdingUntil）的球员不参与进攻，不捡球；
+    //   收步造出的死球对收步者"死亡"（deadTo，未过期则跳过）
+    var deadTo = this.ball.deadTo;
+    var bestP = null, bestD = 0.9;
+    this.players.forEach(function (p) {
+      if (p.sentOff || self.now < p.frozenUntil) return;
+      if (self.now < p.holdingUntil) return;
+      if (deadTo && self.now < deadTo.until && p.id === deadTo.id) return;
+      var d = Math.sqrt((p.x - self.ball.x) * (p.x - self.ball.x) + (p.y - self.ball.y) * (p.y - self.ball.y));
+      if (d < bestD) { bestD = d; bestP = p; }
+    });
+    if (bestP) {
+      this.ball.ownerId = bestP.id;
+      this.ball.vx = 0; this.ball.vy = 0; this.ball.z = 0;
+    }
+    return;
+  }
 
   var dir = carrier.team === 'home' ? 1 : -1; // 进攻方向
 
@@ -795,13 +963,17 @@ Match.prototype.buildOptions = function (p) {
     opt('dribble', 58 + ((FM.dribble(p) + FM.speed(p)) * ef - (FM.defend(near.player) + FM.speed(near.player)) * defEf) * 0.9),
     (function (o) {
       // ★ 传球多阶段菜单：该球员可用的脚法（按 technique 解锁）+ 推荐落点（AI 选的最佳接应点，光标初始位置）
+      //   成功率 = 线路危险度估计（走廊内可拦截的防守队员越多越低），确定性，不掷骰
       var tgt = self.bestPassTarget(p);
+      var pp0 = { aimX: tgt.x, aimY: tgt.y, technique: 'inside', height: 'mid' };
+      var land0 = Pass.computeLanding(p, pp0, FM.pass(p) * ef);
+      o.rate = Math.round(clamp(Pass.laneRate(self, p, pp0, land0), 1, 99));
       o.passOpts = {
         techniques: Pass.availableTechniques(p),
         suggest: { x: Math.round(tgt.x * 10) / 10, y: Math.round(tgt.y * 10) / 10 },
       };
       return o;
-    })(opt('pass', 72 + (FM.pass(p) * ef - 60) * 0.7 - pressure)),
+    })(opt('pass', 80)),
     // ★ 护球：身体对抗（强壮+平衡）对抢断，成功则卡住逼抢者
     opt('protect', 68 + ((FM.v(p, 'strength') + FM.v(p, 'balance')) / 2 * ef - FM.defend(near.player) * defEf) * 0.7),
     opt('shoot', 78 + (FM.shoot(p) * ef - FM.keep(keeper) * keepEf) * 1.1 - distGoal * 0.5),
@@ -944,20 +1116,21 @@ Match.prototype.resolveAction = function (p, commandId, rate, params) {
         if (osHeld.type === 'offside') {
           return this.whistleOffside(osHeld, p);
         }
-        // ★ 目标收步：不偷偷改传其他人。球仍沿原线路飞出，无人接应 → 被离落点最近的防守球员得到
-        var oppTeam = p.team === 'home' ? 'away' : 'home';
-        var best = null, bd = 1e9;
-        this.players.forEach(function (q) {
-          if (q.team !== oppTeam || q.sentOff) return;
-          var d = Math.sqrt((q.x - corr.x) * (q.x - corr.x) + (q.y - corr.y) * (q.y - corr.y));
-          if (d < bd) { bd = d; best = q; }
-        });
+        // ★ 目标收步：不偷偷改传其他人。球仍沿原线路飞出，无人接应 →
+        //   实时制下由防守方就近追球、落点结算归属（大概率被防守方得到）。
+        //   收步者不参与进攻：落点结算时排除他（"收步球员不接球"铁律），
+        //   且之后 8 秒内这个自由球对他"死亡"（自过期，无需生命周期管理）。
+        this.ball.deadTo = { id: target.id, until: this.now + 8000 };
         this.startPassFlight(p, {
           x1: corr.x, y1: corr.y, durMs: land.flightMs,
-          outcome: 'intercept', receiverId: null, interceptorId: best.id,
-          text: '⚠ ' + target.name + '识破越位陷阱，急停收步！' + p.name + '的' + techName + kindName + '滚向无人地带，被' + best.name + '得到。',
-          cut: 'pass-lose', success: false, label: passLabel,
+          height: pp.height, receiverId: null, holderId: target.id,
         });
+        this.lastAction = {
+          kind: 'pass', label: passLabel, playerName: p.name, team: p.team,
+          success: false, cut: null,
+          text: '⚠ ' + target.name + '识破越位陷阱，急停收步！' + p.name + '的传球滚向无人地带。',
+          until: Date.now() + 1800,
+        };
         return { kind: commandId, label: passLabel, playerName: p.name, success: false, pending: true, text: '' };
       }
       // ★ 裁判层：纯客观判定，不看任何数值（目标前插参与 → 越位照吹）
@@ -967,36 +1140,14 @@ Match.prototype.resolveAction = function (p, commandId, rate, params) {
           return this.whistleOffside(os, p);
         }
       }
-      // ★ 成功率按本次传球参数重算（距离/高度/脚法/压迫），取代菜单预估值
-      var prate = Pass.passRate(p, pp, land, near.dist);
-      success = this.rng() * 100 < prate;
-      var pfOutcome, pfReceiverId = null, pfInterceptorId = null, pfText, pfCut;
-      if (success) {
-        var recv = target;
-        if (!recv) {
-          // 无人接应：落点附近最近的本方球员上前拿球
-          var rb = null, rd = 1e9;
-          this.players.forEach(function (q) {
-            if (q.team !== p.team || q.sentOff) return;
-            var d = Math.sqrt((q.x - corr.x) * (q.x - corr.x) + (q.y - corr.y) * (q.y - corr.y));
-            if (d < rd) { rd = d; rb = q; }
-          });
-          recv = rb || p;
-        }
-        pfOutcome = 'recv'; pfReceiverId = recv.id;
-        pfText = p.name + '一脚' + techName + kindName + '，' + recv.name + '稳稳接应。';
-        pfCut = 'pass-win';
-      } else {
-        pfOutcome = 'intercept'; pfInterceptorId = near.player.id;
-        pfText = p.name + ' 的' + techName + kindName + '被 ' + near.player.name + ' 拦截！';
-        pfCut = 'pass-lose';
-      }
+      // ★ 实时制：开球瞬间不再掷骰定结果。意向接应者 = 传球目标（只决定谁跑落点），
+      //   实际归属看飞行途中的实时拦截（线路+高度+球速+防守能力）与落地争抢。
+      var recvId = target ? target.id : null;
       this.startPassFlight(p, {
         x1: corr.x, y1: corr.y, durMs: land.flightMs,
-        outcome: pfOutcome, receiverId: pfReceiverId, interceptorId: pfInterceptorId,
-        text: pfText, cut: pfCut, success: success, label: passLabel,
+        height: pp.height, receiverId: recvId,
       });
-      return { kind: commandId, label: passLabel, playerName: p.name, success: success, pending: true, text: '' };
+      return { kind: commandId, label: passLabel, playerName: p.name, success: true, pending: true, text: '' };
     }
     case 'protect': {
       // ★ 护球：用身体卡住位置，不推进；成功则逼抢者被挡开 1.8 秒，为队友跑位争取时间
@@ -1409,7 +1560,8 @@ Match.prototype.serialize = function () {
     referee: { name: this.referee.name, strictness: this.referee.strictness },
     controlledId: this.control.playerId, // 当前被玩家直接操控的球员
     controlActive: (this.now - this.control.activeStamp) <= 2000, // 2 秒内有有效操作→玩家实控，否则 AI 接管
-    ball: { x: +this.ball.x.toFixed(2), y: +this.ball.y.toFixed(2) },
+    ball: { x: +this.ball.x.toFixed(2), y: +this.ball.y.toFixed(2),
+      z: +(this.ball.z || 0).toFixed(2), ownerId: this.ball.ownerId },
     decision: this.decision ? {
       playerId: this.decision.playerId,
       playerName: this.byId[this.decision.playerId].name,

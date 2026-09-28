@@ -205,7 +205,10 @@ console.log('== 引擎集成：行为 → 局面 → 判罚 ==');
     '收步改传：先进入传球飞行、球不瞬移', JSON.stringify({ kind: r.kind, phase: m.phase }));
   var guard = 0;
   while (m.phase === 'passflight' && guard++ < 1000) m.tick();
-  ok(/急停收步/.test(m.lastAction.text) && m.ball.ownerId !== 'h9' && m.ball.ownerId[0] === 'a',
+  // 落地瞬间可能暂成自由球：继续跑 play，让就近追球的防守方捡到
+  var guard2 = 0;
+  while (!m.ball.ownerId && guard2++ < 60) m.tick();
+  ok(/急停收步/.test(m.lastAction.text) && m.ball.ownerId !== 'h9' && m.ball.ownerId && m.ball.ownerId[0] === 'a',
     '高球商目标收步，空传被防守方得到（不偷偷改传）', JSON.stringify({ text: m.lastAction.text, owner: m.ball.ownerId }));
 })();
 

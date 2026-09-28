@@ -1103,20 +1103,31 @@ function drawActors(t) {
       break;
     }
   }
+  // ★ 球高度（米）：飞行时按抛物线升空，画在地面位置上方 + 地面投影，
+  //   高度在画面上可读 —— 超高球中段肉眼可见地飞在高空。
+  var ballZ = (state.ball && state.ball.z) || 0;
   if (!ballOwned) {
-    ballTrail.push({ x: bbx, y: bby });
+    ballTrail.push({ x: bbx, y: bby, z: ballZ });
     if (ballTrail.length > 9) ballTrail.shift();
   } else if (ballTrail.length) {
     ballTrail.length = 0; // 脚下球不留轨迹
   }
   for (var bti = 0; bti < ballTrail.length; bti++) {
     var btp = project(ballTrail[bti].x, ballTrail[bti].y);
+    var trz = (ballTrail[bti].z || 0) * 30 * btp.s;
     ctx.fillStyle = 'rgba(255,255,255,' + (0.05 + 0.20 * bti / ballTrail.length) + ')';
-    ctx.beginPath(); ctx.arc(btp.x, btp.y - 4, 3.2 * btp.s, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.arc(btp.x, btp.y - 4 - trz, 3.2 * btp.s, 0, Math.PI * 2); ctx.fill();
   }
   var bp = project(bbx, bby);
-  var bs = 8 * bp.s * 1.6;
-  ctx.drawImage(ballImg, bp.x - bs / 2, bp.y - bs - 2, bs, bs);
+  var rise = ballZ * 30 * bp.s; // 1 米 ≈ 30*s px
+  if (ballZ > 0.4) {
+    // 地面投影：球飞得越高，影越淡越小，地面位置始终可读
+    var shA = Math.max(0.08, 0.32 - ballZ * 0.02);
+    ctx.fillStyle = 'rgba(0,0,0,' + shA.toFixed(2) + ')';
+    ctx.beginPath(); ctx.ellipse(bp.x, bp.y + 2, 9 * bp.s, 3.6 * bp.s, 0, 0, Math.PI * 2); ctx.fill();
+  }
+  var bs = 8 * bp.s * 1.6 * (1 + Math.min(ballZ, 6) * 0.02);
+  ctx.drawImage(ballImg, bp.x - bs / 2, bp.y - bs - 2 - rise, bs, bs);
 
   // ★ 被玩家直接操控标记（绿圈）：置顶绘制，不被任何球员遮挡
   //   2 秒无操作被 AI 接管时变暗，提示"动一下方向键拿回控制"

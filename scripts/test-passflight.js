@@ -1,6 +1,7 @@
 // scripts/test-passflight.js
-// 传球飞行阶段测试：掷骰定结果 → 球飞向落点 → 接应者跑位/防守追球 → 落地结算
-// （回归：传球曾直接瞬移球到结果位置，全程无轨迹、无追球）
+// 传球飞行阶段测试（2026-09-28 实时拦截制）：
+//   开球瞬间不再掷骰定结果。球按高度抛物线飞向落点，途中实时拦截判定，
+//   落地按落点归属结算。完成/拦截都不播全屏演出（开放比赛的一部分）。
 'use strict';
 
 var E = require('../server/game/engine');
@@ -18,20 +19,17 @@ function newMatch(seed) {
   return m;
 }
 function P(m, id) { return m.byId[id]; }
-function set(m, id, x, y) { var p = P(m, id); p.x = x; p.y = y; }
+function set(m, id, x, y) { var p = P(m, id); p.x = x; p.y = y; p._px = x; p._py = y; }
 
-// 直接起飞（绕过掷骰，outcome 指定）
+// 直接起飞（新签名）：{x1, y1, durMs, height, receiverId}
 function kickoff(m, o) {
   var p = P(m, 'h10');
   set(m, 'h10', 50, 34);
-  set(m, 'h8', 40, 30);   // 接应者
-  set(m, 'a4', 62, 38);   // 拦截者/防守
-  set(m, 'a5', 70, 30);
   m.ball.ownerId = p.id; m.ball.x = p.x; m.ball.y = p.y;
   m.startPassFlight(p, {
-    x1: 66, y1: 34, durMs: 800,
-    outcome: o.outcome, receiverId: o.receiverId || 'h8', interceptorId: o.interceptorId || 'a4',
-    text: o.text || '测试传球', cut: o.cut || 'pass-win', success: o.outcome === 'recv', label: '传球',
+    x1: o.x1 == null ? 66 : o.x1, y1: o.y1 == null ? 34 : o.y1,
+    durMs: o.durMs || 800, height: o.height || 'mid',
+    receiverId: o.receiverId === undefined ? 'h8' : o.receiverId,
   });
   return p;
 }
@@ -41,50 +39,100 @@ function runFlight(m) {
   return guard;
 }
 
-console.log('== 传球飞行：成功接应 ==');
+console.log('== 传球飞行：干净接应（无防守在线路上） ==');
 (function () {
   var m = newMatch(11);
-  kickoff(m, { outcome: 'recv' });
+  set(m, 'h8', 65.5, 34); // 接应者紧贴落点
+  // 所有防守队员远离落点 15 米以上（800ms 内谁都冲不过来），测"干净接应"机制
+  ['a2','a3','a4','a5','a6','a7','a8','a9','a10','a11'].forEach(function (id, i) { set(m, id, 40, 8 + i * 5); });
+  kickoff(m, { height: 'mid' });
   ok(m.phase === 'passflight', '传球后进入 passflight 阶段');
   ok(m.ball.ownerId === null, '飞行中球无主人（不是瞬移给接应者）');
   ok(!m.lastAction, '飞行中不提前出文字/演出');
   var bx0 = m.ball.x;
-  var rx0 = P(m, 'h8').x, ry0 = P(m, 'h8').y;
-  var ax0 = P(m, 'a4').x;
   m.tick(); m.tick(); m.tick();
   ok(m.ball.x > bx0 + 0.5 && m.ball.x < 66, '球在飞向落点途中（非瞬移）', 'ball.x=' + m.ball.x.toFixed(1));
-  ok(Math.abs(P(m, 'h8').x - rx0) + Math.abs(P(m, 'h8').y - ry0) > 0.1, '接应者跑向落点');
-  ok(Math.abs(P(m, 'a4').x - ax0) > 0.05, '防守球员追球移动');
+  ok(m.ball.z > 0.2, 'mid 高度球升空（抛物线）', 'z=' + m.ball.z.toFixed(2));
   var n = runFlight(m);
   ok(n < 500, '飞行阶段正常结束');
   ok(m.phase === 'play', '结束后回到 play', 'phase=' + m.phase);
-  ok(m.ball.ownerId === 'h8', '球交给接应者', 'owner=' + m.ball.ownerId);
-  ok(Math.abs(m.ball.x - 66) < 0.6 && Math.abs(m.ball.y - 34) < 0.6, '球停在落点');
-  ok(m.lastAction && m.lastAction.cut === 'pass-win', '接应演出 cut=pass-win', m.lastAction && m.lastAction.cut);
+  ok(m.ball.ownerId === 'h8', '落点最近的接应者得球', 'owner=' + m.ball.ownerId);
+  ok(m.ball.z === 0, '落地后高度归零');
+  ok(!m.lastAction || !m.lastAction.cut, '常规完成不播全屏演出');
 })();
 
-console.log('== 传球飞行：被拦截 ==');
+console.log('== 传球飞行：当面低球被断（2 米贴脸在线路上） ==');
 (function () {
-  var m = newMatch(22);
-  kickoff(m, { outcome: 'intercept', text: '被断', cut: 'pass-lose' });
-  runFlight(m);
-  ok(m.phase === 'play', '拦截后回到 play');
-  ok(m.ball.ownerId === 'a4', '球交给拦截者', 'owner=' + m.ball.ownerId);
-  ok(m.lastAction && m.lastAction.cut === 'pass-lose', '被断演出 cut=pass-lose', m.lastAction && m.lastAction.cut);
-  ok(/测试传球|被断/.test(m.lastAction.text), '被断文字正确', m.lastAction.text);
+  var stopped = 0, N = 20;
+  for (var s = 0; s < N; s++) {
+    var m = newMatch(100 + s);
+    set(m, 'h8', 63, 34);
+    set(m, 'a4', 52, 34);   // 当面 2 米，正在线路上
+    set(m, 'a5', 70, 20);
+    kickoff(m, { height: 'low' });
+    runFlight(m);
+    // 被断（clean）或弹开（deflect→自由球）都算"没能从容穿过"
+    var awayGot = m.ball.ownerId && m.byId[m.ball.ownerId].team === 'away';
+    if (m.lastInterceptK != null || awayGot || m.ball.ownerId === null) stopped++;
+  }
+  ok(stopped >= 17, '当面低球 20 次至少 17 次被断/弹开（不穿过）', stopped + '/' + N);
 })();
 
-console.log('== 传球飞行：收步改传（无人接应→防守得球） ==');
+console.log('== 传球飞行：超高球中段无人能及 ==');
+(function () {
+  var bad = 0, N = 10, midZ0 = 0;
+  for (var s = 0; s < N; s++) {
+    var m = newMatch(200 + s);
+    set(m, 'h8', 63, 34);
+    set(m, 'a4', 52, 34);   // 同样站在 2 米线路上
+    set(m, 'a5', 70, 20);
+    kickoff(m, { height: 'vhigh', durMs: 1300 });
+    // 飞到中段（k≈0.46）时球应在高空：只走 6 tick 就采样
+    for (var ti = 0; ti < 6 && m.phase === 'passflight'; ti++) m.tick();
+    if (s === 0) midZ0 = m.phase === 'passflight' ? m.ball.z : -1;
+    runFlight(m);
+    // 中段（k<0.7）绝不能发生拦截；只允许初段/末段
+    if (m.lastInterceptK != null && m.lastInterceptK < 0.7) bad++;
+  }
+  ok(midZ0 > 4, '超高球中段在高空', 'z=' + midZ0.toFixed(1));
+  ok(bad === 0, '超高球 10 次中段（k<0.7）零拦截', 'bad=' + bad);
+})();
+
+console.log('== 传球飞行：收步改传（无人接应→落点结算） ==');
 (function () {
   var m = newMatch(33);
-  kickoff(m, { outcome: 'intercept', interceptorId: 'a5', receiverId: null, text: '滚向无人地带', cut: 'pass-lose' });
+  set(m, 'h8', 40, 30);   // 接应者远离
+  set(m, 'a4', 62, 38);
+  set(m, 'a5', 64, 30);   // 防守靠近落点
+  kickoff(m, { receiverId: null, height: 'mid' });
   runFlight(m);
-  ok(m.ball.ownerId === 'a5', '无人接应时离落点最近的防守球员得球', 'owner=' + m.ball.ownerId);
+  var owner = m.ball.ownerId;
+  ok(owner && m.byId[owner].team === 'away', '无人接应时防守方得球', 'owner=' + owner);
+})();
+
+console.log('== 落点贴身争抢看能力（直接测落点结算） ==');
+(function () {
+  var m = newMatch(44);
+  var h8 = P(m, 'h8'), a4 = P(m, 'a4');
+  set(m, 'h8', 66, 34);
+  set(m, 'a4', 66.3, 34); // 0.3m 贴身，不同队 → 能力对决
+  set(m, 'a5', 70, 20);
+  // 直接摆好落点局面测 finishPassFlight（不走飞行，避免 a4 在终点前被判拦截）
+  m.ball.x = 66; m.ball.y = 34; m.ball.z = 0; m.ball.ownerId = null;
+  m.passFlight = { passerId: 'h10', team: 'home', x0: 50, y0: 34, x1: 66, y1: 34,
+    startAt: m.now - 800, durMs: 800, peak: 0.4, ballSpeed: 20, receiverId: 'h8' };
+  m.phase = 'passflight'; m.phaseUntil = m.now;
+  m.finishPassFlight();
+  var sH = h8.stats.anticipation + h8.stats.firstTouch;
+  var sA = a4.stats.anticipation + a4.stats.firstTouch;
+  var expect = sH + 3 >= sA ? 'h8' : 'a4'; // 接应者 +3 身位优势
+  ok(m.phase === 'play', '结算后回到 play');
+  ok(m.ball.ownerId === expect, '能力高者得球', 'owner=' + m.ball.ownerId + ' expect=' + expect);
 })();
 
 console.log('== applyCommand 传球走飞行（非瞬移） ==');
 (function () {
-  var m = newMatch(44);
+  var m = newMatch(55);
   var p = P(m, 'h10');
   set(m, 'h10', 50, 34);
   ['a2','a3','a4','a5','a6','a7','a8','a9','a10','a11'].forEach(function (id, i) { set(m, id, 60, 8 + i * 5); });
@@ -92,38 +140,28 @@ console.log('== applyCommand 传球走飞行（非瞬移） ==');
   m.ball.ownerId = p.id; m.ball.x = p.x; m.ball.y = p.y;
   m.phase = 'decision';
   m.decision = { playerId: p.id, options: [{ id: 'pass', rate: 90, enabled: true, cost: 3 }] };
-  var r = m.applyCommand(p.id, 'pass', { kind: 'short', dir: 0, technique: 'inside', height: 'mid', power: 60 });
+  var r = m.applyCommand(p.id, 'pass', { aimX: 66, aimY: 34, technique: 'inside', height: 'mid' });
   ok(r.ok, '指令接受');
   ok(r.result && r.result.pending === true, '返回 pending（结果未瞬时结算）');
   ok(m.phase === 'passflight', '进入 passflight 阶段', 'phase=' + m.phase);
   ok(m.ball.ownerId === null, '球未瞬移给任何人');
-  var mid = null;
-  m.tick(); m.tick();
-  mid = { x: m.ball.x, y: m.ball.y };
   runFlight(m);
-  ok(m.lastAction && (m.lastAction.cut === 'pass-win' || m.lastAction.cut === 'pass-lose'),
-    '飞行后按掷骰结果出演出', m.lastAction && m.lastAction.cut);
-  ok(m.lastAction && m.lastAction.text.length > 0, '飞行后才出文字', m.lastAction && m.lastAction.text);
-  void mid;
+  ok(!m.lastAction || !m.lastAction.cut, '飞行后不出全屏演出（常规传球）');
 })();
 
 console.log('== 飞行时长来自传球高度 ==');
 (function () {
   var Pass = require('../server/game/rules/pass');
-  var m = newMatch(55);
+  var m = newMatch(66);
   var p = P(m, 'h10');
   set(m, 'h10', 50, 34);
   ['low', 'mid', 'high', 'vhigh'].forEach(function (h) {
-    var land = Pass.computeLanding(p, { kind: 'short', dir: 0, technique: 'inside', height: h, power: 50 }, 80);
+    var land = Pass.computeLanding(p, { technique: 'inside', height: h }, 80);
     var expect = { low: 450, mid: 650, high: 950, vhigh: 1300 }[h];
     ok(land.flightMs === expect, '高度 ' + h + ' → 飞行 ' + expect + 'ms', 'flightMs=' + land.flightMs);
   });
-  // startPassFlight 采用 computeLanding 的 flightMs
-  var land2 = Pass.computeLanding(p, { kind: 'short', dir: 0, technique: 'inside', height: 'high', power: 50 }, 80);
-  m.ball.ownerId = p.id;
-  m.startPassFlight(p, { x1: 60, y1: 34, durMs: land2.flightMs, outcome: 'recv', receiverId: 'h8', text: 't', cut: 'pass-win', success: true, label: '传球' });
-  ok(m.passFlight.durMs === 950, '高球飞行 950ms', 'dur=' + m.passFlight.durMs);
+  void m;
 })();
 
-if (failures) { console.log('\nFAILURES: ' + failures); process.exit(1); }
-console.log('\nALL TESTS PASSED');
+console.log(failures === 0 ? 'ALL PASS' : failures + ' FAILURES');
+process.exit(failures === 0 ? 0 : 1);
