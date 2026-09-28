@@ -20,10 +20,11 @@ function P(m, id) { return m.byId[id]; }
 function set(m, id, x, y) { var p = P(m, id); p.x = x; p.y = y; }
 
 // 把一次射门打到飞行阶段：直接调 startShotFlight（绕过掷骰，outcome 指定）
+// ★ 新机制下射门线路上的防守者会真实堵枪眼，所以默认把所有客场外场球员清出线路
 function kick(m, outcome, shooterId, isSpecial) {
   var p = P(m, shooterId || 'h10');
   set(m, 'h10', 60, 34); set(m, 'a1', 102, 34);
-  ['a2', 'a3', 'a4'].forEach(function (id, i) { set(m, id, 80, 20 + i * 10); });
+  ['a2', 'a3', 'a4', 'a5', 'a6', 'a7', 'a8', 'a9', 'a10', 'a11'].forEach(function (id, i) { set(m, id, 45, 8 + i * 5); });
   m.ball.ownerId = p.id; m.ball.x = p.x; m.ball.y = p.y;
   m.startShotFlight(p, P(m, 'a1'), {
     isSpecial: !!isSpecial, label: isSpecial ? '必杀' : '射门',
@@ -89,6 +90,22 @@ console.log('== 必杀技飞行 ==');
   ok(m.lastAction && m.lastAction.cut === 'special-goal', '必杀进球演出 cut=special-goal', m.lastAction && m.lastAction.cut);
 })();
 
+console.log('== 堵枪眼：线路上有防守者 ==');
+(function () {
+  var stopped = 0, attempted = 0, N = 20;
+  for (var s = 0; s < N; s++) {
+    var m = newMatch(500 + s);
+    kick(m, 'goal');
+    set(m, 'a4', 75, 34); // 站住射门线路（15 米处）
+    P(m, 'a4')._vx = 0; P(m, 'a4')._vy = 0;
+    runFlight(m);
+    if (m.lastInterceptK != null) attempted++;
+    if (m.phase !== 'goal') stopped++; // 被干净断下或弹开 → 没进
+  }
+  ok(attempted === N, '线路上有防守者时每次都有拦截尝试（不穿模）', attempted + '/' + N);
+  ok(stopped > 0 && stopped < N, '堵截率合理（不是 0 也不是 100%）', stopped + '/' + N);
+})();
+
 console.log('== 落点合理性 ==');
 (function () {
   var m = newMatch(55);
@@ -115,8 +132,8 @@ console.log('== resolveAction 射门走飞行 ==');
   runFlight(m);
   ok(m.phase === 'goal' && m.score.home === 1, 'rate=100 → 飞行后进球');
   function parkRest(mm) {
-    ['a2','a3','a4','a5','a6','a7','a8','a9','a10','a11'].forEach(function (id, i) { set(mm, id, 60, 8 + i * 5); });
-    ['h2','h3','h4','h5','h6','h7','h8','h9','h11'].forEach(function (id, i) { set(mm, id, 50, 8 + i * 5); });
+    ['a2','a3','a4','a5','a6','a7','a8','a9','a10','a11'].forEach(function (id, i) { set(mm, id, 55, 4 + i * 6.5); });
+    ['h2','h3','h4','h5','h6','h7','h8','h9','h11'].forEach(function (id, i) { set(mm, id, 50, 4 + i * 6.5); });
   }
 })();
 
