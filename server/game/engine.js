@@ -30,6 +30,10 @@ var Pass = require('./rules/pass');
 
 var FIELD = C.FIELD;
 
+// ★ 全屏结算演出时长（墙钟 ms）：演出是客户端遮罩，引擎不停表，
+//   被晃倒之类的计时状态必须盖住这段时间，否则演出播完状态就过期、用户看不到
+var CUT_OVERLAY_MS = 2200;
+
 // ---------- 小工具 ----------
 function clamp(v, lo, hi) { return v < lo ? lo : v > hi ? hi : v; }
 function dist(a, b) {
@@ -878,7 +882,8 @@ Match.prototype.resolveAction = function (p, commandId, rate, params) {
       if (success) {
         p.x = clamp(def.x + 7 * dir, 2, FIELD.W - 2);
         p.y = clamp(def.y + (this.rng() - 0.5) * 6, 2, FIELD.H - 2);
-        def.beatenUntil = this.now + 2000;
+        // ★ 全屏演出期间引擎不停表：踉跄时长盖住演出，否则演完用户就看不到了
+        def.beatenUntil = this.now + 2000 + CUT_OVERLAY_MS;
         text = p.name + ' 用突破晃过了 ' + def.name + '！';
         cut = 'dribble-win';
       } else {
@@ -894,7 +899,7 @@ Match.prototype.resolveAction = function (p, commandId, rate, params) {
           text = p.name + ' 的突破被 ' + def.name + ' 干净地断下！';
           cut = 'dribble-lose';
         } else if (t.outcome === 'beaten') {
-          def.beatenUntil = this.now + 2000;
+          def.beatenUntil = this.now + 2000 + CUT_OVERLAY_MS; // ★ 盖住全屏演出
           p.x = clamp(def.x + 7 * dir, 2, FIELD.W - 2);
           text = p.name + ' 强行抹过了 ' + def.name + '！';
           cut = 'dribble-win';
@@ -1049,7 +1054,7 @@ Match.prototype.resolveAction = function (p, commandId, rate, params) {
           text = p.name + ' 的假动作被 ' + d2.name + ' 看穿并断下！';
           cut = 'dribble-lose';
         } else if (t2.outcome === 'beaten') {
-          d2.beatenUntil = this.now + 1500;
+          d2.beatenUntil = this.now + 1500 + CUT_OVERLAY_MS; // ★ 盖住全屏演出
           text = p.name + ' 的假动作没晃开 ' + d2.name + '，但顺势抹了过去！';
           cut = 'dribble-win';
         } else {
@@ -1080,7 +1085,7 @@ Match.prototype.resolveAction = function (p, commandId, rate, params) {
         cut = 'dribble-lose'; // 复用拼抢对决演出图（防守方获胜视角）
         success = true;
       } else if (t.outcome === 'beaten') {
-        p.beatenUntil = this.now + 2000;
+        p.beatenUntil = this.now + 2000 + CUT_OVERLAY_MS; // ★ 盖住全屏演出
         text = p.name + ' 上抢落空，被 ' + carrier.name + ' 闪了过去！';
         cut = 'dribble-win'; // 复用拼抢对决演出图（进攻方获胜视角）
         success = false;
@@ -1105,7 +1110,7 @@ Match.prototype.resolveAction = function (p, commandId, rate, params) {
     success: success,
     text: text,
     cut: cut,
-    until: Date.now() + 2200,
+    until: Date.now() + CUT_OVERLAY_MS,
   };
   return this.lastAction;
 };
