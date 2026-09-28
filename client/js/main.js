@@ -1607,12 +1607,19 @@ function frame(t) {
   if (DEBUG) { // 左上角诊断行：按键 / 菜单栈 / 异常
     var _dlt = hmTop();
     ctx.font = '14px monospace'; ctx.textAlign = 'left'; ctx.textBaseline = 'top';
-    ctx.fillStyle = 'rgba(0,0,0,0.7)'; ctx.fillRect(8, 8, 460, 66);
+    ctx.fillStyle = 'rgba(0,0,0,0.7)'; ctx.fillRect(8, 8, 460, 88);
     ctx.fillStyle = '#7dff9a';
     ctx.fillText(dbgKey || 'key=-', 14, 12);
     ctx.fillText('stack=' + (ui.hmenu ? ui.hmenu.stack.map(function (l) { return l.kind + '#' + l.sel; }).join('>') : 'null') + ' choosing=' + ui.choosing, 14, 32);
     ctx.fillStyle = dbgErr ? '#ff6b6b' : '#5a6584';
     ctx.fillText(dbgErr || 'err=-', 14, 52);
+    // ★ 球诊断：逻辑位置/高度/渲染位置/相机，一眼定位"球去哪了"
+    var _bb = state.ball || {}, _bp2 = null;
+    try { _bp2 = project(ballR.x, ballR.y); } catch (e) { _bp2 = null; }
+    ctx.fillStyle = '#ffd76a';
+    ctx.fillText('ball=(' + (+(_bb.x || 0)).toFixed(1) + ',' + (+(_bb.y || 0)).toFixed(1) + ') z=' + (+(_bb.z || 0)).toFixed(2) +
+      ' own=' + (_bb.ownerId || '-') + ' R=(' + ballR.x.toFixed(1) + ',' + ballR.y.toFixed(1) + ')' +
+      (_bp2 ? ' scr=(' + _bp2.x.toFixed(0) + ',' + (_bp2.y - Math.min(+(_bb.z || 0), 5) * 30 * _bp2.s).toFixed(0) + ')' : ' scr=?'), 14, 72);
   }
   requestAnimationFrame(frame);
 }
