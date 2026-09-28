@@ -217,6 +217,14 @@ document.addEventListener('keydown', function (e) {
     toast('切换操控球员');
     return;
   }
+  // ★ debug 摆拍：?debug=1 时按 1/2/3/4 触发确定性拦截场景（低球贴脸/高球越过/超高球中段/弹开追抢），
+  //   适配器内同步跑完关键 tick 并冻结，截图核对用。平时无此功能。
+  if (DEBUG && !headMenuOpen() && (k === '1' || k === '2' || k === '3' || k === '4')) {
+    api.post('/api/debug/scene', { matchId: matchId, scene: k }).then(function (r) {
+      toast(r && r.ok ? '场景' + k + '就绪 ' + JSON.stringify(r.info) : '场景失败');
+    }).catch(function () { toast('场景失败'); });
+    return;
+  }
   keys[k] = true;
   updatePadFromKeys();
 });
