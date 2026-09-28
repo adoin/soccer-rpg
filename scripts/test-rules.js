@@ -535,5 +535,29 @@ console.log('== 传球自由落点：输入即意图，能力只定散布（场�
   ok(r5.ok === true && m5.phase === 'play' && m5.ball.ownerId === 'a10', '卡位后比赛继续、球权不变', m5.phase);
 })();
 
+console.log('== 被晃倒踉跄：直接操控也被罚、serialize 透出 beaten ==');
+(function () {
+  var m = newMatch(801);
+  var p = P(m, 'h4');
+  set(m, 'h4', 50, 34);
+  m.ball.ownerId = 'a10'; set(m, 'a10', 70, 34);
+  m.control.playerId = 'h4';
+  m.control.activeStamp = m.now;
+  m.control.dx = 1; m.control.dy = 0; m.control.sprint = false; m.control.slow = false;
+  p._vx = 0; p._vy = 0; p.beatenUntil = 0;
+  set(m, 'h4', 50, 34);
+  for (var ti = 0; ti < 25; ti++) m.controlMove(p, 0.12);
+  var dNormal = P(m, 'h4').x - 50;
+  p._vx = 0; p._vy = 0; p.beatenUntil = m.now + 2000;
+  set(m, 'h4', 50, 34);
+  for (var tj = 0; tj < 25; tj++) m.controlMove(p, 0.12);
+  var dBeaten = P(m, 'h4').x - 50;
+  ok(dNormal > 5 && dBeaten < dNormal * 0.5, '被晃倒后直接操控只能踉跄（3 秒位移 <50%）', dNormal.toFixed(1) + 'm vs ' + dBeaten.toFixed(1) + 'm');
+  var sp = m.serialize().players.filter(function (q) { return q.id === 'h4'; })[0];
+  ok(sp.beaten === true, 'serialize 透出 beaten 标记', JSON.stringify(sp.beaten));
+  var sp2 = m.serialize().players.filter(function (q) { return q.id === 'h5'; })[0];
+  ok(sp2.beaten === false, '没被过的球员 beaten 为 false', JSON.stringify(sp2.beaten));
+})();
+
 console.log(failures === 0 ? '\nALL TESTS PASSED' : '\n' + failures + ' TEST(S) FAILED');
 process.exit(failures === 0 ? 0 : 1);

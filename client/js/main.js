@@ -28,19 +28,27 @@ var spriteAtlas = {};
   spriteAtlas[kit] = im;
 });
 var animClock = {}; // playerId -> {x,y} 上一帧渲染位置（跑/站判定用）
+// ★ 跑动周期：序列帧行选择 + 带球触球共用同一相位，保证"球—脚"同步
+function runCycleFor(p, t) {
+  var rp = renderPos[p.id] || p;
+  var st = animClock[p.id] || (animClock[p.id] = { x: rp.x, y: rp.y });
+  var dx = rp.x - st.x, dy = rp.y - st.y;
+  var moved = Math.abs(dx) + Math.abs(dy);
+  st.x = rp.x; st.y = rp.y;
+  var moving = moved > 0.02;
+  var fps = 6 + Math.min(10, moved * 30);
+  return { moving: moving, fps: fps, phase: ((t / (1000 / fps)) % 4) / 4, dx: dx, dy: dy };
+}
 function spriteFrameFor(p, t) {
   var kit = (p.pos === 'GK' ? 'gk_' : '') + p.team;
   var img = spriteAtlas[kit];
   if (!img || !img.complete || !img.naturalWidth) return null; // 未加载完→兜底代码帧
-  var rp = renderPos[p.id] || p;
-  var st = animClock[p.id] || (animClock[p.id] = { x: rp.x, y: rp.y });
-  var moved = Math.abs(rp.x - st.x) + Math.abs(rp.y - st.y);
-  st.x = rp.x; st.y = rp.y;
+  var cyc = runCycleFor(p, t);
+  p._cycle = cyc; // 暂存本帧周期，供带球触球读取（state 每轮询重建，帧内有效即可）
   var row;
-  if (moved > 0.02) {
+  if (cyc.moving) {
     // 跑动循环：位移越大帧率越高（慢跑 6fps → 冲刺 16fps）
-    var fps = 6 + Math.min(10, moved * 30);
-    row = Math.floor(t / (1000 / fps)) % 4;
+    row = Math.floor(cyc.phase * 4) % 4;
   } else {
     row = 4; // idle 站立帧
   }
@@ -78,6 +86,7 @@ var matchId = null;
 var state = null;           // 服务器状态快照
 var renderPos = {};         // id -> {x,y} 插值渲染位置（快照线性插值，60fps 匀速）
 var ballR = { x: 52.5, y: 34 };
+var ballTrail = []; // 离脚飞行的球轨迹残影（脚下球不清算、不绘制）
 var snapPrev = null, snapCurr = null; // 快照插值：{t, px:{id:{x,y}}, ball:{x,y}}，基于墙钟线性插值
 // 每次拿到新状态快照时调用：旧快照→新快照，渲染在两者之间按时间匀速过渡
 function takeSnapshot() {
@@ -362,6 +371,7 @@ function startMatch() {
     state = null;
     renderPos = {};
     ballR = { x: 52.5, y: 34 };
+    ballTrail = []; snapPrev = null; snapCurr = null; animClock = {};
     selectedHomeIdx = 9;
     pad.dx = 0; pad.dy = 0; pad.sprint = false; pad.slow = false;
     padTouchId = null; btnTouchIds = {};
@@ -1032,6 +1042,13 @@ function drawActors(t) {
     // ★ 序列帧绘制：跑动播 run 循环 / 静止播 idle；精灵未就绪时兜底用旧代码帧
     var spr = spriteFrameFor(p, t);
     var dw = 16 * s * 1.9, dh = 24 * s * 1.9; // 2:3，与 48×72 帧同比例
+    var stagger = !!p.beaten; // ★ 被晃倒：精灵倾斜踉跄，一眼看出被过了
+    if (stagger) {
+      ctx.save();
+      ctx.translate(pr.x, pr.y - dh / 2);
+      ctx.rotate(0.30 * ((p.num % 2) ? 1 : -1));
+      ctx.translate(-pr.x, -(pr.y - dh / 2));
+    }
     if (spr) {
       var sy = spr.row * 72;
       if (p.team === 'away') {
@@ -1060,10 +1077,44 @@ function drawActors(t) {
     }
     // 冻结标记
     if (p.frozen) text('💫', pr.x, pr.y - dh - 8, 14 * s, '#fff', 'center');
+    if (stagger) ctx.restore(); // ★ 踉跄倾斜结束
   });
 
   // 球
-  var bp = project(ballR.x, ballR.y);
+  // ★ 带球触球：球不再焊死在固定偏移上，而是随持球者跑动步频做"趟—追"触球动作，
+  //   与序列帧同一相位（球脚同步）；盘带越好，趟球距离越短（高手球不离脚）。
+  //   只有球真正离脚飞行时（传球/射门/解围）才绘制轨迹残影。
+  var bbx = ballR.x, bby = ballR.y, ballOwned = false;
+  for (var boi = 0; boi < state.players.length; boi++) {
+    if (state.players[boi].hasBall) {
+      var owner = state.players[boi];
+      ballOwned = true;
+      var oc = owner._cycle, orp = renderPos[owner.id] || owner;
+      if (oc && oc.moving) {
+        var olen = Math.sqrt(oc.dx * oc.dx + oc.dy * oc.dy);
+        if (olen > 1e-6) {
+          var drib = (owner.stats && owner.stats.dribbling) || 10;
+          var touchMax = 1.15 - (drib / 20) * 0.55;
+          var lead = 0.32 + touchMax * (0.5 - 0.5 * Math.cos(oc.phase * Math.PI * 2));
+          bbx = orp.x + (oc.dx / olen) * lead;
+          bby = orp.y + (oc.dy / olen) * lead;
+        } else { bbx = orp.x; bby = orp.y; }
+      } else { bbx = orp.x; bby = orp.y; }
+      break;
+    }
+  }
+  if (!ballOwned) {
+    ballTrail.push({ x: bbx, y: bby });
+    if (ballTrail.length > 9) ballTrail.shift();
+  } else if (ballTrail.length) {
+    ballTrail.length = 0; // 脚下球不留轨迹
+  }
+  for (var bti = 0; bti < ballTrail.length; bti++) {
+    var btp = project(ballTrail[bti].x, ballTrail[bti].y);
+    ctx.fillStyle = 'rgba(255,255,255,' + (0.05 + 0.20 * bti / ballTrail.length) + ')';
+    ctx.beginPath(); ctx.arc(btp.x, btp.y - 4, 3.2 * btp.s, 0, Math.PI * 2); ctx.fill();
+  }
+  var bp = project(bbx, bby);
   var bs = 8 * bp.s * 1.6;
   ctx.drawImage(ballImg, bp.x - bs / 2, bp.y - bs - 2, bs, bs);
 

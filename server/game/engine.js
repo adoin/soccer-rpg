@@ -512,6 +512,12 @@ Match.prototype.controlMove = function (p, dt) {
   if (p.id !== c.playerId) return false;
   if (this.now - c.activeStamp > 2000) return false; // 超时无操作：AI 接管
   if (this.now < p.frozenUntil) { p._vx = 0; p._vy = 0; return true; }
+  if (this.now < p.beatenUntil) {
+    // ★ 被晃倒：踉跄，只能挪 2 成速度——不能马上满速反抢（之前直接操控无视 beaten，立刻回追）
+    if (c.dx === 0 && c.dy === 0) { p._vx *= 0.85; p._vy *= 0.85; }
+    else this.moveToward(p, p.x + c.dx * 30, p.y + c.dy * 30, this.playerSpeed(p, false) * 0.2, dt);
+    return true;
+  }
   if (c.dx === 0 && c.dy === 0) { p._vx = 0; p._vy = 0; return true; } // 松手：原地停住，速度清零
   // 体能过低蹬不动：低于阈值时加速键失效，只能普通跑
   var wantSprint = c.sprint && p.stamina >= C.STAMINA.SPRINT_MIN;
@@ -659,6 +665,7 @@ Match.prototype.simulate = function (dt) {
         else if (mk) { tx = mk.x; ty = mk.y; }
         else { tx = p.hx; ty = p.hy; }
         sp = self.playerSpeed(p, false) * (mk ? 0.85 : 0.7);
+        if (beaten) sp *= 0.45; // ★ 被晃倒：踉跄回位，视觉上能看出被过了，不是若无其事地 jog
       }
     } else if (p.pos === 'GK') {
       // ★ 行为层·门将：随球横向小范围移动
@@ -1389,6 +1396,7 @@ Match.prototype.serialize = function () {
         special: p.special ? { name: p.special.name } : null,
         hasBall: self.ball.ownerId === p.id,
         frozen: self.now < p.frozenUntil,
+        beaten: self.now < p.beatenUntil, // ★ 被晃倒：客户端画踉跄倾斜
         cards: p.cards,
         sentOff: !!p.sentOff,
       };
