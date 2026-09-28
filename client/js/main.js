@@ -1614,7 +1614,7 @@ function frame(t) {
     ctx.fillStyle = dbgErr ? '#ff6b6b' : '#5a6584';
     ctx.fillText(dbgErr || 'err=-', 14, 52);
     // ★ 球诊断：逻辑位置/高度/渲染位置/相机，一眼定位"球去哪了"
-    var _bb = state.ball || {}, _bp2 = null;
+    var _bb = (state && state.ball) || {}, _bp2 = null;
     try { _bp2 = project(ballR.x, ballR.y); } catch (e) { _bp2 = null; }
     ctx.fillStyle = '#ffd76a';
     ctx.fillText('ball=(' + (+(_bb.x || 0)).toFixed(1) + ',' + (+(_bb.y || 0)).toFixed(1) + ') z=' + (+(_bb.z || 0)).toFixed(2) +
@@ -1622,6 +1622,12 @@ function frame(t) {
       (_bp2 ? ' scr=(' + _bp2.x.toFixed(0) + ',' + (_bp2.y - Math.min(+(_bb.z || 0), 5) * 30 * _bp2.s).toFixed(0) + ')' : ' scr=?'), 14, 72);
   }
   requestAnimationFrame(frame);
+}
+
+// ★ debug 自动开赛：?debug=1&autostart=1 时跳过标题界面直接开赛，
+//   浏览器自动化测试不再依赖画布点击"开始比赛"按钮。
+if (DEBUG && /[?&]autostart=1/.test(location.search)) {
+  setTimeout(function () { if (screen === 'title') startMatch(); }, 600);
 }
 
 requestAnimationFrame(frame);
