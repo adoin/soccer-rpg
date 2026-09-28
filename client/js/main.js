@@ -76,8 +76,19 @@ var api = {
 var screen = 'title';       // title | game
 var matchId = null;
 var state = null;           // 服务器状态快照
-var renderPos = {};         // id -> {x,y} 插值渲染位置（让 300ms 轮询看起来平滑）
+var renderPos = {};         // id -> {x,y} 插值渲染位置（快照线性插值，60fps 匀速）
 var ballR = { x: 52.5, y: 34 };
+var snapPrev = null, snapCurr = null; // 快照插值：{t, px:{id:{x,y}}, ball:{x,y}}，基于墙钟线性插值
+// 每次拿到新状态快照时调用：旧快照→新快照，渲染在两者之间按时间匀速过渡
+function takeSnapshot() {
+  if (!state) return;
+  var now = performance.now();
+  var px = {};
+  state.players.forEach(function (p) { px[p.id] = { x: p.x, y: p.y }; });
+  snapPrev = snapCurr;
+  snapCurr = { t: now, px: px, ball: { x: state.ball.x, y: state.ball.y } };
+  if (!snapPrev) snapPrev = snapCurr;
+}
 var selectedHomeIdx = 9;    // 阵容条选中的主队球员下标（默认 10 号）
 var ui = {
   pauseOpen: false,
@@ -373,6 +384,7 @@ function refresh() {
   api.get('/api/match/' + matchId + '/state').then(function (r) {
     if (!r.ok) return;
     state = r.state;
+    takeSnapshot(); // ★ 快照插值：记录带时间戳的位置快照，渲染按墙钟匀速过渡
     var hasDec = !!(state && state.decision);
     if (hasDec && !ui._hadDecision) ui.choosing = false; // 新决策到达：清掉旧标记
     if (!hasDec) ui.choosing = false;
@@ -972,15 +984,28 @@ function drawGoals() {
 
 function drawActors(t) {
   if (!state) return;
-  // 插值更新渲染位置
+  // ★ 基于时间的快照线性插值：两帧快照之间按墙钟匀速过渡，消除指数追赶的脉冲感；
+  //   开球/重置等瞬移（>8 米）直接贴过去，不做滑行。
+  var _ia = 1;
+  if (snapPrev && snapCurr && snapCurr.t > snapPrev.t) {
+    _ia = (t - snapPrev.t) / (snapCurr.t - snapPrev.t);
+    if (_ia < 0) _ia = 0; else if (_ia > 1) _ia = 1;
+  }
   state.players.forEach(function (p) {
     var rp = renderPos[p.id];
     if (!rp) { renderPos[p.id] = { x: p.x, y: p.y }; return; }
-    rp.x += (p.x - rp.x) * 0.22;
-    rp.y += (p.y - rp.y) * 0.22;
+    var A = snapPrev && snapPrev.px[p.id], B = snapCurr && snapCurr.px[p.id];
+    if (A && B) {
+      var dx = B.x - A.x, dy = B.y - A.y;
+      if (dx * dx + dy * dy > 64) { rp.x = B.x; rp.y = B.y; }
+      else { rp.x = A.x + dx * _ia; rp.y = A.y + dy * _ia; }
+    } else { rp.x = p.x; rp.y = p.y; }
   });
-  ballR.x += (state.ball.x - ballR.x) * 0.3;
-  ballR.y += (state.ball.y - ballR.y) * 0.3;
+  if (snapPrev && snapCurr) {
+    var bdx = snapCurr.ball.x - snapPrev.ball.x, bdy = snapCurr.ball.y - snapPrev.ball.y;
+    if (bdx * bdx + bdy * bdy > 64) { ballR.x = snapCurr.ball.x; ballR.y = snapCurr.ball.y; }
+    else { ballR.x = snapPrev.ball.x + bdx * _ia; ballR.y = snapPrev.ball.y + bdy * _ia; }
+  } else if (state.ball) { ballR.x = state.ball.x; ballR.y = state.ball.y; }
 
   var order = state.players.slice().sort(function (a, b) {
     return renderPos[b.id].y - renderPos[a.id].y; // 远的先画
