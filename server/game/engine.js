@@ -112,6 +112,7 @@ Match.prototype.resetPositions = function (kickoffTeam) {
   this.players.forEach(function (p) {
     p.x = p.hx; p.y = p.hy;
     p._px = p.hx; p._py = p.hy; // 体能计费用的上一 tick 位置
+    p._vx = 0; p._vy = 0; // ★ 速度矢量清零（加速度模型用）
     p.frozenUntil = 0; p.beatenUntil = 0; p.retreatTarget = null;
     p.holdingUntil = 0; // 急停收步中（行为层）
   });
@@ -487,13 +488,21 @@ Match.prototype.nearestOpponent = function (p) {
 Match.prototype.moveToward = function (p, tx, ty, speed, dt) {
   var dx = tx - p.x, dy = ty - p.y;
   var d = Math.sqrt(dx * dx + dy * dy);
-  if (d < 0.05) return true;
-  var step = Math.min(d, speed * dt);
-  p.x += (dx / d) * step;
-  p.y += (dy / d) * step;
+  if (d < 0.05) { p._vx = 0; p._vy = 0; return true; }
+  // ★ 加速度模型：acceleration 属性决定起速快慢（爆发好的一步蹬出去，糙的要多踩两步）
+  //   速度矢量每 tick 向目标速度靠拢，而不是瞬时达到——急停变向自然掉速
+  var acc = 34 * (0.55 + FM.v(p, 'acceleration') / 100); // m/s²，acceleration 5→20 对应约 20→53
+  var tvx = (dx / d) * speed, tvy = (dy / d) * speed;
+  var vx = p._vx || 0, vy = p._vy || 0;
+  var dvx = tvx - vx, dvy = tvy - vy;
+  var dv = Math.sqrt(dvx * dvx + dvy * dvy), maxDv = acc * dt;
+  if (dv > maxDv) { vx += dvx / dv * maxDv; vy += dvy / dv * maxDv; }
+  else { vx = tvx; vy = tvy; }
+  p._vx = vx; p._vy = vy;
+  p.x += vx * dt; p.y += vy * dt;
   p.x = clamp(p.x, 1, FIELD.W - 1);
   p.y = clamp(p.y, 1, FIELD.H - 1);
-  return step >= d - 0.01;
+  return d < 0.5 && (vx * vx + vy * vy) < speed * speed * 0.09;
 };
 
 // ★ 直接操控：若该球员正被玩家操控且 2 秒内有有效操作，用输入方向移动，跳过 AI。
@@ -502,21 +511,30 @@ Match.prototype.controlMove = function (p, dt) {
   var c = this.control;
   if (p.id !== c.playerId) return false;
   if (this.now - c.activeStamp > 2000) return false; // 超时无操作：AI 接管
-  if (this.now < p.frozenUntil) return true;
-  if (c.dx === 0 && c.dy === 0) return true; // 松手：原地不动
+  if (this.now < p.frozenUntil) { p._vx = 0; p._vy = 0; return true; }
+  if (c.dx === 0 && c.dy === 0) { p._vx = 0; p._vy = 0; return true; } // 松手：原地停住，速度清零
   // 体能过低蹬不动：低于阈值时加速键失效，只能普通跑
   var wantSprint = c.sprint && p.stamina >= C.STAMINA.SPRINT_MIN;
   var sp = this.playerSpeed(p, wantSprint);
+  if (this.ball.ownerId === p.id) sp *= this.dribbleFactor(p); // ★ 持球：盘带差的蹬不快
   if (c.slow) sp *= 0.45;
   this.moveToward(p, p.x + c.dx * 30, p.y + c.dy * 30, sp, dt);
   return true;
 };
 
 Match.prototype.playerSpeed = function (p, sprint) {
-  var base = 13 * (0.8 + FM.speed(p) / 250);
-  if (sprint) base *= 1.08;
+  // ★ 速度由数值决定：pace 主导，FM.speed 40→约 11.0 m/s，85→约 15.2 m/s，快慢肉眼可见
+  //   （之前 13*(0.8+FM/250)，40 与 85 只差 18%，用户批评"速度不体现"）
+  var base = 7.2 + FM.speed(p) * 0.094;
+  if (sprint) base *= 1.10;
   base *= 0.7 + 0.3 * (p.stamina / p.maxStamina); // 体能影响速度：见底时只剩 7 成
   return base;
+};
+
+// ★ 带球减速：盘带属性决定带球掉速（盘带 20 几乎不掉速，盘带 5 掉到约 7 成）
+//   只在持球者移动调用点使用，不污染无球速度/体能档位计算
+Match.prototype.dribbleFactor = function (p) {
+  return 0.62 + 0.38 * (FM.dribble(p) / 95);
 };
 
 // ★ 体能更新（单资源制，无精神力）：
@@ -573,6 +591,7 @@ Match.prototype.simulate = function (dt) {
 
   // --- 持球者移动 ---
   var frozen = this.now < carrier.frozenUntil;
+  if (frozen) { carrier._vx = 0; carrier._vy = 0; }
   var cSpeed = this.playerSpeed(carrier, true);
   if (!frozen) {
     if (this.controlMove(carrier, dt)) {
@@ -582,8 +601,9 @@ Match.prototype.simulate = function (dt) {
       if (arrived) carrier.retreatTarget = null;
     } else {
       // ★ 行为层·持球者：被紧逼时减速护球并向空侧微调，不再无脑直线冲门
+      //   ★ 盘带差的带球本身就慢（dribbleFactor），不再是人人一个速度
       var adj = Behavior.carrierAdjust(self, carrier);
-      self.moveToward(carrier, adj.tx, adj.ty, cSpeed * adj.spMul, dt);
+      self.moveToward(carrier, adj.tx, adj.ty, cSpeed * adj.spMul * self.dribbleFactor(carrier), dt);
     }
   }
   this.updateEnergy(carrier, dt);
@@ -616,6 +636,7 @@ Match.prototype.simulate = function (dt) {
       return;
     }
     var pFrozen = self.now < p.frozenUntil;
+    if (pFrozen) { p._vx = 0; p._vy = 0; } // ★ 冻结中速度清零，解冻不乱窜
     var beaten = self.now < p.beatenUntil;
     var tx, ty, sp;
     if (p.team !== carrier.team) {
@@ -1092,12 +1113,16 @@ function labelOf(commandId, p) {
 Match.prototype.bestPassTarget = function (p) {
   var dir = p.team === 'home' ? 1 : -1;
   var self = this;
+  // ★ 视野：好视野的传球手会"看到"前插队友的无球跑动并提前量给球；
+  //   视野差的只看眼前空位，跑出好时机的前锋也接不到球
+  var vis = FM.v(p, 'vision') / 100;
   var best = null, bestScore = -1e9;
   this.players.forEach(function (q) {
     if (q.team !== p.team || q.id === p.id || q.pos === 'GK' || q.sentOff) return;
     var forward = (q.x - p.x) * dir;
     var open = self.nearestOpponent(q).dist;
-    var score = forward * 1.5 + open * 2.0;
+    var runBonus = (q._task === 'run' ? FM.v(q, 'offBall') / 100 : 0) * vis * 8;
+    var score = forward * 1.5 + open * 2.0 + runBonus;
     if (score > bestScore) { bestScore = score; best = q; }
   });
   return best || p;
@@ -1252,7 +1277,13 @@ Match.prototype.aiDecide = function (p) {
     // 门将得球：大脚开给前场队友
     choice = 'pass';
   } else if (near.dist < 12) {
-    choice = this.rng() < 0.6 ? 'pass' : 'dribble';
+    // ★ 决断驱动：decisions 高的被压迫先找传球点（有空位就传），低的容易上头莽带；
+    //   不再是固定 6/4 开的掷骰，球商肉眼可见
+    var dec = FM.v(p, 'decisions') / 100;
+    var tgt = this.bestPassTarget(p);
+    var tgtOpen = (tgt && tgt.id !== p.id) ? this.nearestOpponent(tgt).dist : 0;
+    var passBias = 0.30 + dec * 0.45 + (tgtOpen > 6 ? 0.15 : 0);
+    choice = this.rng() < passBias ? 'pass' : 'dribble';
   } else {
     choice = 'dribble';
   }

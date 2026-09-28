@@ -176,9 +176,14 @@ function attackTasks(match, carrier, snap) {
     if (!task) {
       var tired = (p.stamina == null ? 100 : p.stamina) < 25;
       var isDF = p.pos === 'DF';
+      // ★ 数值驱动选角：offBall+pace 决定谁有资格前插，vision+teamwork 决定谁配做接应点
+      //   没脑子的前锋跑不出好时机（转 cover），没视野的去接应也是站死位
+      var runScore = FM.v(p, 'offBall') / 100 * 0.55 + FM.v(p, 'pace') / 100 * 0.30 + (p.pos === 'FW' ? 0.15 : 0);
+      var supScore = FM.v(p, 'vision') / 100 * 0.50 + FM.v(p, 'teamwork') / 100 * 0.30 + (p.pos === 'MF' ? 0.20 : 0);
       // ★ 后卫不参与前插/拉边：只拖后保护，避免整条后防线跟着压上（之前边后卫会被 width 任务带到对方半场）
-      if (!tired && !isDF && nSupport < 2 && idx < 4) { task = 'support'; nSupport++; }
-      else if (!tired && !isDF && (p.pos === 'FW' || (p.pos === 'MF' && nRun < 1)) && idx >= 1) { task = 'run'; nRun++; }
+      if (!tired && !isDF && nRun < 2 && idx >= 1 && runScore > 0.45 &&
+          (p.pos === 'FW' || p.pos === 'MF') && runScore >= supScore) { task = 'run'; nRun++; }
+      else if (!tired && !isDF && nSupport < 2 && idx < 4 && supScore > 0.35) { task = 'support'; nSupport++; }
       else if (!isDF && Math.abs(p.hy - FIELD_H / 2) > 13) { task = 'width'; }
       else { task = 'cover'; }
       p._task = task;
@@ -200,13 +205,15 @@ function taskTarget(match, p, carrier, dir, task, snap, idx) {
   var tx, ty;
   if (task === 'support') {
     // 接应：轮流站持球者身后（出球点）和侧前方（推进点），并主动避开防守人
+    // ★ 视野越好，找的空当越大（躲避半径 3.5→7.5 米），站死位的接应等于没有接应
     if (idx % 2 === 0) { tx = carrier.x - dir * 7; ty = carrier.y + side * 7; }
     else { tx = carrier.x + dir * 9; ty = carrier.y - side * 8; }
     var no = nearestOpp(match, tx, ty, carrier.team);
-    if (no && no.d < 3.5) { tx += (tx - no.q.x) * 1.2; ty += (ty - no.q.y) * 1.2; }
+    var avoidR = 3.5 + (FM.v(p, 'vision') / 100) * 4;
+    if (no && no.d < avoidR) { tx += (tx - no.q.x) * 1.2; ty += (ty - no.q.y) * 1.2; }
   } else if (task === 'run') {
-    // 纵深前插：目标带个人差，避免站一条线
-    tx = carrier.x + dir * (17 + (idHash(p.id) % 6));
+    // 纵深前插：★ 快的、会跑位的插得更深（pace 20 比 pace 5 深约 7 米），目标带个人差避免站一条线
+    tx = carrier.x + dir * (14 + (FM.v(p, 'pace') / 100) * 10 + (idHash(p.id) % 4));
     ty = p.hy * 0.45 + carrier.y * 0.3 + side * 6;
     // ★ 反越位时机：高 anti 球员把前插目标钳制在越位线之前（行为，不是豁免）
     var wantU = p.team === 'home' ? tx : FIELD_W - tx;
@@ -258,7 +265,9 @@ function carrierAdjust(match, carrier) {
   var goalX = carrier.team === 'home' ? FIELD_W - 2 : 2;
   var tx = goalX, ty = carrier.y * 0.75 + (FIELD_H / 2) * 0.25, spMul = 1;
   if (near && near.d < 5) {
-    spMul = 0.55;
+    // ★ 冷静度：被紧逼时 composure 高的只降到 0.8x 从容摆脱，慌的掉到 0.55x 护球
+    var comp = FM.v(carrier, 'composure') / 100;
+    spMul = 0.55 + 0.25 * comp;
     ty = carrier.y + (carrier.y >= near.q.y ? 5 : -5);
     ty = clamp(ty, 6, FIELD_H - 6);
   }

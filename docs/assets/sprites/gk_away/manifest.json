@@ -1,0 +1,135 @@
+{
+  "characterId": "soccer_gk_away",
+  "engine": "component-row",
+  "game_input": "sprite-sheet-alpha.png",
+  "degraded_static_fallback": false,
+  "curation_applied": false,
+  "frame_variant": "pixel",
+  "sprite_sheet_alpha": "sprite-sheet-alpha.png",
+  "sprite_sheet_alpha_report": "sprite-sheet-alpha.report.json",
+  "base_image": null,
+  "cell": {
+    "shape": "rect",
+    "width": 48,
+    "height": 72,
+    "safe_margin_x": 2,
+    "safe_margin_y": 2,
+    "size": 72,
+    "safe_margin": 2
+  },
+  "chroma_key": {
+    "name": "magenta",
+    "hex": "#FF00FF",
+    "rgb": [
+      255,
+      0,
+      255
+    ],
+    "selection": "fallback"
+  },
+  "animation": {
+    "cellWidth": 48,
+    "cellHeight": 72,
+    "columns": 1,
+    "rows": {
+      "run_0": {
+        "row": 0,
+        "frames": 1,
+        "fps": 8,
+        "durations_ms": [
+          125
+        ],
+        "loop": true,
+        "frame_variant": "pixel"
+      },
+      "run_1": {
+        "row": 1,
+        "frames": 1,
+        "fps": 8,
+        "durations_ms": [
+          125
+        ],
+        "loop": true,
+        "frame_variant": "pixel"
+      },
+      "run_2": {
+        "row": 2,
+        "frames": 1,
+        "fps": 8,
+        "durations_ms": [
+          125
+        ],
+        "loop": true,
+        "frame_variant": "pixel"
+      },
+      "run_3": {
+        "row": 3,
+        "frames": 1,
+        "fps": 8,
+        "durations_ms": [
+          125
+        ],
+        "loop": true,
+        "frame_variant": "pixel"
+      },
+      "idle": {
+        "row": 4,
+        "frames": 1,
+        "fps": 4,
+        "durations_ms": [
+          250
+        ],
+        "loop": true,
+        "frame_variant": "pixel"
+      }
+    }
+  },
+  "frame_layout": {
+    "sheetWidth": 48,
+    "sheetHeight": 360,
+    "cellWidth": 48,
+    "cellHeight": 72,
+    "rows": {
+      "run_0": [
+        {
+          "x": 0,
+          "y": 0,
+          "w": 48,
+          "h": 72
+        }
+      ],
+      "run_1": [
+        {
+          "x": 0,
+          "y": 72,
+          "w": 48,
+          "h": 72
+        }
+      ],
+      "run_2": [
+        {
+          "x": 0,
+          "y": 144,
+          "w": 48,
+          "h": 72
+        }
+      ],
+      "run_3": [
+        {
+          "x": 0,
+          "y": 216,
+          "w": 48,
+          "h": 72
+        }
+      ],
+      "idle": [
+        {
+          "x": 0,
+          "y": 288,
+          "w": 48,
+          "h": 72
+        }
+      ]
+    }
+  }
+}
