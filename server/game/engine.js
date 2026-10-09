@@ -636,7 +636,10 @@ Match.prototype.moveToward = function (p, tx, ty, speed, dt) {
 Match.prototype.controlMove = function (p, dt) {
   var c = this.control;
   if (p.id !== c.playerId) return false;
-  if (this.now - c.activeStamp > 2000) return false; // 超时无操作：AI 接管
+  // ★ 手机手柄按住不动时 touchmove 不触发、无新输入——但 dx/dy 非零就是"正在操作"，
+  //   不能算无操作而 AI 接管（否则按住方向 2 秒后 AI 抢走闷头往前带，用户再推也没用）。
+  //   只有方向归零且 2 秒无新输入，才判无操作。
+  if (this.now - c.activeStamp > 2000 && c.dx === 0 && c.dy === 0) return false; // 超时无操作：AI 接管
   if (this.now < p.frozenUntil) { p._vx = 0; p._vy = 0; return true; }
   if (this.now < p.beatenUntil) {
     // ★ 被晃倒：踉跄，只能挪 2 成速度——不能马上满速反抢（之前直接操控无视 beaten，立刻回追）
@@ -831,42 +834,50 @@ Match.prototype.simulate = function (dt) {
     var beaten = self.now < p.beatenUntil;
     var tx, ty, sp;
     if (p.team !== carrier.team) {
-      // 防守方：第 1 人上抢，第 2 人协防卡传球线路，其余按行为落位
+      // 防守方：第 1 人上抢（看侵略性），第 2 人协防（看防守站位），其余慢跑落位
+      // ★ 2026-10-09 用户：全员狂动不像足球——落位是慢跑，只有上抢才冲刺
       var rank = sortedOpp.indexOf(p);
+      var aggr = FM.aggr(p) / 100, defAb = FM.defend(p) / 100; // 0-1（FM 能力值×5 后为 5-100）
       if (rank === 0 && !beaten && !pFrozen) {
+        // ★ 上抢强度吃侵略性：莽夫全力扑，冷静的保持距离封线路（不再无脑全速）
+        var pressK = 0.65 + aggr * 0.35;
         tx = carrier.x; ty = carrier.y;
-        sp = self.playerSpeed(p, true) * 0.94;
+        sp = self.playerSpeed(p, true) * 0.94 * pressK;
         chaseCount++;
       } else if (rank === 1 && !beaten && !pFrozen) {
-        // ★ 协防：卡持球者与球门连线中点偏后，断传球/推进线路
+        // ★ 协防：防守能力高的站位更深更稳，慢跑到位（之前 0.8 冲刺，一过人就撞上）
         var gx2 = carrier.team === 'home' ? FIELD.W : 0;
-        tx = (carrier.x + gx2) / 2; ty = (carrier.y + FIELD.H / 2) / 2;
-        sp = self.playerSpeed(p, false) * 0.8;
+        var depth = 0.55 + (1 - defAb) * 0.15; // 能力差的站位靠前（容易失位）
+        tx = carrier.x + (gx2 - carrier.x) * depth;
+        ty = (carrier.y + FIELD.H / 2) / 2;
+        sp = self.playerSpeed(p, false) * 0.5;
       } else {
         // ★ 行为层：DF 按防线纪律落位/造越位，MF 盯人，都没有则回阵型点
+        //   慢跑（0.4/0.55），不是冲刺——阵地战就该是这个节奏
         var lt = (p.pos === 'DF' && lineTargets[p.id]) ? lineTargets[p.id] : null;
         var mk = manMarks[p.id];
         if (lt) { tx = lt.x; ty = lt.y; }
         else if (mk) { tx = mk.x; ty = mk.y; }
         else { tx = p.hx; ty = p.hy; }
-        sp = self.playerSpeed(p, false) * (mk ? 0.85 : 0.7);
+        sp = self.playerSpeed(p, false) * (mk ? 0.55 : 0.4);
         if (beaten) sp *= 0.08; // ★ 被晃倒：原地踉跄定住（2026-10-09 用户：过完人被过掉的要在原地一段时间，不然过人没意义；之前 0.45 还在跑，看着像马上反抢）
       }
     } else if (p.pos === 'GK') {
-      // ★ 行为层·门将：随球横向小范围移动
+      // ★ 行为层·门将：随球横向小范围移动（慢速横移）
       var kt = Behavior.keeperTarget(self, p);
       tx = kt.x; ty = kt.y;
-      sp = self.playerSpeed(p, false) * 0.7;
+      sp = self.playerSpeed(p, false) * 0.4;
     } else if (self.now < p.holdingUntil) {
       // ★ 行为层：急停收步中——原地不动，不参与这次进攻
       tx = p.x; ty = p.y;
       sp = 0;
     } else {
       // ★ 行为层·无球任务：接应/前插/拉边/拖后（带任务粘性，不再全员同步前压）
+      //   无球跑位是慢跑穿插，只有明确前插才加速——阵地战节奏
       var at = atkTasks[p.id];
       if (at) { tx = at.x; ty = at.y; }
       else { tx = p.hx; ty = p.hy; }
-      sp = self.playerSpeed(p, false) * (at && at.type === 'run' ? 0.9 : 0.8);
+      sp = self.playerSpeed(p, false) * (at && at.type === 'run' ? 0.75 : 0.45);
     }
     if (!pFrozen) {
       self.moveToward(p, tx, ty, sp, dt);
