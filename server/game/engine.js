@@ -839,7 +839,7 @@ Match.prototype.simulate = function (dt) {
         else if (mk) { tx = mk.x; ty = mk.y; }
         else { tx = p.hx; ty = p.hy; }
         sp = self.playerSpeed(p, false) * (mk ? 0.85 : 0.7);
-        if (beaten) sp *= 0.45; // ★ 被晃倒：踉跄回位，视觉上能看出被过了，不是若无其事地 jog
+        if (beaten) sp *= 0.08; // ★ 被晃倒：原地踉跄定住（2026-10-09 用户：过完人被过掉的要在原地一段时间，不然过人没意义；之前 0.45 还在跑，看着像马上反抢）
       }
     } else if (p.pos === 'GK') {
       // ★ 行为层·门将：随球横向小范围移动
