@@ -648,7 +648,9 @@ Match.prototype.controlMove = function (p, dt) {
 Match.prototype.playerSpeed = function (p, sprint) {
   // ★ 速度由数值决定：pace 主导，FM.speed 40→约 11.0 m/s，85→约 15.2 m/s，快慢肉眼可见
   //   （之前 13*(0.8+FM/250)，40 与 85 只差 18%，用户批评"速度不体现"）
-  var base = 7.2 + FM.speed(p) * 0.094;
+  // ★ 2026-10-09 整体放慢（用户：速度太快了）：PACE_SCALE 0.72，
+  //   40→约 7.9 m/s，85→约 10.9 m/s，相对差保持，数值可读性不变
+  var base = (7.2 + FM.speed(p) * 0.094) * 0.72;
   if (sprint) base *= 1.10;
   base *= 0.7 + 0.3 * (p.stamina / p.maxStamina); // 体能影响速度：见底时只剩 7 成
   return base;
@@ -896,6 +898,15 @@ Match.prototype.simulate = function (dt) {
 };
 
 // ---------- 决策点 ----------
+
+// ★ 手动呼出决策菜单（PC 按 E）：仅主队持球、操控的正是持球者、play 阶段、冷却已过时生效
+//   之前只有被动触发（6 米逼近/进 76 米/跑 24 米），行进间想主动传球射门没有键，是漏掉的
+Match.prototype.tryManualDecision = function () {
+  if (this.phase !== 'play' || this.now < this.nextDecisionAt) return;
+  var carrier = this.carrier();
+  if (!carrier || carrier.team !== 'home' || carrier.id !== this.control.playerId) return;
+  this.enterDecision(carrier);
+};
 
 Match.prototype.enterDecision = function (carrier) {
   this.phase = 'decision';
@@ -1480,6 +1491,7 @@ Match.prototype.setInput = function (data) {
   c.dx = dz(data.dx); c.dy = dz(data.dy);
   c.sprint = !!data.sprint; c.slow = !!data.slow;
   c.stamp = this.now;
+  if (data.menu) this.tryManualDecision(); // ★ E 键手动呼出决策菜单（行进间主动传球/射门）
   if (c.dx !== 0 || c.dy !== 0 || c.sprint || c.slow) c.activeStamp = this.now;
   var cur = this.byId[c.playerId];
   var wantSwitch = !!data.switchPlayer;
