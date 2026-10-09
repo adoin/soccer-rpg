@@ -27,17 +27,24 @@ var spriteAtlas = {};
   im.src = 'assets/sprites/' + kit + '/sprite-sheet-alpha.png?v=' + SPR_V;
   spriteAtlas[kit] = im;
 });
-var animClock = {}; // playerId -> {x,y} 上一帧渲染位置（跑/站判定用）
+var animClock = {}; // playerId -> {x,y,lt,ph} 上一帧渲染位置/帧时间戳/累进相位（跑/站判定用）
 // ★ 跑动周期：序列帧行选择 + 带球触球共用同一相位，保证"球—脚"同步
+// ★ dt 归一化（2026-10-06）：位移按米/秒算帧率与跑/站判定，30/60/120/144Hz 同一速度同一节奏；
+//   fps=6+min(10,v/2) 在 60Hz 下与旧公式 6+min(10,moved*30) 数学恒等（node 实测 1000 随机速度全等），手感不变；
+//   相位改累进式（每帧推进 fps*dt），加减速不再跳帧。返回的 dx/dy 仍为本帧位移（带球触球只取方向）。
 function runCycleFor(p, t) {
   var rp = renderPos[p.id] || p;
-  var st = animClock[p.id] || (animClock[p.id] = { x: rp.x, y: rp.y });
+  var st = animClock[p.id] || (animClock[p.id] = { x: rp.x, y: rp.y, lt: t, ph: 0 });
   var dx = rp.x - st.x, dy = rp.y - st.y;
-  var moved = Math.abs(dx) + Math.abs(dy);
-  st.x = rp.x; st.y = rp.y;
-  var moving = moved > 0.02;
-  var fps = 6 + Math.min(10, moved * 30);
-  return { moving: moving, fps: fps, phase: ((t / (1000 / fps)) % 4) / 4, dx: dx, dy: dy };
+  var dt = (t - st.lt) / 1000;
+  if (!(dt > 0)) dt = 0.001;   // 首帧/时间戳异常兜底
+  else if (dt > 0.1) dt = 0.1; // 切后台回来钳到 100ms，避免相位乱跳
+  var v = (Math.abs(dx) + Math.abs(dy)) / dt; // 米/秒，刷新率无关
+  st.x = rp.x; st.y = rp.y; st.lt = t;
+  var moving = v > 1.2;          // 原 0.02 米/帧在 60Hz 下 = 1.2 米/秒，现固定
+  var fps = 6 + Math.min(10, v / 2);
+  st.ph = (st.ph + fps * dt) % 4;
+  return { moving: moving, fps: fps, phase: st.ph / 4, dx: dx, dy: dy };
 }
 function spriteFrameFor(p, t) {
   var kit = (p.pos === 'GK' ? 'gk_' : '') + p.team;
