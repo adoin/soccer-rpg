@@ -1027,6 +1027,7 @@ function drawActors(t) {
     return renderPos[b.id].y - renderPos[a.id].y; // 远的先画
   });
   var animFrame = Math.floor(t / 280) % 2;
+  var ownerBakedBall = false; // ★ 持球者序列帧里已 baked 了球（outfield 精灵每帧脚下有球），则不再单独画球，避免双球抖动
   order.forEach(function (p) {
     var rp = renderPos[p.id];
     var pr = project(rp.x, rp.y);
@@ -1047,6 +1048,7 @@ function drawActors(t) {
     //   （之前画在各自脚下，会被更靠前的对方球员盖住，看起来像"在控制红方"）
     // ★ 序列帧绘制：跑动播 run 循环 / 静止播 idle；精灵未就绪时兜底用旧代码帧
     var spr = spriteFrameFor(p, t);
+    if (p.hasBall && spr && p.pos !== 'GK') ownerBakedBall = true; // 门将帧里没球，仍需单独画
     var dw = 16 * s * 1.9, dh = 24 * s * 1.9; // 2:3，与 48×72 帧同比例
     var stagger = !!p.beaten; // ★ 被晃倒：精灵倾斜踉跄，一眼看出被过了
     if (stagger) {
@@ -1135,7 +1137,7 @@ function drawActors(t) {
     ctx.beginPath(); ctx.ellipse(bp.x, bp.y + 2, 9 * bp.s, 3.6 * bp.s, 0, 0, Math.PI * 2); ctx.fill();
   }
   var bs = 8 * bp.s * 1.6 * (1 + Math.min(ballZ, 6) * 0.02);
-  ctx.drawImage(ballImg, bp.x - bs / 2, bp.y - bs - 2 - rise, bs, bs);
+  if (!ballOwned || !ownerBakedBall) ctx.drawImage(ballImg, bp.x - bs / 2, bp.y - bs - 2 - rise, bs, bs);
 
   // ★ 被玩家直接操控标记（绿圈）：置顶绘制，不被任何球员遮挡
   //   2 秒无操作被 AI 接管时变暗，提示"动一下方向键拿回控制"
