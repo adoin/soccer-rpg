@@ -1332,6 +1332,18 @@ Match.prototype.whistleOffside = function (os, passer) {
     this.ball.ownerId = taker.id;
     this.ball.x = taker.x; this.ball.y = taker.y;
   }
+  // ★ 间接任意球：越位方球员必须退到 9.15 米外（真实规则，同开球）。
+  //   否则越位的前锋就站在发球者 2 米外（哨响全员冻结），哨一停直接反抢回来射门，越位白吹了
+  //   （2026-10-09 用户报"离谱"：越位→对方发球→下一秒自己拿球射门）。
+  var sx = this.ball.x, sy = this.ball.y;
+  this.players.forEach(function (q) {
+    if (q.team !== passer.team || q.sentOff) return;
+    var dd = Math.sqrt(Math.pow(q.x - sx, 2) + Math.pow(q.y - sy, 2));
+    if (dd < 9.15 && dd > 0.001) {
+      q.x = sx + (q.x - sx) / dd * 9.15;
+      q.y = sy + (q.y - sy) / dd * 9.15;
+    } else if (dd <= 0.001) { q.x = sx + 9.15; }
+  });
   this.enterStoppage('whistle', 2200, this.ball.ownerId);
   var teamName = defendingTeam === 'home' ? T.HOME_NAME : T.AWAY_NAME;
   this.lastAction = {
@@ -1376,6 +1388,16 @@ Match.prototype.applyFoulResult = function (foul) {
   // 直接任意球：受害方在犯规地点重新组织
   this.ball.ownerId = foul.victim.id;
   this.ball.x = foul.spot.x; this.ball.y = foul.spot.y;
+  // ★ 直接任意球：犯规方球员必须退到 9.15 米外（同越位，同开球），否则犯规者站在球点上哨一停就反抢
+  var fbx = this.ball.x, fby = this.ball.y;
+  this.players.forEach(function (q) {
+    if (q.team !== foul.defender.team || q.sentOff) return;
+    var fdd = Math.sqrt(Math.pow(q.x - fbx, 2) + Math.pow(q.y - fby, 2));
+    if (fdd < 9.15 && fdd > 0.001) {
+      q.x = fbx + (q.x - fbx) / fdd * 9.15;
+      q.y = fby + (q.y - fby) / fdd * 9.15;
+    } else if (fdd <= 0.001) { q.x = fbx + 9.15; }
+  });
   this.enterStoppage('whistle', 2400, foul.victim.id);
   var cardLabel = foul.card === 'red' ? '红牌' : (foul.card === 'yellow' ? '黄牌' : '犯规');
   this.lastAction = {
