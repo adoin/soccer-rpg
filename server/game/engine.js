@@ -899,10 +899,11 @@ Match.prototype.simulate = function (dt) {
 
 // ---------- 决策点 ----------
 
-// ★ 手动呼出决策菜单（PC 按 E）：仅主队持球、操控的正是持球者、play 阶段、冷却已过时生效
+// ★ 手动呼出决策菜单（PC 按 E）：仅主队持球、操控的正是持球者、play 阶段时生效
 //   之前只有被动触发（6 米逼近/进 76 米/跑 24 米），行进间想主动传球射门没有键，是漏掉的
+//   ★ 2026-10-09 用户：手动触发不要冷却（"没意义"），按了就弹
 Match.prototype.tryManualDecision = function () {
-  if (this.phase !== 'play' || this.now < this.nextDecisionAt) return;
+  if (this.phase !== 'play') return;
   var carrier = this.carrier();
   if (!carrier || carrier.team !== 'home' || carrier.id !== this.control.playerId) return;
   this.enterDecision(carrier);
