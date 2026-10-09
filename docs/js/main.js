@@ -1054,7 +1054,7 @@ function drawActors(t) {
     if (stagger) {
       ctx.save();
       ctx.translate(pr.x, pr.y - dh / 2);
-      ctx.rotate(0.30 * ((p.num % 2) ? 1 : -1));
+      ctx.rotate(0.50 * ((p.num % 2) ? 1 : -1)); // ★ 2026-10-09 加大到 0.5（之前 0.3 精灵太小看不出）
       ctx.translate(-pr.x, -(pr.y - dh / 2));
     }
     if (spr) {
@@ -1086,6 +1086,12 @@ function drawActors(t) {
     // 冻结标记
     if (p.frozen) text('💫', pr.x, pr.y - dh - 8, 14 * s, '#fff', 'center');
     if (stagger) ctx.restore(); // ★ 踉跄倾斜结束
+    if (stagger) {
+      // ★ 眩晕星星：被晃倒头顶转星星，不用眯眼也能看出"这人被过了定住了"
+      var swx = pr.x + Math.sin(t / 240) * 10 * s, swy = pr.y - dh - 14 * s + Math.cos(t / 310) * 4 * s;
+      ctx.font = Math.round(20 * s) + 'px sans-serif'; ctx.textAlign = 'center';
+      ctx.fillText('💫', swx, swy);
+    }
   });
 
   // 球
