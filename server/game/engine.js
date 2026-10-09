@@ -66,7 +66,10 @@ function Match(id, options) {
 
   this.ball = { x: FIELD.W / 2, y: FIELD.H / 2, ownerId: null,
     z: 0,          // ★ 球高度（米）：传球/射门飞行时按抛物线起落，客户端按此画升空
-    vx: 0, vy: 0  // ★ 自由球滚动速度（米/秒）：拦截弹开、无人接应的落点用
+    vx: 0, vy: 0, // ★ 自由球滚动速度（米/秒）：拦截弹开、无人接应的落点用
+    lastTouchTeam: null, // ★ 最后触球的队伍：界外球/球门球/角球判罚用
+    lastTouchId: null,   // ★ 最后触球的球员 id：滚入球门的记名用
+    restartExempt: null  // ★ 界外球/球门球/角球豁免：直接发出的第一下不判越位（IFAB Law 11）
   };
 
   this.phase = 'kickoff';
@@ -228,6 +231,8 @@ Match.prototype.startShotFlight = function (p, keeper, o) {
   this.ball.ownerId = null;
   this.ball.x = x0; this.ball.y = y0; this.ball.z = 0;
   this.ball.vx = 0; this.ball.vy = 0;
+  this.ball.lastTouchTeam = p.team; this.ball.lastTouchId = p.id; // ★ 射门出脚
+  this.ball.restartExempt = null;
   this.lastInterceptK = null; // 测试用
   this.lastAction = null; // 飞行期间不出演出遮罩，保证场上动作可见
   this.phase = 'shotflight';
@@ -301,6 +306,8 @@ Match.prototype.startPassFlight = function (p, o) {
   this.ball.ownerId = null;
   this.ball.x = p.x; this.ball.y = p.y; this.ball.z = 0;
   this.ball.vx = 0; this.ball.vy = 0;
+  this.ball.lastTouchTeam = p.team; this.ball.lastTouchId = p.id; // ★ 传球出脚
+  this.ball.restartExempt = null; // 传球是常规比赛行为，清除重启豁免
   this.lastInterceptK = null; // 测试用：本次飞行发生拦截时的进度
   this.lastAction = null; // 飞行期间不出演出遮罩，保证场上动作可见
   this.phase = 'passflight';
@@ -384,6 +391,8 @@ Match.prototype.interceptDeflect = function (hit, ballSpeed) {
   this.ball.vx = Math.cos(ang) * spd;
   this.ball.vy = Math.sin(ang) * spd;
   this.ball.z = 0;
+  this.ball.lastTouchTeam = def.team; this.ball.lastTouchId = def.id; // ★ 挡球也算触球
+  this.ball.restartExempt = null;
   def.beatenUntil = this.now + 600; // 挡了一下，顿一下
   this.phase = 'play';
   this.nextDecisionAt = this.now + 2200;
@@ -719,10 +728,12 @@ Match.prototype.simulate = function (dt) {
       this.ball.y += this.ball.vy * dt;
       var fr = Math.max(0, 1 - 3.2 * dt);
       this.ball.vx *= fr; this.ball.vy *= fr;
-      if (this.ball.x < 1) { this.ball.x = 1; this.ball.vx = 0; }
-      if (this.ball.x > FIELD.W - 1) { this.ball.x = FIELD.W - 1; this.ball.vx = 0; }
-      if (this.ball.y < 1) { this.ball.y = 1; this.ball.vy = 0; }
-      if (this.ball.y > FIELD.H - 1) { this.ball.y = FIELD.H - 1; this.ball.vy = 0; }
+      if (this.ball.x < 1 || this.ball.x > FIELD.W - 1 ||
+          this.ball.y < 1 || this.ball.y > FIELD.H - 1) {
+        // ★ 球出界：按 IFAB 规则判界外球/球门球/角球/进球（不再撞隐形墙）
+        this.whistleOutOfBounds();
+        return;
+      }
     } else {
       this.ball.vx = 0; this.ball.vy = 0;
     }
@@ -1124,7 +1135,8 @@ Match.prototype.resolveAction = function (p, commandId, rate, params) {
         target.holdingUntil = this.now + 2500; // 收步：停止触球、回位、不参与
         // ★ 收步者不参与进攻：跳过他的"越位接球"检查（skipReceive），
         //   其他越位位置队友的干扰照常吹罚
-        var osHeld = Offside.judgePass(this, p, target, true);
+        // ★ 界外球/球门球/角球直接发出不判越位（IFAB Law 11）
+        var osHeld = this.isRestartExempt(p) ? { type: 'playon' } : Offside.judgePass(this, p, target, true);
         if (osHeld.type === 'offside') {
           return this.whistleOffside(osHeld, p);
         }
@@ -1146,8 +1158,9 @@ Match.prototype.resolveAction = function (p, commandId, rate, params) {
         return { kind: commandId, label: passLabel, playerName: p.name, success: false, pending: true, text: '' };
       }
       // ★ 裁判层：纯客观判定，不看任何数值（目标前插参与 → 越位照吹）
+      // ★ 界外球/球门球/角球直接发出不判越位（IFAB Law 11）
       if (target) {
-        var os = Offside.judgePass(this, p, target);
+        var os = this.isRestartExempt(p) ? { type: 'playon' } : Offside.judgePass(this, p, target);
         if (os.type === 'offside') {
           return this.whistleOffside(os, p);
         }
@@ -1357,6 +1370,143 @@ Match.prototype.whistleOffside = function (os, passer) {
     until: Date.now() + 2200,
   };
   return this.lastAction;
+};
+
+// ---------- 出界判罚（IFAB Law 15/16/17，标准规则） ----------
+// 自由球整体越过边界时调用（simulate 自由球物理中），不再撞隐形墙。
+// 边线 → 界外球；球门线（非进球）→ 进攻方碰出=球门球，防守方碰出=角球；入门=进球。
+Match.prototype.whistleOutOfBounds = function () {
+  var bx = this.ball.x, by = this.ball.y;
+  var lastTeam = this.ball.lastTouchTeam || (bx < FIELD.W / 2 ? 'away' : 'home');
+  var gy = FIELD.H / 2, goalHalf = 3.66;
+  var outL = bx < 1, outR = bx > FIELD.W - 1;
+
+  if (outL || outR) {
+    // 右端 (x=W)：主队进攻方向、客队球门；左端 (x=0)：客队进攻方向、主队球门
+    var attackTeam = outR ? 'home' : 'away';
+    var defendTeam = outR ? 'away' : 'home';
+    if (Math.abs(by - gy) <= goalHalf) {
+      // ★ 滚入球门 → 进球（自由球，非射门飞行；乌龙也算进攻方得分）
+      var scorer = this.byId[this.ball.lastTouchId];
+      if (!scorer || scorer.team !== attackTeam || scorer.sentOff) {
+        var best = null, bd = 1e9;
+        this.players.forEach(function (q) {
+          if (q.team !== attackTeam || q.sentOff) return;
+          var d = Math.abs(q.x - bx) + Math.abs(q.y - by);
+          if (d < bd) { bd = d; best = q; }
+        });
+        scorer = best;
+      }
+      if (scorer) { this.goal(scorer, attackTeam); return; }
+      this.phase = 'play'; return;
+    }
+    if (lastTeam === attackTeam) return this.whistleGoalKick(defendTeam); // 进攻方碰出 → 球门球
+    return this.whistleCorner(attackTeam); // 防守方碰出 → 角球
+  }
+  // 边线 → 界外球（最后触球方的对手掷）
+  var throwTeam = lastTeam === 'home' ? 'away' : 'home';
+  return this.whistleThrowIn(throwTeam, bx, by);
+};
+
+// ★ 界外球（Law 15）：出界点掷，最近的非门将球员执行；掷出的一下不越位（Law 11）
+Match.prototype.whistleThrowIn = function (team, bx, by) {
+  var sx = clamp(bx, 2, FIELD.W - 2);
+  var sy = by < 1 ? 2 : FIELD.H - 2;
+  var taker = null, bd = 1e9;
+  this.players.forEach(function (q) {
+    if (q.team !== team || q.sentOff || q.pos === 'GK') return;
+    var d = Math.sqrt((q.x - sx) * (q.x - sx) + (q.y - sy) * (q.y - sy));
+    if (d < bd) { bd = d; taker = q; }
+  });
+  if (!taker) { this.phase = 'play'; return; }
+  taker.x = sx; taker.y = sy;
+  this.ball.ownerId = taker.id;
+  this.ball.x = sx; this.ball.y = sy; this.ball.vx = 0; this.ball.vy = 0; this.ball.z = 0;
+  this.ball.restartExempt = { takerId: taker.id, x: sx, y: sy }; // ★ 界外球直接发出不越位
+  this.ball.lastTouchTeam = team; this.ball.lastTouchId = taker.id;
+  this.enterStoppage('whistle', 1400, taker.id);
+  var teamName = team === 'home' ? T.HOME_NAME : T.AWAY_NAME;
+  this.lastAction = {
+    kind: 'throwin', label: '界外球', playerName: taker.name, team: team, success: true,
+    text: '球出边线，' + teamName + '获得界外球（' + taker.name + '掷）。',
+    cut: null, until: Date.now() + 1400,
+  };
+};
+
+// ★ 球门球（Law 16）：门将小禁区开球；对方须退出大禁区；直接发出不越位（Law 11）
+Match.prototype.whistleGoalKick = function (team) {
+  var keeper = null;
+  this.players.forEach(function (q) {
+    if (q.team === team && q.pos === 'GK' && !q.sentOff) keeper = q;
+  });
+  if (!keeper) { this.phase = 'play'; return; }
+  var gx = team === 'home' ? 5.5 : FIELD.W - 5.5;
+  keeper.x = gx; keeper.y = FIELD.H / 2;
+  this.ball.ownerId = keeper.id;
+  this.ball.x = gx; this.ball.y = FIELD.H / 2;
+  this.ball.vx = 0; this.ball.vy = 0; this.ball.z = 0;
+  this.ball.restartExempt = { takerId: keeper.id, x: gx, y: FIELD.H / 2 }; // ★ 球门球直接发出不越位
+  this.ball.lastTouchTeam = team; this.ball.lastTouchId = keeper.id;
+  // 对方退出大禁区（真实规则：球发出前对方不得在大禁区内）
+  var dir = team === 'home' ? 1 : -1;
+  var boxX = team === 'home' ? 16.5 : FIELD.W - 16.5;
+  this.players.forEach(function (q) {
+    if (q.team === team || q.sentOff) return;
+    var inBox = dir > 0 ? q.x < boxX : q.x > boxX;
+    if (inBox) q.x = boxX + dir * 1.5;
+  });
+  this.enterStoppage('whistle', 1600, keeper.id);
+  var teamName = team === 'home' ? T.HOME_NAME : T.AWAY_NAME;
+  this.lastAction = {
+    kind: 'goalkick', label: '球门球', playerName: keeper.name, team: team, success: true,
+    text: teamName + '获得球门球（' + keeper.name + '开）。',
+    cut: null, until: Date.now() + 1600,
+  };
+};
+
+// ★ 角球（Law 17）：就近角球弧，最近的非门将球员主罚；对方退 9.15 米；直接发出不越位（Law 11）
+Match.prototype.whistleCorner = function (team) {
+  var bx = this.ball.x, by = this.ball.y;
+  var cx = bx > FIELD.W / 2 ? FIELD.W - 2 : 2;
+  var cy = by < FIELD.H / 2 ? 2 : FIELD.H - 2;
+  var taker = null, bd = 1e9;
+  this.players.forEach(function (q) {
+    if (q.team !== team || q.sentOff || q.pos === 'GK') return;
+    var d = Math.sqrt((q.x - cx) * (q.x - cx) + (q.y - cy) * (q.y - cy));
+    if (d < bd) { bd = d; taker = q; }
+  });
+  if (!taker) { this.phase = 'play'; return; }
+  taker.x = cx; taker.y = cy;
+  this.ball.ownerId = taker.id;
+  this.ball.x = cx; this.ball.y = cy;
+  this.ball.vx = 0; this.ball.vy = 0; this.ball.z = 0;
+  this.ball.restartExempt = { takerId: taker.id, x: cx, y: cy }; // ★ 角球直接发出不越位
+  this.ball.lastTouchTeam = team; this.ball.lastTouchId = taker.id;
+  // 对方退 9.15 米（真实规则）
+  this.players.forEach(function (q) {
+    if (q.team === team || q.sentOff) return;
+    var dd = Math.sqrt((q.x - cx) * (q.x - cx) + (q.y - cy) * (q.y - cy));
+    if (dd < 9.15 && dd > 0.001) {
+      q.x = cx + (q.x - cx) / dd * 9.15;
+      q.y = cy + (q.y - cy) / dd * 9.15;
+    } else if (dd <= 0.001) { q.x = cx + 9.15; }
+  });
+  this.enterStoppage('whistle', 1800, taker.id);
+  var teamName = team === 'home' ? T.HOME_NAME : T.AWAY_NAME;
+  this.lastAction = {
+    kind: 'corner', label: '角球', playerName: taker.name, team: team, success: true,
+    text: teamName + '获得角球（' + taker.name + '主罚）。',
+    cut: null, until: Date.now() + 1800,
+  };
+};
+
+// ★ 重启豁免判定（IFAB Law 11）：界外球/球门球/角球，掷/罚球者在原地直接发出的第一下不判越位。
+//   带球走远（>3米）后再传按常规越位处理。
+Match.prototype.isRestartExempt = function (p) {
+  var re = this.ball.restartExempt;
+  if (!re || !p || p.id !== re.takerId) return false;
+  var d = Math.sqrt((p.x - re.x) * (p.x - re.x) + (p.y - re.y) * (p.y - re.y));
+  return d < 3;
 };
 
 // ---------- 犯规处理：任意球 / 点球 / 进攻有利 ----------
