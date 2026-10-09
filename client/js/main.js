@@ -124,7 +124,7 @@ var dbgKey = '', dbgErr = '';
 if (DEBUG) window.addEventListener('error', function (e) { dbgErr = 'ERR: ' + (e.message || e.type); });
 
 // ---------------- 直接操控输入 ----------------
-// 桌面端：WASD 方向 / J 加速 / K 减速 / L或Tab 切换球员 / 空格 暂停菜单
+// 桌面端：WASD 方向 / J或Shift 加速 / K 减速 / L或Tab 切换球员 / E 呼出指令菜单 / 空格 暂停
 // 移动端/Pad：透明虚拟手柄覆盖（左方向盘 + 右按键）
 var isTouch = ('ontouchstart' in window) || (navigator.maxTouchPoints > 0);
 var pad = { dx: 0, dy: 0, sprint: false, slow: false };
@@ -234,6 +234,7 @@ document.addEventListener('keydown', function (e) {
     toast('切换操控球员');
     return;
   }
+  if (k === 'e') { sendInput({ menu: true }); return; } // ★ 行进间手动呼出决策菜单（传球/射门等）
   // ★ debug 摆拍：?debug=1 时按 1/2/3/4 触发确定性拦截场景（低球贴脸/高球越过/超高球中段/弹开追抢），
   //   适配器内同步跑完关键 tick 并冻结，截图核对用。平时无此功能。
   if (DEBUG && !headMenuOpen() && (k === '1' || k === '2' || k === '3' || k === '4')) {
@@ -258,7 +259,7 @@ function updatePadFromKeys() {
   // 场地坐标：+x 朝对方球门（右），+y 朝屏幕上方
   var dx = (keys['d'] ? 1 : 0) - (keys['a'] ? 1 : 0);
   var dy = (keys['w'] ? 1 : 0) - (keys['s'] ? 1 : 0);
-  setPad(dx, dy, !!keys['j'], !!keys['k']);
+  setPad(dx, dy, !!(keys['j'] || keys['shift']), !!keys['k']); // ★ Shift 也加速（和 J 一样）
 }
 
 // ---- 触屏虚拟手柄 ----
@@ -887,7 +888,7 @@ function drawTitle() {
   text('⚽ 开 始 比 赛', W / 2, by + bh / 2, 28, '#3a2a00', 'center', true);
   addClick(bx, by, bw, bh, startMatch);
 
-  text('电脑：WASD 移动 · J加速 K减速 · L切换球员 · 空格暂停', W / 2, 672, 16, '#5f7099', 'center');
+  text('电脑：WASD 移动 · J/Shift加速 K减速 · L切换球员 · E指令菜单 · 空格暂停', W / 2, 672, 16, '#5f7099', 'center');
   text('手机 / Pad：左虚拟方向盘移动 · 右侧按键加速/减速/切换/菜单', W / 2, 696, 16, '#5f7099', 'center');
 }
 
