@@ -278,7 +278,15 @@ function pressBtn(id) {
   if (id === 'sprint') setPad(pad.dx, pad.dy, true, pad.slow);
   else if (id === 'slow') setPad(pad.dx, pad.dy, pad.sprint, true);
   else if (id === 'switch') { sendInput({ switchPlayer: true }); toast('切换操控球员'); }
-  else if (id === 'menu') togglePause();
+  // ★ 手机主动决策（2026-10-09 用户：手机上无法提前选择）：持球时按"菜单"=
+  //   像 PC 按 E 一样主动呼出决策菜单（可提前选，不用等防守贴到 6 米）；
+  //   非持球时=暂停菜单
+  else if (id === 'menu') {
+    var owner = state && state.ball && state.ball.ownerId ? playerById(state.ball.ownerId) : null;
+    if (!headMenuOpen() && owner && owner.team === 'home' && state.controlledId === owner.id) {
+      sendInput({ menu: true });
+    } else togglePause();
+  }
 }
 function releaseBtn(id) {
   if (id === 'sprint') setPad(pad.dx, pad.dy, false, pad.slow);
