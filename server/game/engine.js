@@ -1405,6 +1405,9 @@ Match.prototype.bestOnsideTarget = function (p, snap) {
 
 // ---------- 越位哨声：间接任意球 ----------
 Match.prototype.whistleOffside = function (os, passer) {
+  // ★ 铁律：持球人永不越位（2026-10-10 用户报：带球突破中被莫名吹越位）。
+  //   现实规则里自己带球不可能越位，这里是最后一道防线。
+  if (os.player && this.ball.ownerId === os.player.id) return { type: 'playon' };
   var defendingTeam = passer.team === 'home' ? 'away' : 'home';
   var taker = null, bd = 1e9, self = this;
   this.players.forEach(function (q) {

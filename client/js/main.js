@@ -77,6 +77,27 @@ var CUT_IMGS = {};
 CUT_KEYS.forEach(function (k) {
   var im = new Image();
   im.src = 'assets/cutscene/' + k + '.webp';
+  // ★ 球衣调色板（2026-10-10）：如果底图用了占位符纯色，按球队实际颜色换色。
+  //   现有蓝/红图无占位符，recolor 为空操作；未来新球队图按规范生成即可自动适配。
+  im.onload = function () {
+    try {
+      if (typeof SharedKits === 'undefined') return;
+      var cv = document.createElement('canvas');
+      cv.width = im.naturalWidth; cv.height = im.naturalHeight;
+      var cx = cv.getContext('2d');
+      cx.drawImage(im, 0, 0);
+      var id = cx.getImageData(0, 0, cv.width, cv.height);
+      // 快速检测：是否含有占位符色（品红 255,0,255）
+      var hasPh = false;
+      for (var i = 0; i < id.data.length; i += 400) {
+        if (id.data[i] === 255 && id.data[i + 1] === 0 && id.data[i + 2] === 255 && id.data[i + 3] > 128) { hasPh = true; break; }
+      }
+      if (!hasPh) return;
+      SharedKits.recolorImageData(id);
+      cx.putImageData(id, 0, 0);
+      im.src = cv.toDataURL();
+    } catch (e) { /* 换色失败用原图 */ }
+  };
   CUT_IMGS[k] = im;
 });
 
