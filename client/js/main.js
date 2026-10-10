@@ -52,6 +52,12 @@ function spriteFrameFor(p, t) {
   if (!img || !img.complete || !img.naturalWidth) return null; // 未加载完→兜底代码帧
   var cyc = runCycleFor(p, t);
   p._cycle = cyc; // 暂存本帧周期，供带球触球读取（state 每轮询重建，帧内有效即可）
+  // ★ 朝向：按移动 dx 决定（2026-10-10 修"月球漫步"——向左跑还朝右）。
+  //   静止时保持上次朝向；默认主队朝右、客队朝左。
+  var st = animClock[p.id];
+  if (cyc.dx > 0.05) st.face = 1;
+  else if (cyc.dx < -0.05) st.face = -1;
+  else if (!st.face) st.face = (p.team === 'away' ? -1 : 1);
   var row;
   if (cyc.moving) {
     // 跑动循环：位移越大帧率越高（慢跑 6fps → 冲刺 16fps）
@@ -59,7 +65,7 @@ function spriteFrameFor(p, t) {
   } else {
     row = 4; // idle 站立帧
   }
-  return { img: img, row: row };
+  return { img: img, row: row, face: st.face };
 }
 
 // ---------------- 结算演出图（像素风拼贴特写） ----------------
@@ -1077,8 +1083,8 @@ function drawActors(t) {
     }
     if (spr) {
       var sy = spr.row * 72;
-      if (p.team === 'away') {
-        // 客队朝左：水平翻转
+      if (spr.face < 0) {
+        // ★ 按移动方向翻转（2026-10-10）：向左跑朝左，向右跑朝右，不再按队伍写死
         ctx.save();
         ctx.translate(pr.x, pr.y - dh);
         ctx.scale(-1, 1);
@@ -1090,8 +1096,9 @@ function drawActors(t) {
     } else {
       var frames = framesFor(p);
       var img = frames[animFrame];
-      if (p.team === 'away') {
-        // 客队朝左：水平翻转
+      var _face = (animClock[p.id] && animClock[p.id].face) || (p.team === 'away' ? -1 : 1);
+      if (_face < 0) {
+        // ★ 按移动方向翻转（兜底帧也一致）
         ctx.save();
         ctx.translate(pr.x, pr.y - dh);
         ctx.scale(-1, 1);

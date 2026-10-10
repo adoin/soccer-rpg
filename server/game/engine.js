@@ -115,6 +115,23 @@ Match.prototype.autoSwitchToCarrier = function (playerId) {
   }
 };
 
+// ★ 对方得球自动切换防守人（2026-10-10 用户要求）：对方传球完成/得球后，
+//   控制自动切到离球最近的主队防守球员（非门将），方便立即上抢/卡位。
+Match.prototype.autoSwitchToDefender = function () {
+  var cur = this.byId[this.control.playerId];
+  if (cur && cur.pos === 'GK') return; // ★ 当前在控门将（测试/特殊状态），不抢
+  var best = null, bd = 1e9, bx = this.ball.x, by = this.ball.y;
+  this.players.forEach(function (q) {
+    if (q.team !== 'home' || q.pos === 'GK' || q.sentOff) return;
+    var d = (q.x - bx) * (q.x - bx) + (q.y - by) * (q.y - by);
+    if (d < bd) { bd = d; best = q; }
+  });
+  if (best && this.control.playerId !== best.id) {
+    this.control.playerId = best.id;
+    this.control.activeStamp = this.now;
+  }
+};
+
   this.nextDecisionAt = 0;  // 下次允许触发决策点的时间
   this.nextDefDecisionAt = 0; // 下次允许触发防守决策（上抢菜单）的时间
   this.lastDecisionPos = { x: 0, y: 0 };
@@ -741,11 +758,16 @@ Match.prototype.updateEnergy = function (p, dt) {
 Match.prototype.simulate = function (dt) {
   var self = this;
   var carrier = this.carrier();
-  // ★ 球权变化 → 主队得球自动切换控制（传球后控制跟到接球人）
+  // ★ 球权变化 → 自动切换控制：
+  //   主队得球 → 切到持球人（传球后控制跟到接球人）；
+  //   对方得球 → 切到离球最近的防守人（2026-10-10 用户要求）
   var carrierId = carrier ? carrier.id : null;
   if (carrierId !== this._lastCarrierId) {
     this._lastCarrierId = carrierId;
-    if (carrier) this.autoSwitchToCarrier(carrier.id);
+    if (carrier) {
+      if (carrier.team === 'home') this.autoSwitchToCarrier(carrier.id);
+      else this.autoSwitchToDefender();
+    }
   }
   if (!carrier) {
     // ★ 自由球（拦截弹开 / 无人接应的落点）：球按速度滚动、摩擦减速；
