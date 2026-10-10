@@ -136,8 +136,10 @@ function judgePass(match, passer, target, skipReceive) {
 
   // 其余处于越位位置的队友的干扰扫描
   function scanInterference(excludeId) {
+    var carrierId = match.ball ? match.ball.ownerId : null;
     var mates = match.players.filter(function (p) {
-      return p.team === team && !p.sentOff && p.id !== passer.id && p.id !== excludeId && isOffsidePosition(p, snap);
+      // ★ 持球人永不越位（2026-10-10）：自己带球不可能干扰
+      return p.team === team && !p.sentOff && p.id !== passer.id && p.id !== excludeId && p.id !== carrierId && isOffsidePosition(p, snap);
     });
     for (var i = 0; i < mates.length; i++) {
       var b = mates[i];
@@ -199,6 +201,7 @@ function judgeShot(match, shooter) {
 // ---------- 门将扑救反弹后的获益判定 ----------
 // 按射门瞬间的快照判断"越位位置"（规则如此：位置看的是队友触球瞬间，
 // 而不是反弹瞬间），再看反弹后谁在球附近获益。
+// ★ 注意：这里不豁免持球人——拿到反弹球本身就是"获益"，豁免就漏判了。
 function judgeRebound(match, attackingTeam, shotSnap) {
   var snap = shotSnap || snapshot(match, attackingTeam);
   var mates = match.players.filter(function (p) {
