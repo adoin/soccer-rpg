@@ -777,6 +777,9 @@ Match.prototype.simulate = function (dt) {
     if (bestP) {
       this.ball.ownerId = bestP.id;
       this.ball.vx = 0; this.ball.vy = 0; this.ball.z = 0;
+      // ★ 拾取也算触球：同步最后触球归属（否则带球出界判罚会用到 stale 的上一个传球人）
+      this.ball.lastTouchTeam = bestP.team; this.ball.lastTouchId = bestP.id;
+      this.ball.restartExempt = null;
     }
     return;
   }
@@ -888,6 +891,13 @@ Match.prototype.simulate = function (dt) {
   // 球跟随持球者
   this.ball.x = carrier.x + (dir * 1.2);
   this.ball.y = carrier.y + 1.0;
+  // ★ 带球出界也吹哨（之前只查自由球；持球者贴线时球恒定位于界外却无哨）
+  //   lastTouchTeam 在得球/拾取时已同步，此处直接判罚归因正确
+  if (this.ball.x < 1 || this.ball.x > FIELD.W - 1 ||
+      this.ball.y < 1 || this.ball.y > FIELD.H - 1) {
+    this.whistleOutOfBounds();
+    return;
+  }
 
   // --- 决策点判定（仅用户球队） ---
   // ★ 逼近半径 6 米：防守队员真贴上来才暂停弹菜单（之前 15 米，开球 4 秒就弹，键盘全被菜单劫持）
@@ -1435,6 +1445,15 @@ Match.prototype.whistleThrowIn = function (team, bx, by) {
   this.ball.x = sx; this.ball.y = sy; this.ball.vx = 0; this.ball.vy = 0; this.ball.z = 0;
   this.ball.restartExempt = { takerId: taker.id, x: sx, y: sy }; // ★ 界外球直接发出不越位
   this.ball.lastTouchTeam = team; this.ball.lastTouchId = taker.id;
+  // ★ 对方退 2 米（Law 15 真实规则；之前漏了）
+  this.players.forEach(function (q) {
+    if (q.team === team || q.sentOff) return;
+    var dd = Math.sqrt((q.x - sx) * (q.x - sx) + (q.y - sy) * (q.y - sy));
+    if (dd < 2 && dd > 0.001) {
+      q.x = sx + (q.x - sx) / dd * 2;
+      q.y = sy + (q.y - sy) / dd * 2;
+    } else if (dd <= 0.001) { q.x = sx + 2; }
+  });
   this.enterStoppage('whistle', 1400, taker.id);
   var teamName = team === 'home' ? T.HOME_NAME : T.AWAY_NAME;
   this.lastAction = {

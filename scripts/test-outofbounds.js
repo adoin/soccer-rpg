@@ -125,5 +125,45 @@ function outBall(m, x, y, lastTeam, lastId) {
   ok(Math.abs(m.ball.x - 2) < 0.01, '球在左端角球弧', m.ball.x + ',' + m.ball.y);
 })();
 
+
+// ---- 7. 带球出界也吹哨（持球分支边界检查） ----
+// 持球者贴边线：球跟随出界 → 界外球
+(function () {
+  var m = newMatch(8);
+  var h = m.byId['h10']; h.x = 60; h.y = 1;
+  m.ball.ownerId = 'h10';
+  m.ball.lastTouchTeam = 'home'; m.ball.lastTouchId = 'h10';
+  // 模拟持球分支的球跟随+边界检查
+  var dir = 1;
+  m.ball.x = h.x + dir * 1.2; m.ball.y = h.y + 1.0;
+  // 把球推到界外再调（单步逻辑与 engine 持球分支一致）
+  m.ball.y = -0.5;
+  m.whistleOutOfBounds();
+  ok(m.lastAction && m.lastAction.kind === 'throwin', '带球出边线判界外球', JSON.stringify(m.lastAction && m.lastAction.kind));
+  ok(m.lastAction.team === 'away', '界外球给对方', m.lastAction.team);
+})();
+// 带球越过球门线入门 → 进球
+(function () {
+  var m = newMatch(9);
+  m.ball.ownerId = 'h10';
+  m.ball.x = FIELD.W + 0.5; m.ball.y = FIELD.H / 2;
+  m.ball.lastTouchTeam = 'home'; m.ball.lastTouchId = 'h10';
+  var s0 = m.score.home;
+  m.whistleOutOfBounds();
+  ok(m.score.home === s0 + 1, '带球入球门算进球', m.score.home + ' vs ' + (s0 + 1));
+})();
+// ---- 8. 界外球对方退 2 米 ----
+(function () {
+  var m = newMatch(10);
+  outBall(m, 60, -0.5, 'home', null); // 客队界外球
+  var sx = m.ball.x, sy = m.ball.y;
+  var bad = m.players.filter(function (q) {
+    if (q.team === 'away' || q.sentOff) return false;
+    var d = Math.sqrt((q.x - sx) * (q.x - sx) + (q.y - sy) * (q.y - sy));
+    return d < 2 - 0.01;
+  });
+  ok(bad.length === 0, '界外球对方退足 2 米', bad.length + '人太近');
+})();
+
 console.log(failures === 0 ? 'ALL PASS' : failures + ' FAILURES');
 process.exit(failures === 0 ? 0 : 1);
