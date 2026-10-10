@@ -562,5 +562,56 @@ console.log('== 被晃倒踉跄：直接操控也被罚、serialize 透出 beate
   ok(sp2.beaten === false, '没被过的球员 beaten 为 false', JSON.stringify(sp2.beaten));
 })();
 
+console.log('== 被动决策触发频率（2026-10-10 试玩调优） ==');
+// 16. 进攻三区无压迫：不再自动弹菜单（之前 x>76 每 2.2 秒强制弹一次）
+//     每 tick 把全员摆回原位，隔离"位置触发"：只有旧的 x>76 条件能开火
+(function () {
+  function parked(m) {
+    set(m, 'h10', 80, 34);
+    ['a2','a3','a4','a5','a6','a7','a8','a9','a10','a11'].forEach(function (id, i) { set(m, id, 30, 8 + i * 5); });
+    set(m, 'a1', 100, 34);
+    ['h2','h3','h4','h5','h6','h7','h8','h11'].forEach(function (id, i) { set(m, id, 30, 8 + i * 6); });
+    m.ball.x = 80; m.ball.y = 34; m.ball.ownerId = 'h10';
+  }
+  var m = newMatch(501);
+  m.aiCooldownUntil = 1e15;
+  m.nextDecisionAt = 0;                       // 允许触发检查
+  parked(m);
+  m.lastDecisionPos = { x: 80, y: 34 };       // 没带球推进，traveled=0
+  for (var i = 0; i < 120; i++) { m.tick(1/60); parked(m); } // 跑 2 秒
+  ok(m.phase === 'play' && !m.decision, '进攻三区无压迫不弹被动菜单', JSON.stringify({ phase: m.phase }));
+})();
+// 17. 真被压迫（6 米内有防守人）：照样触发
+(function () {
+  var m = newMatch(502);
+  m.aiCooldownUntil = 1e15;
+  m.nextDecisionAt = 0;
+  set(m, 'h10', 60, 34); ball(m, 60, 34); m.ball.ownerId = 'h10';
+  m.lastDecisionPos = { x: 60, y: 34 };
+  ['a2','a3','a4','a5','a6','a7','a8','a9','a10','a11'].forEach(function (id, i) { set(m, id, 30, 8 + i * 5); });
+  set(m, 'a1', 100, 34);
+  set(m, 'a5', 62, 34);                       // 2 米贴身压迫
+  parkHome(m); set(m, 'h10', 60, 34);
+  m.tick(1/60);
+  ok(m.phase === 'decision' && !!m.decision && m.decision.playerId === 'h10', '6 米压迫仍触发被动决策', JSON.stringify({ phase: m.phase }));
+})();
+// 18. 决策结算后冷却 6000ms（之前 2200ms，心流全碎）
+(function () {
+  var m = newMatch(503);
+  m.aiCooldownUntil = 1e15;
+  m.nextDecisionAt = 0;
+  set(m, 'h10', 60, 34); ball(m, 60, 34); m.ball.ownerId = 'h10';
+  m.lastDecisionPos = { x: 60, y: 34 };
+  ['a2','a3','a4','a5','a6','a7','a8','a9','a10','a11'].forEach(function (id, i) { set(m, id, 30, 8 + i * 5); });
+  set(m, 'a1', 100, 34);
+  set(m, 'a5', 62, 34);
+  parkHome(m); set(m, 'h10', 60, 34);
+  m.tick(1/60);
+  ok(m.phase === 'decision', '先进入决策', m.phase);
+  var r = m.applyCommand('h10', 'retreat');   // 回撤：必可用，继续比赛
+  ok(r.ok && m.phase === 'play', '回撤指令结算回 play', JSON.stringify({ ok: r.ok, phase: m.phase }));
+  ok(m.nextDecisionAt - m.now === 6000, '重触发冷却为 6000ms', String(m.nextDecisionAt - m.now));
+})();
+
 console.log(failures === 0 ? '\nALL TESTS PASSED' : '\n' + failures + ' TEST(S) FAILED');
 process.exit(failures === 0 ? 0 : 1);

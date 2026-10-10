@@ -35,6 +35,13 @@ var FIELD = C.FIELD;
 //   被晃倒之类的计时状态必须盖住这段时间，否则演出播完状态就过期、用户看不到
 var CUT_OVERLAY_MS = 2200;
 
+// ★ 被动决策重触发冷却（毫秒）：一次决策结算 / 哨声恢复 / 拦截 / 解围之后，
+//   多久才允许再次自动弹出被动决策菜单。
+//   2026-10-10 试玩调优：之前 2200ms，进攻三区无压迫也每 2.2 秒强制弹菜单，
+//   "选完→2 秒→被断→再弹"死循环，10 分钟真实时间比赛时钟只走 30 秒，心流全碎。
+//   提到 6000ms：给玩家喘息和处理球的空间。手动按 E 不受此冷却限制（用户要求）。
+var DECISION_COOLDOWN = 6000;
+
 // ---------- 小工具 ----------
 function clamp(v, lo, hi) { return v < lo ? lo : v > hi ? hi : v; }
 function dist(a, b) {
@@ -278,7 +285,7 @@ Match.prototype.finishShotFlight = function () {
     return;
   }
   this.phase = 'play';
-  this.nextDecisionAt = this.now + 2200;
+  this.nextDecisionAt = this.now + DECISION_COOLDOWN;
   var c = this.carrier();
   this.lastDecisionPos = c ? { x: c.x, y: c.y } : { x: this.ball.x, y: this.ball.y };
 };
@@ -356,7 +363,7 @@ Match.prototype.finishPassFlight = function () {
     this.ball.vx = 0; this.ball.vy = 0;
   }
   this.phase = 'play';
-  this.nextDecisionAt = this.now + 2200;
+  this.nextDecisionAt = this.now + DECISION_COOLDOWN;
   var c = this.carrier();
   this.lastDecisionPos = c ? { x: c.x, y: c.y } : { x: this.ball.x, y: this.ball.y };
 };
@@ -369,7 +376,7 @@ Match.prototype.interceptClean = function (def, kind) {
   this.ball.ownerId = def.id;
   this.ball.z = 0; this.ball.vx = 0; this.ball.vy = 0;
   this.phase = 'play';
-  this.nextDecisionAt = this.now + 2200;
+  this.nextDecisionAt = this.now + DECISION_COOLDOWN;
   var verb = kind === 'shot' ? '挡下了这脚射门' : '断下了这脚传球';
   this.lastAction = {
     kind: 'intercept', label: '拦截', playerName: def.name, team: def.team,
@@ -395,7 +402,7 @@ Match.prototype.interceptDeflect = function (hit, ballSpeed) {
   this.ball.restartExempt = null;
   def.beatenUntil = this.now + 600; // 挡了一下，顿一下
   this.phase = 'play';
-  this.nextDecisionAt = this.now + 2200;
+  this.nextDecisionAt = this.now + DECISION_COOLDOWN;
   this.lastAction = {
     kind: 'deflect', label: '挡出', playerName: def.name, team: def.team,
     success: true, cut: null, text: def.name + ' 把球挡了出去！',
@@ -901,10 +908,13 @@ Match.prototype.simulate = function (dt) {
 
   // --- 决策点判定（仅用户球队） ---
   // ★ 逼近半径 6 米：防守队员真贴上来才暂停弹菜单（之前 15 米，开球 4 秒就弹，键盘全被菜单劫持）
+  // ★ 2026-10-10 试玩调优：去掉 "carrier.x > 76" 纯位置触发——进攻三区无压迫站着也每 2.2 秒强制弹菜单，
+  //   是"选完→被断→再弹"死循环的主因。被动决策只在"被压迫"时触发（2026-09-27 你定的规矩），
+  //   想射门/传球随时按 E 手动呼出（已有）。保留：6 米贴身压迫、带球推进 24 米（局面显著变化）。
   if (carrier.team === 'home' && this.now >= this.nextDecisionAt) {
     var near = this.nearestOpponent(carrier);
     var traveled = dist(carrier, this.lastDecisionPos);
-    if (near.dist < 6 || carrier.x > 76 || traveled > 24) {
+    if (near.dist < 6 || traveled > 24) {
       this.enterDecision(carrier);
       return;
     }
@@ -1073,7 +1083,7 @@ Match.prototype.applyCommand = function (playerId, commandId, params) {
   if (wasDef) this.nextDefDecisionAt = this.now + 4000; // 防守决策冷却，避免菜单连弹
   if (this.phase === 'decision') {
     this.phase = 'play';
-    this.nextDecisionAt = this.now + 2200;
+    this.nextDecisionAt = this.now + DECISION_COOLDOWN;
     this.lastDecisionPos = { x: p.x, y: p.y };
     if (this.ball.ownerId && this.byId[this.ball.ownerId]) {
       var nc = this.byId[this.ball.ownerId];
