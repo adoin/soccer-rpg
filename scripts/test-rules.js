@@ -447,11 +447,11 @@ console.log('== 传球自由落点：输入即意图，能力只定散布（场�
   ok(Math.abs(weak.x - strong.x) < 0.01 && Math.abs(weak.y - strong.y) < 0.01,
     '弱/强球员预估落点中心一致（能力不改意图）');
   ok(weak.r > strong.r * 2, '弱球员散布圈大得多', 'r=' + weak.r.toFixed(2) + ' / ' + strong.r.toFixed(2));
-  // 4) 服务端钳制：超射程/出界落点被拉回合法范围
+  // 4) 服务端钳制：超射程/出界落点被拉回合法范围（场内+线外4米，设计预期"无人接球→出界"）
   var vp = Pass.validateParams({ aimX: 500, aimY: -30, technique: 'inside', height: 'mid' }, passer);
   var vd = Math.sqrt((vp.aimX - 50) * (vp.aimX - 50) + (vp.aimY - 34) * (vp.aimY - 34));
-  ok(vd <= 60.01 && vp.aimX <= 103 && vp.aimY >= 2,
-    '超远/出界落点被钳制（60 米内、场内）', vd.toFixed(1) + ' / ' + vp.aimX.toFixed(1) + ',' + vp.aimY.toFixed(1));
+  ok(vd <= 60.01 && vp.aimX <= 109.01 && vp.aimY >= -4.01,
+    '超远/出界落点被钳制（60 米内、场内+线外4米）', vd.toFixed(1) + ' / ' + vp.aimX.toFixed(1) + ',' + vp.aimY.toFixed(1));
   var vp2 = Pass.validateParams({ aimX: 50.5, aimY: 34, technique: 'inside', height: 'mid' }, passer);
   var vd2 = Math.sqrt((vp2.aimX - 50) * (vp2.aimX - 50) + (vp2.aimY - 34) * (vp2.aimY - 34));
   ok(Math.abs(vd2 - 4) < 0.01, '过近落点推到 4 米', vd2.toFixed(2));
