@@ -102,6 +102,18 @@ function Match(id, options) {
     stamp: -1e9,     // 最近一次输入包时间（服务器时钟）
     activeStamp: -1e9, // 最近一次“有效操作”时间；超时无操作则 AI 接管该球员
   };
+  this._lastCarrierId = null; // ★ 球权追踪：变化时触发主队自动切换控制
+
+// ★ 主队得球自动切换控制（2026-10-10 用户报：传球后控制没跟到接球人身上、球"消失"了——
+//   其实是控制还留在传球者身上，接球人被 AI 控着带走了）。主队非门将得球时，控制权自动跟过去。
+Match.prototype.autoSwitchToCarrier = function (playerId) {
+  var p = this.byId[playerId];
+  if (!p || p.team !== 'home' || p.pos === 'GK' || p.sentOff) return;
+  if (this.control.playerId !== p.id) {
+    this.control.playerId = p.id;
+    this.control.activeStamp = this.now; // 刚切换，给玩家操作窗口，不立即判 AI 接管
+  }
+};
 
   this.nextDecisionAt = 0;  // 下次允许触发决策点的时间
   this.nextDefDecisionAt = 0; // 下次允许触发防守决策（上抢菜单）的时间
@@ -729,6 +741,12 @@ Match.prototype.updateEnergy = function (p, dt) {
 Match.prototype.simulate = function (dt) {
   var self = this;
   var carrier = this.carrier();
+  // ★ 球权变化 → 主队得球自动切换控制（传球后控制跟到接球人）
+  var carrierId = carrier ? carrier.id : null;
+  if (carrierId !== this._lastCarrierId) {
+    this._lastCarrierId = carrierId;
+    if (carrier) this.autoSwitchToCarrier(carrier.id);
+  }
   if (!carrier) {
     // ★ 自由球（拦截弹开 / 无人接应的落点）：球按速度滚动、摩擦减速；
     //   双方最近的 3 人追球，其余回位。
