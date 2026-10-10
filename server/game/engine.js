@@ -362,6 +362,11 @@ Match.prototype.finishPassFlight = function () {
     return;
   }
   this.ball.x = pf.x1; this.ball.y = pf.y1; this.ball.z = 0;
+  // ★ 落点出界直接吹哨（否则静止在线外的自由球永不触发出界检查）
+  if (pf.x1 < 0 || pf.x1 > FIELD.W || pf.y1 < 0 || pf.y1 > FIELD.H) {
+    this.whistleOutOfBounds();
+    return;
+  }
   var cands = [];
   for (var i = 0; i < this.players.length; i++) {
     var q = this.players[i];
@@ -1071,10 +1076,13 @@ Match.prototype.buildOptions = function (p) {
     // ★ 护球：身体对抗（强壮+平衡）对抢断，成功则卡住逼抢者
     opt('protect', 68 + ((FM.v(p, 'strength') + FM.v(p, 'balance')) / 2 * ef - FM.defend(near.player) * defEf) * 0.7),
     opt('shoot', 78 + (FM.shoot(p) * ef - FM.keep(keeper) * keepEf) * 1.1 - distGoal * 0.5),
-    opt('special', 84 + ((FM.shoot(p) * ef + 8) - FM.keep(keeper) * keepEf) * 1.1 - distGoal * 0.32),
+    // ★ 无必杀技的球员直接不列出该项（之前显示但光标跳过，易误导）
+    (p.special && (p.pos === 'FW' || p.pos === 'MF'))
+      ? opt('special', 84 + ((FM.shoot(p) * ef + 8) - FM.keep(keeper) * keepEf) * 1.1 - distGoal * 0.32)
+      : null,
     opt('feint', 62 + (FM.dribble(p) * ef - FM.defend(near.player) * defEf) * 0.9),
     opt('retreat', 100),
-  ];
+  ].filter(Boolean);
 };
 
 // ★ 传球预估落点（供客户端在确认前显示）：纯计算，不掷骰、不改状态
@@ -1115,11 +1123,17 @@ Match.prototype.applyCommand = function (playerId, commandId, params) {
   // 4. 扣除体能（单资源制）
   p.stamina = Math.max(0, p.stamina - option.cost);
 
-  var result = this.resolveAction(p, commandId, option.rate, params);
+  // ★ 先清决策再结算：结算抛异常也不卡死（2026-10-10 试玩："判定中…"软锁，计时冻结只能刷新）
   var wasDef = !!(this.decision && this.decision.def);
+  this.decision = null;
+  var result;
+  try {
+    result = this.resolveAction(p, commandId, option.rate, params);
+  } catch (err) {
+    result = { error: String((err && err.message) || err) };
+  }
 
   // 结算后恢复比赛；若刚进了球（phase 已被 goal() 置为 'goal'），则保持进球庆祝流程
-  this.decision = null;
   if (wasDef) this.nextDefDecisionAt = this.now + 4000; // 防守决策冷却，避免菜单连弹
   if (this.phase === 'decision') {
     this.phase = 'play';

@@ -57,11 +57,12 @@ function availableTechniques(p) {
   });
 }
 
-// 清洗客户端传来的 params（防作弊：落点钳制到场内 + 合法距离范围）
+// 清洗客户端传来的 params（防作弊：落点钳制到场内+线外4米 + 合法距离范围）
+// ★ 允许线外4米：设计预期"无人接球→出界"，否则界外球/球门球/角球规则永不可达
 function validateParams(raw, p) {
   raw = raw || {};
-  var ax = clamp(+raw.aimX || p.x, 2, FIELD_W - 2);
-  var ay = clamp(+raw.aimY || p.y, 2, FIELD_H - 2);
+  var ax = clamp(+raw.aimX || p.x, -4, FIELD_W + 4);
+  var ay = clamp(+raw.aimY || p.y, -4, FIELD_H + 4);
   var dx = ax - p.x, dy = ay - p.y;
   var dist = Math.sqrt(dx * dx + dy * dy);
   if (dist > AIM_MAX) {
@@ -155,8 +156,8 @@ function computeLanding(passer, params, passAb) {
     x += -dy / dist * k;
     y += dx / dist * k;
   }
-  x = clamp(x, 2, FIELD_W - 2);
-  y = clamp(y, 2, FIELD_H - 2);
+  x = clamp(x, -4, FIELD_W + 4);
+  y = clamp(y, -4, FIELD_H + 4);
   // 散布：距离越远越飘；能力越高圈越小（与输入分开，纯能力项）
   var baseR = (1.2 + dist * 0.09) * (1.5 - passAb / 100);
   var r = baseR * tech.scatterMul * h.scatterMul;

@@ -554,8 +554,8 @@ function clampAim(hm) {
     if (dist < 0.001) hm.pass.aimX = p.x + AIM_MIN;
     else { hm.pass.aimX = p.x + dx / dist * AIM_MIN; hm.pass.aimY = p.y + dy / dist * AIM_MIN; }
   }
-  hm.pass.aimX = clamp(hm.pass.aimX, 2, C.FIELD.W - 2);
-  hm.pass.aimY = clamp(hm.pass.aimY, 2, C.FIELD.H - 2);
+  hm.pass.aimX = clamp(hm.pass.aimX, -4, C.FIELD.W + 4);
+  hm.pass.aimY = clamp(hm.pass.aimY, -4, C.FIELD.H + 4);
 }
 function nudgeAim(dx, dy) {
   var hm = ui.hmenu;
@@ -669,6 +669,8 @@ function drawHmList(lvl, pr, cx, headY) {
   var totalH = items.length * lineH + titleH;
   var yTop = headY - totalH;
   if (yTop < 64) yTop = pr.y + 30; // 头顶空间不足 → 改放脚下
+  if (yTop + totalH > 540) yTop = 540 - totalH; // ★ 不遮挡底部 UI 区
+  if (yTop < 64) yTop = 64;
   if (lvl.title) hmText('— ' + lvl.title + ' —', cx, yTop + 15, 15, '#9fb4dd', false);
   items.forEach(function (it, i) {
     var y = yTop + titleH + i * lineH + lineH / 2;
@@ -1539,6 +1541,17 @@ function drawCutscene(a, im) {
   var iw = Math.min(680, W - 40), ih = iw * 2 / 3;
   var ix = (W - iw) / 2, iy = Math.max(50, (H - ih) / 2 - 70);
   ctx.drawImage(im, ix, iy, iw, ih);
+  // ★ 盖掉底图上烤死的假记分牌（TIME 89:32 / 1-1 / EXTRA TIME），画真实比分与时间
+  var barH = ih * 0.105;
+  ctx.fillStyle = '#0a0e1c';
+  ctx.fillRect(ix, iy, iw, barH);
+  ctx.strokeStyle = '#3d5a99'; ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.moveTo(ix, iy + barH); ctx.lineTo(ix + iw, iy + barH); ctx.stroke();
+  if (state) {
+    text(state.clockLabel || '', ix + 14, iy + barH / 2, 17, '#ffd94a', 'left', true);
+    text(state.score.home + ' - ' + state.score.away, ix + iw / 2, iy + barH / 2, 22, '#fff', 'center', true);
+    text(state.halfLabel || '', ix + iw - 14, iy + barH / 2, 17, '#ff9a9a', 'right', true);
+  }
   ctx.strokeStyle = '#ffd94a'; ctx.lineWidth = 3;
   ctx.strokeRect(ix - 2, iy - 2, iw + 4, ih + 4);
   // 标题：进球单独放大

@@ -71,13 +71,21 @@ window.__makeLocalApi = function () {
       if (m) {
         var mm = getMatch(m[1]);
         if (!mm || !mm.decision) return Promise.resolve({ ok: false, error: '当前不需要做决策' });
-        return Promise.resolve(mm.applyCommand(mm.decision.playerId, body.commandId, body.params));
+        try {
+          return Promise.resolve(mm.applyCommand(mm.decision.playerId, body.commandId, body.params));
+        } catch (err) {
+          return Promise.resolve({ ok: false, error: '指令执行异常，已恢复比赛' });
+        }
       }
       m = url.match(/^\/api\/match\/([^\/]+)\/pass-preview$/);
       if (m) {
         var pm = getMatch(m[1]);
         if (!pm || !pm.decision) return Promise.resolve({ ok: false, error: '当前不需要做决策' });
-        return Promise.resolve(pm.passPreview(pm.decision.playerId, body.params));
+        try {
+          return Promise.resolve(pm.passPreview(pm.decision.playerId, body.params));
+        } catch (err) {
+          return Promise.resolve({ ok: false, error: '预估落点计算异常' });
+        }
       }
       m = url.match(/^\/api\/match\/([^\/]+)\/pause$/);
       if (m) {
