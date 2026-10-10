@@ -1123,12 +1123,14 @@ function drawActors(t) {
   // ★ 带球触球：球不再焊死在固定偏移上，而是随持球者跑动步频做"趟—追"触球动作，
   //   与序列帧同一相位（球脚同步）；盘带越好，趟球距离越短（高手球不离脚）。
   //   只有球真正离脚飞行时（传球/射门/解围）才绘制轨迹残影。
-  var bbx = ballR.x, bby = ballR.y, ballOwned = false;
+  var bbx = ballR.x, bby = ballR.y, ballOwned = false, ownerIdle = false;
   for (var boi = 0; boi < state.players.length; boi++) {
     if (state.players[boi].hasBall) {
       var owner = state.players[boi];
       ballOwned = true;
       var oc = owner._cycle, orp = renderPos[owner.id] || owner;
+      // ★ 持球者静止时也单独画球（2026-10-10 用户报"球呢"：暂停时 idle 帧 baked 球太小看不见）
+      ownerIdle = !(oc && oc.moving);
       if (oc && oc.moving) {
         var olen = Math.sqrt(oc.dx * oc.dx + oc.dy * oc.dy);
         if (olen > 1e-6) {
@@ -1168,7 +1170,8 @@ function drawActors(t) {
     ctx.beginPath(); ctx.ellipse(bp.x, bp.y + 2, 9 * bp.s, 3.6 * bp.s, 0, 0, Math.PI * 2); ctx.fill();
   }
   var bs = 8 * bp.s * 1.6 * (1 + Math.min(ballZ, 6) * 0.02);
-  if (!ballOwned || !ownerBakedBall) ctx.drawImage(ballImg, bp.x - bs / 2, bp.y - bs - 2 - rise, bs, bs);
+  // ★ 静止持球也画球（ownerIdle）：跑动时靠 baked 球避免双球抖动，静止时 baked 球太小看不见
+  if (!ballOwned || !ownerBakedBall || ownerIdle) ctx.drawImage(ballImg, bp.x - bs / 2, bp.y - bs - 2 - rise, bs, bs);
 
   // ★ 被玩家直接操控标记（绿圈）：置顶绘制，不被任何球员遮挡
   //   2 秒无操作被 AI 接管时变暗，提示"动一下方向键拿回控制"
