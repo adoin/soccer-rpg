@@ -817,6 +817,7 @@ Match.prototype.simulate = function (dt) {
   if (carrierId !== this._lastCarrierId) {
     this._lastCarrierId = carrierId;
     if (carrier) {
+      carrier._gotBallAt = this.now; // ★ 持球时间：造越位触发判定用
       if (carrier.team === 'home') this.autoSwitchToCarrier(carrier.id);
       else this.autoSwitchToDefender();
     }
