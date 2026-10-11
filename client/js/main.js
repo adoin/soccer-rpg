@@ -233,6 +233,8 @@ function project(x, y) {
 
 // ---------------- 输入 ----------------
 cv.addEventListener('click', function (e) {
+  // ★ 全屏特写显示时：点任意位置只关闭特写（根治特写排队，2026-10-11）
+  if (screen === 'game' && typeof showingCutscene === 'function' && showingCutscene()) { skipCutscene(); return; }
   var rect = cv.getBoundingClientRect();
   var mx = (e.clientX - rect.left) * (W / rect.width);
   var my = (e.clientY - rect.top) * (H / rect.height);
@@ -247,12 +249,16 @@ cv.addEventListener('click', function (e) {
 document.addEventListener('keydown', function (e) {
   if (e.key === 'Escape' && screen === 'game') {
     if (headMenuOpen()) { headMenuBack(); return; } // 头顶菜单内：Esc = 返回上一步
+    if (showingCutscene()) { skipCutscene(); return; } // ★ 全屏特写：Esc 只关闭特写
     if (!ui.overlay) togglePause();
+    return;
   }
   if (screen !== 'game') return;
   if (DEBUG) { var _lt = hmTop(); dbgKey = 'key=' + e.key + ' menu=' + (headMenuOpen() ? 'open' : 'shut') + ' top=' + (_lt ? (_lt.kind + '#' + _lt.sel) : 'none'); }
   if (headMenuOpen() && headMenuKey(e)) return; // 头顶菜单打开时接管键盘（方向键/回车/空格选，Esc 返回）
   var k = (e.key || '').toLowerCase();
+  // ★ 全屏特写显示时：Enter/空格只关闭特写，不触发下层动作（根治特写排队打断心流，2026-10-11）
+  if (showingCutscene() && (k === 'enter' || k === ' ')) { skipCutscene(); e.preventDefault(); return; }
   if ([' ', 'tab', 'w', 'a', 's', 'd', 'j', 'k', 'l'].indexOf(k) >= 0) e.preventDefault();
   if (e.repeat) return;
   if (k === ' ') { togglePause(); return; }
@@ -363,6 +369,10 @@ function menuBtnLabel(id, def) {
 cv.addEventListener('touchstart', function (e) {
   if (!isTouch || screen !== 'game') return;
   if (ui.pauseOpen || ui.overlay) return; // 暂停/覆盖层打开时手柄让路，保证可点
+  // ★ 全屏特写显示时：触摸任意位置只关闭特写（手机端等价跳过，2026-10-11）
+  if (typeof showingCutscene === 'function' && showingCutscene() && !headMenuOpen()) {
+    skipCutscene(); e.preventDefault(); return;
+  }
   var menuMode = headMenuOpen(); // 头顶菜单打开：方向盘=菜单导航，按键=确定/返回；其他触点放行以便直接点选菜单项
   var used = false;
   for (var i = 0; i < e.changedTouches.length; i++) {
@@ -1502,13 +1512,30 @@ function drawGamepad() {
 }
 
 // ---------------- 事件横幅 / 指令演出 ----------------
+// ★ 特写跳过（2026-10-11 试玩反馈：全屏特写无跳过、排队打断心流）：
+//   玩家按 Enter/空格/Esc 或点击/触摸任意位置，立即关闭当前全屏特写，
+//   不等服务器 until 到期；新事件到达（id 不同）自动解除跳过。
+function cutActionId(a) { return a.kind + '|' + (a.playerName || '') + '|' + (a.label || '') + '|' + a.until; }
+function showingCutscene() {
+  if (!state || !state.lastAction) return null;
+  var a = state.lastAction;
+  var im = a.cut && CUT_IMGS[a.cut];
+  if (!(im && im.complete && im.naturalWidth)) return null;
+  if (ui.cutSkipId && ui.cutSkipId === cutActionId(a)) return null;
+  return a;
+}
+function skipCutscene() {
+  var a = showingCutscene();
+  if (a) { ui.cutSkipId = cutActionId(a); return true; }
+  return false;
+}
 function drawCutin() {
   if (!state || !state.lastAction) return;
   var a = state.lastAction;
   // ★ 有演出图键 → 全屏像素风结算演出（仿《天使之翼》指令结算画面）
   var im = a.cut && CUT_IMGS[a.cut];
   if (im && im.complete && im.naturalWidth) {
-    drawCutscene(a, im);
+    if (ui.cutSkipId !== cutActionId(a)) drawCutscene(a, im);
     return;
   }
   if (a.kind === 'goal') {
@@ -1562,6 +1589,7 @@ function drawCutscene(a, im) {
   var tx = W / 2 - Math.min(430, W / 2 - 30);
   wrapText(a.text || '', tx, iy + ih + 76, Math.min(860, W - 60), 17, '#e8eeff', 2);
   text(a.playerName || '', W / 2, iy + ih + 118, 15, '#ffd94a', 'center');
+  text(isTouch ? '触摸任意处 跳过' : 'Enter / 空格 / 点击  跳过', W / 2, iy + ih + 146, 14, '#8fa3cc', 'center');
 }
 
 // ---------------- 覆盖层 ----------------
