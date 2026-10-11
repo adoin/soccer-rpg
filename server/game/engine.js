@@ -681,11 +681,20 @@ Match.prototype.moveToward = function (p, tx, ty, speed, dt) {
   var dx = tx - p.x, dy = ty - p.y;
   var d = Math.sqrt(dx * dx + dy * dy);
   if (d < 0.05) { p._vx = 0; p._vy = 0; return true; }
-  // ★ 加速度模型：acceleration 属性决定起速快慢（爆发好的一步蹬出去，糙的要多踩两步）
-  //   速度矢量每 tick 向目标速度靠拢，而不是瞬时达到——急停变向自然掉速
-  var acc = 34 * (0.55 + FM.v(p, 'acceleration') / 100); // m/s²，acceleration 5→20 对应约 20→53
+  // ★ 加速度模型（2026-10-11 用户：要加速感不是匀速）：acceleration 属性决定起速快慢，
+  //   速度矢量每 tick 向目标速度靠拢。加速度 20~32 m/s²（之前 29~48 太冲，18 又太肉影响拦截）。
+  var acc = 25 * (0.55 + FM.v(p, 'acceleration') / 100); // m/s²，acceleration 5→20 对应约 20→32
   var tvx = (dx / d) * speed, tvy = (dy / d) * speed;
   var vx = p._vx || 0, vy = p._vy || 0;
+  // ★ 转向衰减（2026-10-11 用户：不同方向改变有不同衰减）：当前速度方向与目标方向夹角越大，
+  //   有效加速度越低——急转弯（180°）掉速最多，小角度变向几乎不掉。
+  var vmag = Math.sqrt(vx * vx + vy * vy);
+  if (vmag > 0.5) {
+    var dot = (vx * dx + vy * dy) / (vmag * d); // cos(夹角)，1=同向，-1=反向
+    dot = Math.max(-1, Math.min(1, dot));
+    var turnK = 0.35 + 0.65 * (dot + 1) / 2; // 同向 1.0，直角 ~0.68，反向 0.35
+    acc *= turnK;
+  }
   var dvx = tvx - vx, dvy = tvy - vy;
   var dv = Math.sqrt(dvx * dvx + dvy * dvy), maxDv = acc * dt;
   if (dv > maxDv) { vx += dvx / dv * maxDv; vy += dvy / dv * maxDv; }
@@ -713,7 +722,19 @@ Match.prototype.controlMove = function (p, dt) {
     else this.moveToward(p, p.x + c.dx * 30, p.y + c.dy * 30, this.playerSpeed(p, false) * 0.2, dt);
     return true;
   }
-  if (c.dx === 0 && c.dy === 0) { p._vx = 0; p._vy = 0; return true; } // 松手：原地停住，速度清零
+  if (c.dx === 0 && c.dy === 0) {
+    // ★ 松手自然减速（2026-10-11 用户：不要匀速/瞬停）：按加速度模型减速，有滑行感
+    var vx0 = p._vx || 0, vy0 = p._vy || 0;
+    var v0 = Math.sqrt(vx0 * vx0 + vy0 * vy0);
+    if (v0 < 0.3) { p._vx = 0; p._vy = 0; }
+    else {
+      var dec = 25 * (0.55 + FM.v(p, 'acceleration') / 100) * dt; // 减速用同档加速度
+      var ns = Math.max(0, v0 - dec);
+      p._vx = vx0 / v0 * ns; p._vy = vy0 / v0 * ns;
+      p.x += p._vx * dt; p.y += p._vy * dt;
+    }
+    return true;
+  } // 松手：滑行减速不停顿
   // 体能过低蹬不动：低于阈值时加速键失效，只能普通跑
   var wantSprint = c.sprint && p.stamina >= C.STAMINA.SPRINT_MIN;
   var sp = this.playerSpeed(p, wantSprint);
