@@ -35,6 +35,30 @@ var FIELD = C.FIELD;
 //   被晃倒之类的计时状态必须盖住这段时间，否则演出播完状态就过期、用户看不到
 var CUT_OVERLAY_MS = 2200;
 
+// ★ 特写优先级（2026-10-11 试玩反馈：特写排队打断心流、进球特写被错过）：
+//   高优先级特写（进球/红牌/点球）在窗口期内不被常规事件覆盖。
+//   100 进球 / 90 点球结果·红牌 / 70 射门扑救·偏出 / 50 半场·终场 /
+//   40 越位·黄牌犯规 / 30 常规对决特写 / 20 进攻有利 / 10 纯文字事件
+function actionPrio(a) {
+  if (!a) return 0;
+  if (a.kind === 'goal') return 100;
+  if (a.kind === 'penalty') return a.label === '点球命中' ? 100 : 90;
+  if (a.kind === 'foul') return a.label === '红牌' ? 90 : 40;
+  if (a.kind === 'shoot') return 70;
+  if (a.kind === 'halftime' || a.kind === 'fulltime') return 50;
+  if (a.kind === 'offside') return 40;
+  if (a.cut) return 30;
+  if (a.kind === 'advantage') return 20;
+  return 10;
+}
+Match.prototype.setAction = function (a) {
+  a.prio = actionPrio(a);
+  var cur = this.lastAction;
+  if (cur && cur.until > Date.now() && (cur.prio || 0) > a.prio) return cur; // 高优先级特写保护中
+  this.lastAction = a;
+  return a;
+};
+
 // ★ 被动决策重触发冷却（毫秒）：一次决策结算 / 哨声恢复 / 拦截 / 解围之后，
 //   多久才允许再次自动弹出被动决策菜单。
 //   2026-10-10 试玩调优：之前 2200ms，进攻三区无压迫也每 2.2 秒强制弹菜单，
@@ -194,7 +218,7 @@ Match.prototype.goal = function (scorer, team) {
   this.phase = 'goal';
   this.phaseUntil = this.now + 3500;
   this.decision = null;
-  this.lastAction = {
+  var a = this.setAction({
     kind: 'goal',
     label: '进球！',
     playerName: scorer.name,
@@ -202,8 +226,9 @@ Match.prototype.goal = function (scorer, team) {
     success: true,
     text: '⚽ ' + scorer.name + ' 破门得分！' + T.HOME_NAME + ' ' + this.score.home + ' - ' + this.score.away + ' ' + T.AWAY_NAME,
     until: Date.now() + 3400,
-  };
+  });
   this.concedeTeam = team === 'home' ? 'away' : 'home';
+  return a;
 };
 
 // ★ 射门飞行阶段：球按瞄准点飞向球门，门将飞身扑救、防守球员回追，落地后按既定结果结算
@@ -287,8 +312,8 @@ Match.prototype.finishShotFlight = function () {
   var keeper = this.byId[sf.keeperId];
   this.ball.x = sf.x1; this.ball.y = sf.y1;
   if (sf.outcome === 'goal') {
-    this.goal(shooter, sf.team);
-    this.lastAction.cut = sf.isSpecial ? 'special-goal' : 'shoot-goal';
+    var ga = this.goal(shooter, sf.team);
+    ga.cut = sf.isSpecial ? 'special-goal' : 'shoot-goal';
     return;
   }
   if (sf.outcome === 'saved') {
@@ -296,20 +321,20 @@ Match.prototype.finishShotFlight = function () {
     // ★ 门将扑救反弹：以射门瞬间快照判断越位位置获益 → 吹越位
     var osReb = Offside.judgeRebound(this, sf.team, sf.snap);
     if (osReb.type === 'offside') return this.whistleOffside(osReb, shooter);
-    this.lastAction = {
+    this.setAction({
       kind: 'shoot', label: '射门', playerName: shooter.name, team: sf.team, success: false,
       cut: sf.isSpecial ? 'special-save' : 'shoot-save',
       text: shooter.name + ' 的' + sf.label + '被门将 ' + keeper.name + ' 扑出！',
       until: Date.now() + 2600,
-    };
+    });
   } else {
     // 偏出 → 门球
-    this.lastAction = {
+    this.setAction({
       kind: 'shoot', label: '射门', playerName: shooter.name, team: sf.team, success: false,
       cut: 'shoot-miss',
       text: shooter.name + ' 的' + sf.label + '偏出了球门……',
       until: Date.now() + 2600,
-    };
+    });
     this.enterStoppage('whistle', 1600, keeper.id);
     return;
   }
@@ -412,11 +437,11 @@ Match.prototype.interceptClean = function (def, kind) {
   this.phase = 'play';
   this.nextDecisionAt = this.now + DECISION_COOLDOWN;
   var verb = kind === 'shot' ? '挡下了这脚射门' : '断下了这脚传球';
-  this.lastAction = {
+  this.setAction({
     kind: 'intercept', label: '拦截', playerName: def.name, team: def.team,
     success: true, cut: null, text: def.name + ' ' + verb + '！',
     until: Date.now() + 1800,
-  };
+  });
   var c = this.carrier();
   this.lastDecisionPos = c ? { x: c.x, y: c.y } : { x: this.ball.x, y: this.ball.y };
 };
@@ -437,11 +462,11 @@ Match.prototype.interceptDeflect = function (hit, ballSpeed) {
   def.beatenUntil = this.now + 600; // 挡了一下，顿一下
   this.phase = 'play';
   this.nextDecisionAt = this.now + DECISION_COOLDOWN;
-  this.lastAction = {
+  this.setAction({
     kind: 'deflect', label: '挡出', playerName: def.name, team: def.team,
     success: true, cut: null, text: def.name + ' 把球挡了出去！',
     until: Date.now() + 1800,
-  };
+  });
   this.lastDecisionPos = { x: this.ball.x, y: this.ball.y };
 };
 
@@ -613,20 +638,20 @@ Match.prototype.endHalf = function () {
     this.phase = 'halftime';
     this.phaseUntil = this.now + 8000;
     this.decision = null;
-    this.lastAction = {
+    this.setAction({
       kind: 'halftime', label: '中场休息', playerName: '', team: 'home', success: true,
       text: '上半场结束：' + T.HOME_NAME + ' ' + this.score.home + ' - ' + this.score.away + ' ' + T.AWAY_NAME,
       until: Date.now() + 7800,
-    };
+    });
   } else {
     this.phase = 'fulltime';
     this.decision = null;
     this.clock = this.config.halfLength;
-    this.lastAction = {
+    this.setAction({
       kind: 'fulltime', label: '终场', playerName: '', team: 'home', success: true,
       text: '全场比赛结束！',
       until: Date.now() + 100000,
-    };
+    });
   }
 };
 
@@ -1234,12 +1259,12 @@ Match.prototype.resolveAction = function (p, commandId, rate, params) {
           x1: corr.x, y1: corr.y, durMs: land.flightMs,
           height: pp.height, receiverId: null, holderId: target.id,
         });
-        this.lastAction = {
+        this.setAction({
           kind: 'pass', label: passLabel, playerName: p.name, team: p.team,
           success: false, cut: null,
           text: '⚠ ' + target.name + '识破越位陷阱，急停收步！' + p.name + '的传球滚向无人地带。',
           until: Date.now() + 1800,
-        };
+        });
         return { kind: commandId, label: passLabel, playerName: p.name, success: false, pending: true, text: '' };
       }
       // ★ 裁判层：纯客观判定，不看任何数值（目标前插参与 → 越位照吹）
@@ -1363,7 +1388,7 @@ Match.prototype.resolveAction = function (p, commandId, rate, params) {
     }
   }
 
-  this.lastAction = {
+  this.setAction({
     kind: commandId,
     label: labelOf(commandId, p),
     playerName: p.name,
@@ -1372,7 +1397,7 @@ Match.prototype.resolveAction = function (p, commandId, rate, params) {
     text: text,
     cut: cut,
     until: Date.now() + CUT_OVERLAY_MS,
-  };
+  });
   return this.lastAction;
 };
 
@@ -1447,7 +1472,7 @@ Match.prototype.whistleOffside = function (os, passer) {
   });
   this.enterStoppage('whistle', 2200, this.ball.ownerId);
   var teamName = defendingTeam === 'home' ? T.HOME_NAME : T.AWAY_NAME;
-  this.lastAction = {
+  this.setAction({
     kind: 'offside',
     label: '越位',
     playerName: os.player.name,
@@ -1456,7 +1481,7 @@ Match.prototype.whistleOffside = function (os, passer) {
     text: Offside.reasonText(os.reason, os.player) + ' ' + teamName + '获得间接任意球。',
     cut: 'offside',
     until: Date.now() + 2200,
-  };
+  });
   return this.lastAction;
 };
 
@@ -1523,11 +1548,11 @@ Match.prototype.whistleThrowIn = function (team, bx, by) {
   });
   this.enterStoppage('whistle', 1400, taker.id);
   var teamName = team === 'home' ? T.HOME_NAME : T.AWAY_NAME;
-  this.lastAction = {
+  this.setAction({
     kind: 'throwin', label: '界外球', playerName: taker.name, team: team, success: true,
     text: '球出边线，' + teamName + '获得界外球（' + taker.name + '掷）。',
     cut: null, until: Date.now() + 1400,
-  };
+  });
 };
 
 // ★ 球门球（Law 16）：门将小禁区开球；对方须退出大禁区；直接发出不越位（Law 11）
@@ -1554,11 +1579,11 @@ Match.prototype.whistleGoalKick = function (team) {
   });
   this.enterStoppage('whistle', 1600, keeper.id);
   var teamName = team === 'home' ? T.HOME_NAME : T.AWAY_NAME;
-  this.lastAction = {
+  this.setAction({
     kind: 'goalkick', label: '球门球', playerName: keeper.name, team: team, success: true,
     text: teamName + '获得球门球（' + keeper.name + '开）。',
     cut: null, until: Date.now() + 1600,
-  };
+  });
 };
 
 // ★ 角球（Law 17）：就近角球弧，最近的非门将球员主罚；对方退 9.15 米；直接发出不越位（Law 11）
@@ -1590,11 +1615,11 @@ Match.prototype.whistleCorner = function (team) {
   });
   this.enterStoppage('whistle', 1800, taker.id);
   var teamName = team === 'home' ? T.HOME_NAME : T.AWAY_NAME;
-  this.lastAction = {
+  this.setAction({
     kind: 'corner', label: '角球', playerName: taker.name, team: team, success: true,
     text: teamName + '获得角球（' + taker.name + '主罚）。',
     cut: null, until: Date.now() + 1800,
-  };
+  });
 };
 
 // ★ 重启豁免判定（IFAB Law 11）：界外球/球门球/角球，掷/罚球者在原地直接发出的第一下不判越位。
@@ -1612,7 +1637,7 @@ Match.prototype.applyFoulResult = function (foul) {
   var vName = foul.victim.name;
 
   if (foul.advantage) {
-    this.lastAction = {
+    this.setAction({
       kind: 'advantage',
       label: '进攻有利',
       playerName: vName,
@@ -1620,7 +1645,7 @@ Match.prototype.applyFoulResult = function (foul) {
       success: true,
       text: '🟢 ' + foul.defender.name + '犯规，但裁判示意进攻有利，比赛继续！',
       until: Date.now() + 2200,
-    };
+    });
     return this.lastAction;
   }
 
@@ -1647,7 +1672,7 @@ Match.prototype.applyFoulResult = function (foul) {
   });
   this.enterStoppage('whistle', 2400, foul.victim.id);
   var cardLabel = foul.card === 'red' ? '红牌' : (foul.card === 'yellow' ? '黄牌' : '犯规');
-  this.lastAction = {
+  this.setAction({
     kind: 'foul',
     label: cardLabel,
     playerName: foul.defender.name,
@@ -1656,7 +1681,7 @@ Match.prototype.applyFoulResult = function (foul) {
     text: text,
     cut: 'foul',
     until: Date.now() + 2400,
-  };
+  });
   return this.lastAction;
 };
 
@@ -1682,17 +1707,17 @@ Match.prototype.resolvePenalty = function (foul, prefixText) {
   var roll = this.rng();
   var call = prefixText + ' ' + shooter.name + '主罚点球……';
   if (roll < pGoal) {
-    this.goal(shooter, shooter.team);
-    this.lastAction.kind = 'penalty';
-    this.lastAction.label = '点球命中';
-    this.lastAction.text = call + '球进了！' + shooter.name + '顶住压力罚入点球！';
-    this.lastAction.cut = 'shoot-goal';
-    return this.lastAction;
+    var ga2 = this.goal(shooter, shooter.team);
+    ga2.kind = 'penalty';
+    ga2.label = '点球命中';
+    ga2.text = call + '球进了！' + shooter.name + '顶住压力罚入点球！';
+    ga2.cut = 'shoot-goal';
+    return ga2;
   }
   this.ball.ownerId = keeper.id;
   this.enterStoppage('whistle', 2000, keeper.id);
   var pSaved = roll < pGoal + 0.12;
-  this.lastAction = {
+  this.setAction({
     kind: 'penalty',
     label: '点球罚失',
     playerName: shooter.name,
@@ -1701,7 +1726,7 @@ Match.prototype.resolvePenalty = function (foul, prefixText) {
     text: call + (pSaved ? '被门将' + keeper.name + '神勇扑出！' : '偏出了球门！'),
     cut: pSaved ? 'shoot-save' : 'shoot-miss',
     until: Date.now() + 2000,
-  };
+  });
   return this.lastAction;
 };
 

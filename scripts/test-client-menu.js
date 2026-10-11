@@ -51,7 +51,9 @@ var src = fs.readFileSync(path.join(__dirname, '..', 'docs', 'js', 'main.js'), '
 var driver = '\n;window.__T = { openHeadMenu: openHeadMenu, headMenuKey: headMenuKey, hmTop: hmTop, ' +
   'nudgeAim: nudgeAim, hmConfirmPass: hmConfirmPass, headMenuBack: headMenuBack, ' +
   'setState: function (s) { state = s; }, getState: function () { return state; }, ' +
-  'setMatchId: function (id) { matchId = id; }, getUi: function () { return ui; } };\n';
+  'setMatchId: function (id) { matchId = id; }, getUi: function () { return ui; }, ' +
+  'showingCutscene: showingCutscene, skipCutscene: skipCutscene, ' +
+  'setCutImg: function (k, v) { CUT_IMGS[k] = v; } };\n';
 if (!/\}\)\(\);\s*$/.test(src)) throw new Error('main.js 尾部 IIFE 未找到，注入失败');
 src = src.replace(/\}\)\(\);\s*$/, driver + '})();');
 vm.runInContext(src, sandbox);
@@ -158,6 +160,32 @@ try {
   T.headMenuKey(key('Enter')); // 上抢
   check('防守上抢确认无异常', true);
 } catch (e) { check('防守上抢确认无异常', false); console.log('  threw: ' + e.message); }
+
+// ---- 6. 全屏特写跳过（2026-10-11：特写排队打断心流） ----
+try {
+  T.setCutImg('dribble-win', { complete: true, naturalWidth: 100 });
+  function cutState(label, until) {
+    var s = baseState(null);
+    s.lastAction = { kind: 'dribble', label: label, playerName: '风间隼', team: 'home',
+      success: true, text: 'x', cut: 'dribble-win', until: until };
+    return s;
+  }
+  T.setState(cutState('突破', Date.now() + 5000));
+  check('特写显示中 showingCutscene 非空', !!T.showingCutscene());
+  check('skipCutscene 返回 true', T.skipCutscene() === true);
+  check('跳过后 showingCutscene 为空', !T.showingCutscene());
+  check('ui.cutSkipId 已记录', !!T.getUi().cutSkipId);
+  // 新事件（id 不同）自动解除跳过
+  T.setState(cutState('上抢', Date.now() + 9000));
+  check('新特写到达后跳过自动解除', !!T.showingCutscene());
+  // 无 cut 键的纯文字事件：showingCutscene 为空（不拦截按键）
+  var s2 = baseState(null);
+  s2.lastAction = { kind: 'intercept', label: '拦截', playerName: 'x', team: 'home',
+    success: true, text: 'x', cut: null, until: Date.now() + 5000 };
+  T.setState(s2);
+  check('纯文字事件不算特写', !T.showingCutscene());
+  check('无特写时 skipCutscene 返回 false', T.skipCutscene() === false);
+} catch (e) { check('特写跳过逻辑无异常', false); console.log('  threw: ' + e.message); }
 
 console.log(failures.length ? ('\nREGRESSION FAIL: ' + failures.join(', ')) : '\nALL CLIENT MENU TESTS PASSED');
 process.exit(failures.length ? 1 : 0);
