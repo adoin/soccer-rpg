@@ -734,10 +734,11 @@ Match.prototype.playerSpeed = function (p, sprint) {
   return base;
 };
 
-// ★ 带球减速：盘带属性决定带球掉速（盘带 20 几乎不掉速，盘带 5 掉到约 7 成）
+// ★ 带球减速：盘带属性决定带球掉速（2026-10-11 用户：18% 太多了）
+//   盘带 20 几乎不掉速，盘带 50（平均）约掉 10%，盘带 30 约掉 15%
 //   只在持球者移动调用点使用，不污染无球速度/体能档位计算
 Match.prototype.dribbleFactor = function (p) {
-  return 0.62 + 0.38 * (FM.dribble(p) / 95);
+  return 0.78 + 0.22 * (FM.dribble(p) / 95);
 };
 
 // ★ 体能更新（单资源制，无精神力）：
@@ -923,6 +924,10 @@ Match.prototype.simulate = function (dt) {
         var pressK = 0.65 + aggr * 0.35;
         tx = carrier.x; ty = carrier.y;
         sp = self.playerSpeed(p, true) * 0.94 * pressK;
+        // ★ 反应延迟（2026-10-11 用户：过完人立刻被满速追上不合理）：刚成为上抢者时
+        //   有 0.25 秒转身/反应时间，速度打 6 折。目标没变则不重复触发。
+        if (p._pressTgt !== carrier.id) { p._pressTgt = carrier.id; p._pressSince = self.now; }
+        if (self.now - (p._pressSince || 0) < 250) sp *= 0.6;
         chaseCount++;
       } else if (rank === 1 && !beaten && !pFrozen) {
         // ★ 协防：防守能力高的站位更深更稳，慢跑到位（之前 0.8 冲刺，一过人就撞上）

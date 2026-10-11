@@ -1,0 +1,33 @@
+--- a/client/js/main.js
++++ b/client/js/main.js
+@@ -338,7 +338,13 @@
+ // ★ 头顶菜单打开时：方向盘切成菜单导航（上/下/左/右），右侧按键变成 确定/返回（复用桌面端键盘逻辑）
+ function menuKeySynth(k) { headMenuKey({ key: k, preventDefault: function () {} }); }
+ var menuDpadDir = null;
++// ★ 误触保护（2026-10-11）：菜单刚弹出时拇指往往还按在加速键/方向盘上，
++//    600ms 内的"确定"/导航一律忽略，等手抬起来重新按才算数。
++function menuFresh() {
++  return !!(ui.hmenu && ui.hmenu.openedAt && (Date.now() - ui.hmenu.openedAt < 600));
++}
+ function menuDpadStep(p) {
++  if (menuFresh()) return;
+   var dx = p.x - DPAD.x, dy = p.y - DPAD.y;
+   if (Math.hypot(dx, dy) < DPAD.r * 0.22) { menuDpadDir = null; return; } // 死区
+   var lvl0 = hmTop();
+@@ -355,7 +361,7 @@
+   if (dir !== menuDpadDir) { menuDpadDir = dir; menuKeySynth(dir); } // 进入新方向扇区才走一步
+ }
+ function menuBtn(id) {
+-  if (id === 'sprint') menuKeySynth('Enter');                          // 确定
++  if (id === 'sprint') { if (menuFresh()) return; menuKeySynth('Enter'); } // 确定
+   else if (id === 'slow') { if (headMenuOpen()) headMenuBack(); }      // 返回
+   else if (id === 'menu') togglePause();
+   else toast('请先完成头顶菜单选择');
+@@ -541,6 +547,7 @@
+     playerId: d.playerId, passOpt: null,
+     pass: { aimX: 0, aimY: 0, technique: 'inside', height: 'mid' },
+     preview: null, previewAt: 0,
++    openedAt: Date.now(), // 误触保护计时起点
+     stack: [{ kind: 'cmds', title: null, items: items, sel: firstEnabled(items, 0) }]
+   };
+ }
