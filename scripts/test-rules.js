@@ -167,7 +167,7 @@ console.log('== 行为层：数值驱动决策（确定性，零随机） ==');
   ok(xs2[0] === 82 && xs2[1] === 82 && xs2[2] === 82, '危险时防线随球回退、只平行站住', JSON.stringify(xs2));
 })();
 
-// 11. defensiveShape：低纪律防线各回各家
+// 11. defensiveShape：低纪律防线各回各家（2026-10-12 三层重构：回队形锚点，非纯 hx）
 (function () {
   var m = newMatch(32);
   m.now = 0;
@@ -175,8 +175,10 @@ console.log('== 行为层：数值驱动决策（确定性，零随机） ==');
   ['a2', 'a3', 'a4'].forEach(function (id) { var q = P(m, id); ['anticipation','positioning','decisions','vision'].forEach(function(k){ q.stats[k] = 6; }); });
   ball(m, 40, 34);
   var out = Behavior.defensiveShape(m, 'away', {});
-  ok(out.a2.x === P(m, 'a2').hx && out.a3.x === P(m, 'a3').hx,
-    '低纪律防线各回阵型点、参差不齐', JSON.stringify({ a2: out.a2.x, a3: out.a3.x, hx2: P(m, 'a2').hx }));
+  // 低纪律：不吃协同 vT，回各自队形锚点（带球偏移），三人不平行
+  var a2a = Behavior.shapeAnchor(m, P(m, 'a2'));
+  ok(Math.abs(out.a2.x - a2a.x) < 0.01 && Math.abs(out.a2.y - a2a.y) < 0.01,
+    '低纪律防线各回队形锚点、参差不齐', JSON.stringify({ a2: out.a2.x, ax: a2a.x }));
 })();
 
 // 12. defensiveShape：整线协同高 + 无威胁 → 一起压上造越位
@@ -405,10 +407,12 @@ console.log('== 行为层：无球任务 / 协防 / 盯人 / 持球调整 ==');
     '被紧逼时持球者减速护球（spMul 按冷静度 0.55~0.80）', spMulPressed.toFixed(2));
   m.players.forEach(function (q) { if (q.team === 'away') { q.x = 95; q.y = 34; } });
   ok(Behavior.carrierAdjust(m, carrier).spMul === 1, '无人紧逼时正常推进');
-  // 防守盯人：MF 跟最近的对方无球队员
+  // 防守盯人：★ 2026-10-12 三层重构——MF 站"人和球门之间"卡线路，不追着人跑
   set(m, 'a8', 40, 30); set(m, 'h8', 42, 32);
   var marks = Behavior.markTargets(m, 'away', carrier, {});
-  ok(marks['a8'] && Math.abs(marks['a8'].x - 42) < 0.01, '中场盯人跟住最近目标');
+  // a8（away，球门在 x=105）应站在 h8 与球门之间偏球侧，而非 h8 身上
+  var mx = marks['a8'];
+  ok(mx && mx.x > 42 && mx.x < 105, '中场盯人站球门侧（非跟屁虫）', JSON.stringify(mx));
   // 门将随球移动
   var kt = Behavior.keeperTarget(m, P(m, 'a1'));
   ok(kt.x !== P(m, 'a1').hx, '门将随球横向移动（不再钉死阵型点）');
@@ -611,6 +615,28 @@ console.log('== 被动决策触发频率（2026-10-10 试玩调优） ==');
   var r = m.applyCommand('h10', 'retreat');   // 回撤：必可用，继续比赛
   ok(r.ok && m.phase === 'play', '回撤指令结算回 play', JSON.stringify({ ok: r.ok, phase: m.phase }));
   ok(m.nextDecisionAt - m.now === 6000, '重触发冷却为 6000ms', String(m.nextDecisionAt - m.now));
+})();
+
+// 19. 造越位：整线协同前压（2026-10-12 用户要求防线有造越位能力）
+(function () {
+  var m = newMatch(504);
+  m.now = 5000;
+  // 客队持球在中场，持球超 1 秒，无近端威胁
+  set(m, 'h8', 50, 34); ball(m, 50, 34); m.ball.ownerId = 'h8';
+  m.byId['h8']._gotBallAt = 3000;
+  ['h2','h3','h4','h5','h6','h7','h9','h10','h11'].forEach(function (id, i) { set(m, id, 70, 10 + i * 5); });
+  // 主队防线高纪律（能造越位）
+  ['a2','a3','a4','a5'].forEach(function (id) {
+    var q = P(m, id);
+    ['anticipation','positioning','decisions','vision'].forEach(function (k) { q.stats[k] = 15; });
+    set(m, id, 30, 20 + parseInt(id[1]) * 8);
+  });
+  var out = Behavior.defensiveShape(m, 'away', {});
+  // 有造越位 vs 无造越位：对比关闭 trap 条件时的位置
+  // 核心验证：整线 x 一致（协同），且比常规站位靠前
+  var xs = ['a2','a3','a4'].map(function (id) { return out[id] ? out[id].x : null; });
+  var allSame = xs.every(function (x) { return x != null && Math.abs(x - xs[0]) < 0.01; });
+  ok(allSame && xs[0] < 45, '造越位整线协同前压', JSON.stringify({ xs: xs }));
 })();
 
 console.log(failures === 0 ? '\nALL TESTS PASSED' : '\n' + failures + ' TEST(S) FAILED');

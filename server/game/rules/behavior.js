@@ -79,8 +79,30 @@ function timeRunU(player, wantU, snap) {
 
 // ---------- 防守 ----------
 
+// ============================================================
+// 三层 AI（2026-10-12 用户：PC 智商太低，满场乱跑）：
+//   Layer 1 队形层：全队是"橡皮筋"阵型，整体随球平移压缩，不断裂
+//   Layer 2 角色层：防守 1 抢 1 协 8 区域；进攻宽度+支援
+//   Layer 3 个体层：数值决定执行质量（跑动/站位/纪律）
+// ============================================================
+
+// Layer 1：队形锚点——阵型位置随球整体偏移（橡皮筋）
+//   不同位置线偏移系数不同：DF 稳（0.25），MF 跟（0.45），FW 活（0.6）
+//   保证阵型不断裂，不再"球在哪人去哪"
+function shapeAnchor(match, p) {
+  var sx = (match.ball.x - HALF) / HALF; // -1~1，球偏哪边
+  var sy = (match.ball.y - HALF) / HALF;
+  var k = p.pos === 'DF' ? 0.25 : p.pos === 'MF' ? 0.45 : 0.6;
+  // 阵型整体平移：x 方向 12 米，y 方向 8 米（按系数缩放）
+  var ax = clamp(p.hx + sx * 12 * k, 4, FIELD_W - 4);
+  var ay = clamp(p.hy + sy * 8 * k, 6, FIELD_H - 6);
+  return { x: ax, y: ay };
+}
+
 // 防线落位：返回 { playerId: {x, y} }（只包含参与落位的 DF）。
 // pressing: 正在上抢的球员 id 集合（这些人不参与落位）。
+// ★ 2026-10-12 三层重构：防线以队形锚点为基准，再按球做微调；
+//   造越位：整线协同前压（trap），低纪律者掉队则陷阱失败（真实）。
 function defensiveShape(match, team, pressing) {
   var goalX = team === 'home' ? 0 : FIELD_W;
   function vOf(x) { return Math.abs(x - goalX); }       // 距本方球门距离
@@ -94,28 +116,50 @@ function defensiveShape(match, team, pressing) {
   var out = {};
   if (!backs.length) return out;
 
-  // 防线整体以球为锚落位（见下），不再用后卫自身站位做锚
-
   var teamTrap = trapAbility(match.players, team);
   var vBall = vOf(match.ball.x);
-  // ★ 修正：球进入本方 38 米区域才是危险（之前写成 vBall > 62，条件反了，防线从不动）
-  var danger = vBall < 38;
+  var danger = vBall < 38; // 球进入本方 38 米才是危险
+
+  // ★ 造越位触发判定：对方持球在中场（距我门 40~65 米）、持球超 1 秒（在找传球线路）、
+  //   我方无紧迫威胁（最近对方距球 >6 米）、整线造越位能力达标
+  var carrier = match.ball.ownerId ? match.byId[match.ball.ownerId] : null;
+  var trapNow = false;
+  if (!danger && teamTrap >= TRAP_BAR && carrier && carrier.team !== team) {
+    var vCarrier = vOf(carrier.x);
+    var carrierHold = match.now - (carrier._gotBallAt || 0) > 1000;
+    var nearestThreat = 1e9;
+    match.players.forEach(function (q) {
+      if (q.team !== team && !q.sentOff && q.id !== carrier.id) {
+        var d = Math.sqrt((q.x - match.ball.x) * (q.x - match.ball.x) + (q.y - match.ball.y) * (q.y - match.ball.y));
+        if (d < nearestThreat) nearestThreat = d;
+      }
+    });
+    // 中场区域 + 持球观察 + 无近端威胁 = 造越位窗口
+    if (vCarrier > 40 && vCarrier < 65 && carrierHold && nearestThreat > 6) trapNow = true;
+  }
 
   backs.forEach(function (p) {
+    var anchor = shapeAnchor(match, p); // Layer 1：队形锚点
     var vT;
-    if (discipline(p) >= HOLD_BAR) {
-      // ★ 以球为锚：防线整体保持在球的球门一侧约 8 米，随球进退、始终平行
-      //   （之前锚定后卫自身站位的最大值，自己锚自己，整条线冻结）
+    var disc = discipline(p);
+    if (disc >= HOLD_BAR) {
+      // 以球为锚 + 队形锚点融合：防线在球门一侧 8 米，但横向跟随队形
       vT = clamp(vBall + 8, 10, 58);
-      if (!danger && teamTrap >= TRAP_BAR) {
-        vT = Math.max(vT, Math.min(vBall + 12, 58)); // 协同压上造越位
+      // ★ 造越位：整线协同前压 4 米（不是 12 米，4 米足够让前锋越位又不至于失位太多）
+      //   纪律差的跟不上——陷阱失败，这就是真实足球
+      if (trapNow && disc >= TRAP_BAR) {
+        vT = clamp(vT + 4, 10, 62);
+        p._trapStep = match.now; // 标记这次前压，用于视觉/日志
       }
     } else {
-      vT = null; // 纪律差：各回各的阵型点，防线参差不齐
+      vT = null; // 纪律差：回队形锚点，防线参差不齐
     }
-    out[p.id] = vT == null
-      ? { x: p.hx, y: p.hy }
-      : { x: clamp(xOf(vT), 4, FIELD_W - 4), y: p.hy };
+    if (vT == null) {
+      out[p.id] = anchor;
+    } else {
+      // 纵向按 vT，横向按队形锚点（防线整体平行移动，不断裂）
+      out[p.id] = { x: clamp(xOf(vT), 4, FIELD_W - 4), y: anchor.y };
+    }
   });
   return out;
 }
@@ -127,6 +171,7 @@ module.exports = {
   attackerDecision: attackerDecision,
   timeRunU: timeRunU,
   defensiveShape: defensiveShape,
+  shapeAnchor: shapeAnchor, // ★ 2026-10-12 三层 AI：队形锚点
   attackTasks: attackTasks,
   markTargets: markTargets,
   carrierAdjust: carrierAdjust,
@@ -239,9 +284,12 @@ function taskTarget(match, p, carrier, dir, task, snap, idx) {
   return { x: clamp(tx, 4, FIELD_W - 4), y: clamp(ty, 4, FIELD_H - 4) };
 }
 
-// 防守方中场盯人：非上抢 MF 1 对 1 跟最近的对方无球队员（14 米内才跟）
+// 防守方中场盯人：★ 2026-10-12 三层重构——不再追着人跑，而是站"人和球门之间"
+//   卡住传球线路。位置 = 对手与本方球门连线的中点偏球门侧，
+//   再按球的位置微调。14 米内才盯，远了回队形。
 function markTargets(match, defTeam, carrier, pressing) {
   var out = {};
+  var goalX = defTeam === 'home' ? 0 : FIELD_W;
   match.players.forEach(function (p) {
     if (p.team !== defTeam || p.sentOff || p.pos !== 'MF') return;
     if (pressing[p.id]) return;
@@ -254,7 +302,21 @@ function markTargets(match, defTeam, carrier, pressing) {
         if (d < bd) { bd = d; best = q; }
       }
     });
-    if (best) out[p.id] = { x: best.x, y: best.y };
+    if (best) {
+      // ★ 球门侧站位：站在对手和球门之间，偏向球一侧 1.5 米（卡传球线路）
+      //   不是站在对手身上（那是跟屁虫，会被一脚出球打穿）
+      var mx = (best.x + goalX) / 2, my = (best.y + FIELD_H / 2) / 2;
+      // 向球侧微调：离球越近，越靠近对手（压迫）；离球远，越靠近球门（保护）
+      var dBall = Math.sqrt((match.ball.x - mx) * (match.ball.x - mx) + (match.ball.y - my) * (match.ball.y - my));
+      var k = clamp(dBall / 20, 0.3, 1); // 球远→0.3（靠球门），球近→1（贴对手）
+      var tx = mx + (best.x - mx) * k;
+      var ty = my + (best.y - my) * k;
+      // ★ 位置感好的卡得更准（站位更靠近最佳点），差的站偏一点
+      var posQ = FM.v(p, 'positioning') / 100;
+      tx += (mx - tx) * (1 - posQ) * 0.5;
+      ty += (my - ty) * (1 - posQ) * 0.5;
+      out[p.id] = { x: clamp(tx, 4, FIELD_W - 4), y: clamp(ty, 4, FIELD_H - 4) };
+    }
   });
   return out;
 }
