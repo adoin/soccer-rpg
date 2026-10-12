@@ -585,7 +585,7 @@ console.log('== 被动决策触发频率（2026-10-10 试玩调优） ==');
   for (var i = 0; i < 120; i++) { m.tick(1/60); parked(m); } // 跑 2 秒
   ok(m.phase === 'play' && !m.decision, '进攻三区无压迫不弹被动菜单', JSON.stringify({ phase: m.phase }));
 })();
-// 17. 真被压迫（6 米内有防守人）：照样触发
+// 17. 真被压迫（2 米贴身）：照样触发
 (function () {
   var m = newMatch(502);
   m.aiCooldownUntil = 1e15;
@@ -597,7 +597,66 @@ console.log('== 被动决策触发频率（2026-10-10 试玩调优） ==');
   set(m, 'a5', 62, 34);                       // 2 米贴身压迫
   parkHome(m); set(m, 'h10', 60, 34);
   m.tick(1/60);
-  ok(m.phase === 'decision' && !!m.decision && m.decision.playerId === 'h10', '6 米压迫仍触发被动决策', JSON.stringify({ phase: m.phase }));
+  ok(m.phase === 'decision' && !!m.decision && m.decision.playerId === 'h10', '2 米贴身压迫触发被动决策', JSON.stringify({ phase: m.phase }));
+})();
+// 17b. isPressured 单元判定（2026-10-12）：盯防≠压迫
+(function () {
+  var m = newMatch(505);
+  var car = { x: 60, y: 34 };
+  function nearAt(x, vx) { var q = { x: x, y: 34, _vx: vx, _vy: 0 }; return { player: q, dist: Math.abs(60 - x) }; }
+  ok(m.isPressured(car, nearAt(58, 0)) === true, '2m 贴身（静止）= 压迫', '');
+  ok(m.isPressured(car, nearAt(55, 0)) === false, '5m 静止盯防 ≠ 压迫', '');
+  ok(m.isPressured(car, nearAt(55, 7)) === true, '5m 高速逼近（7m/s) = 压迫', '');
+  ok(m.isPressured(car, nearAt(55, -3)) === false, '5m 远离（-3m/s）≠ 压迫', '');
+  ok(m.isPressured(car, nearAt(55, -1)) === false, '5m 慢速移动（1m/s）≠ 压迫', '');
+  ok(m.isPressured(car, nearAt(52, -9)) === false, '8m 外即使冲刺也不触发（距离门槛）', '');
+  ok(m.isPressured(car, null) === false, '无防守人 = 不压迫', '');
+})();
+// 17c. 集成：同一 5 米位置，上抢者逼近→触发，盯防者静止→不触发
+(function () {
+  function scenario(seed, freezeMarker) {
+    var m = newMatch(seed);
+    m.aiCooldownUntil = 1e15;
+    m.nextDecisionAt = 0;
+    set(m, 'h10', 60, 34); ball(m, 60, 34); m.ball.ownerId = 'h10';
+    m.lastDecisionPos = { x: 60, y: 34 };
+    ['a2','a3','a4','a6','a7','a8','a9','a10','a11'].forEach(function (id, i) { set(m, id, 30, 8 + i * 5); });
+    set(m, 'a1', 100, 34);
+    set(m, 'a5', 65, 34);                        // 5 米外
+    if (freezeMarker) P(m, 'a5').frozenUntil = m.now + 60000;  // 盯防者：速度恒 0
+    parkHome(m);
+    return m;
+  }
+  function repark(m) { set(m, 'h10', 60, 34); ball(m, 60, 34); set(m, 'a5', 65, 34); }
+  // (a) 盯防者静止 → 30 tick 不触发
+  var m1 = scenario(506, true);
+  for (var i = 0; i < 30; i++) { m1.tick(1/60); repark(m1); }
+  ok(m1.phase === 'play' && !m1.decision, '5 米外静止盯防不弹被动菜单', JSON.stringify({ phase: m1.phase }));
+  // (b) 上抢者冲刺逼近 → 触发（位置钉住隔离"逼近"规则，只让速度累积）
+  var m2 = scenario(507, false);
+  var fired = false;
+  for (var j = 0; j < 40; j++) {
+    m2.tick(1/60); repark(m2);
+    if (m2.phase === 'decision') { fired = true; break; }
+  }
+  ok(fired, '5 米外高速逼近触发被动决策', 'fired=' + fired);
+})();
+// 17d. 传球成功率贴身如实（2026-10-12）：1.2m 内出球必被封堵，菜单不许显示虚高成功率
+(function () {
+  var Pass = require('../server/game/rules/pass');
+  var m = newMatch(508);
+  set(m, 'h10', 60, 34); ball(m, 60, 34); m.ball.ownerId = 'h10';
+  ['a2','a3','a4','a6','a7','a8','a9','a10','a11'].forEach(function (id, i) { set(m, id, 30, 8 + i * 5); });
+  set(m, 'a1', 100, 34);
+  parkHome(m); set(m, 'h10', 60, 34);
+  var pp = { aimX: 75, aimY: 34, technique: 'inside', height: 'mid' };
+  var land = Pass.computeLanding(P(m, 'h10'), pp, 70);
+  set(m, 'a5', 80, 34);                          // 远端，不干扰
+  var rFar = Pass.laneRate(m, P(m, 'h10'), pp, land);
+  set(m, 'a5', 60.8, 34);                        // 0.8m 贴身：当面球必被停
+  var rNear = Pass.laneRate(m, P(m, 'h10'), pp, land);
+  ok(rFar > 50, '无压迫时传球成功率正常', String(rFar));
+  ok(rNear <= 12, '贴身 0.8m 时成功率如实压低（≤12)', String(rNear));
 })();
 // 18. 决策结算后冷却 6000ms（之前 2200ms，心流全碎）
 (function () {

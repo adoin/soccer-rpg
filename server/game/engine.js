@@ -677,6 +677,21 @@ Match.prototype.nearestOpponent = function (p) {
   return { player: best, dist: bd };
 };
 
+// ★ 真压迫判定（2026-10-12）：持球者是否正被"上抢"而非"盯防"。
+//   near: nearestOpponent(carrier) 的结果 {player, dist}。
+//   贴身 3.5m 内恒为压迫；3.5~6m 看对方是否正朝持球者高速逼近
+//   （速度在"对方→持球者"方向的分量 >2 m/s）。慢跑落位/球门侧卡线路的盯防者不触发。
+Match.prototype.isPressured = function (carrier, near) {
+  if (!near || !near.player) return false;
+  if (near.dist < 3.5) return true;
+  if (near.dist >= 6) return false;
+  var q = near.player;
+  var dx = carrier.x - q.x, dy = carrier.y - q.y;
+  var d = Math.sqrt(dx * dx + dy * dy) || 1;
+  var closing = ((q._vx || 0) * dx + (q._vy || 0) * dy) / d;
+  return closing > 2;
+};
+
 Match.prototype.moveToward = function (p, tx, ty, speed, dt) {
   var dx = tx - p.x, dy = ty - p.y;
   var d = Math.sqrt(dx * dx + dy * dy);
@@ -1004,14 +1019,15 @@ Match.prototype.simulate = function (dt) {
   }
 
   // --- 决策点判定（仅用户球队） ---
-  // ★ 逼近半径 6 米：防守队员真贴上来才暂停弹菜单（之前 15 米，开球 4 秒就弹，键盘全被菜单劫持）
-  // ★ 2026-10-10 试玩调优：去掉 "carrier.x > 76" 纯位置触发——进攻三区无压迫站着也每 2.2 秒强制弹菜单，
-  //   是"选完→被断→再弹"死循环的主因。被动决策只在"被压迫"时触发（2026-09-27 你定的规矩），
-  //   想射门/传球随时按 E 手动呼出（已有）。保留：6 米贴身压迫、带球推进 24 米（局面显著变化）。
+  // ★ 真压迫判定（2026-10-12 试玩驱动）：旧条件"6 米内有人"在三层 AI 上线后失效——
+  //   中场按设计站在"人和球门之间"卡传球线路（常在 4~6 米），那是盯防不是上抢，
+  //   却每 6 秒强制暂停一次，"急停批公文"式打断带球心流。现只在真压迫时暂停，
+  //   见 isPressured。被动只在"被压迫"时触发（2026-09-27 你定的规矩）不变；
+  //   想射门/传球随时按 E 手动呼出（已有）。保留：带球推进 24 米（局面显著变化）。
   if (carrier.team === 'home' && this.now >= this.nextDecisionAt) {
     var near = this.nearestOpponent(carrier);
     var traveled = dist(carrier, this.lastDecisionPos);
-    if (near.dist < 6 || traveled > 24) {
+    if (this.isPressured(carrier, near) || traveled > 24) {
       this.enterDecision(carrier);
       return;
     }
@@ -1127,7 +1143,8 @@ Match.prototype.buildOptions = function (p) {
     })(opt('pass', 80)),
     // ★ 护球：身体对抗（强壮+平衡）对抢断，成功则卡住逼抢者
     opt('protect', 68 + ((FM.v(p, 'strength') + FM.v(p, 'balance')) / 2 * ef - FM.defend(near.player) * defEf) * 0.7),
-    opt('shoot', 78 + (FM.shoot(p) * ef - FM.keep(keeper) * keepEf) * 1.1 - distGoal * 0.5),
+    // ★ 射门贴身如实（2026-10-12）：0.5m 内堵枪眼必碰到（intercept.js），别显示虚高成功率
+    opt('shoot', 78 + (FM.shoot(p) * ef - FM.keep(keeper) * keepEf) * 1.1 - distGoal * 0.5 - (near.dist < 3 ? 10 : 0)),
     // ★ 无必杀技的球员直接不列出该项（之前显示但光标跳过，易误导）
     (p.special && (p.pos === 'FW' || p.pos === 'MF'))
       ? opt('special', 84 + ((FM.shoot(p) * ef + 8) - FM.keep(keeper) * keepEf) * 1.1 - distGoal * 0.32)
