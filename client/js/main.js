@@ -23,11 +23,27 @@ function $(id) { return document.getElementById(id); }
 //   8 行（方向）× 4 列（跑动帧），48×72/帧，整表 192×576
 //   方向顺序：0=up, 1=upright, 2=right, 3=downright, 4=down, 5=downleft, 6=left, 7=upleft
 //   有球/无球两套：持球用 with-ball（脚下带球），出脚后切 without-ball 对应帧，球单独画轨迹
-var SPR_V = 'spr2'; // 精灵资源版本，换图时 bump 防手机缓存（8 方向重做后 bump）
+var SPR_V = 'spr3'; // 精灵资源版本，换图时 bump 防手机缓存（v3 8方向8帧占位符版）
 var spriteAtlas8 = {}; // kit -> { ball: Image, nobal: Image }
 ['home'].forEach(function (kit) {
-  var b = new Image(); b.src = 'assets/sprites/' + kit + '/run-8dir-with-ball.png?v=' + SPR_V;
-  var n = new Image(); n.src = 'assets/sprites/' + kit + '/run-8dir-without-ball.png?v=' + SPR_V;
+  var b = new Image(); b.src = 'assets/sprites/' + kit + '/run-8dir-v3-with-ball.png?v=' + SPR_V;
+  var n = new Image(); n.src = 'assets/sprites/' + kit + '/run-8dir-v3-without-ball.png?v=' + SPR_V;
+  // ★ 占位符换色：v3 图用品红衣/青裤/黄袜占位符，加载后按球队实际颜色替换
+  [b, n].forEach(function (im) {
+    im.onload = function () {
+      try {
+        if (typeof SharedKits === 'undefined') return;
+        var cv = document.createElement('canvas');
+        cv.width = im.naturalWidth; cv.height = im.naturalHeight;
+        var cx = cv.getContext('2d');
+        cx.drawImage(im, 0, 0);
+        var id = cx.getImageData(0, 0, cv.width, cv.height);
+        SharedKits.recolorImageData(id);
+        cx.putImageData(id, 0, 0);
+        im.src = cv.toDataURL();
+      } catch (e) {}
+    };
+  });
   spriteAtlas8[kit] = { ball: b, nobal: n };
 });
 // 旧 5 帧表保留给 away/gk（待统一）
@@ -64,8 +80,10 @@ function runCycleFor(p, t) {
   st.x = rp.x; st.y = rp.y; st.lt = t;
   var moving = v > 1.2;          // 原 0.02 米/帧在 60Hz 下 = 1.2 米/秒，现固定
   var fps = 6 + Math.min(10, v / 2);
-  st.ph = (st.ph + fps * dt) % 4;
-  return { moving: moving, fps: fps, phase: st.ph / 4, dx: dx, dy: dy };
+  // ★ v3 8 帧：主队 8 方向用 8 帧，其他用 4 帧
+  var nF = (p.team === 'home' && p.pos !== 'GK') ? 8 : 4;
+  st.ph = (st.ph + fps * dt) % nF;
+  return { moving: moving, fps: fps, phase: st.ph / nF, dx: dx, dy: dy, nFrames: nF };
 }
 function spriteFrameFor(p, t) {
   var cyc = runCycleFor(p, t);
@@ -82,7 +100,7 @@ function spriteFrameFor(p, t) {
     if (dRow >= 0) st.dirRow = dRow;
     else if (st.dirRow == null) st.dirRow = 2; // 默认朝右
     var col = 0;
-    if (cyc.moving) col = Math.floor(cyc.phase * 4) % 4;
+    if (cyc.moving) col = Math.floor(cyc.phase * cyc.nFrames) % cyc.nFrames;
     // ★ 有球/无球切换：持球用 with-ball（脚下带球），出脚后切 without-ball 对应帧，球单独画轨迹
     //   不再用 baked-ball 逻辑，避免双球抖动
     return { img: img8, dirRow: st.dirRow, col: col, is8dir: true, hasBall: !!p.hasBall };
