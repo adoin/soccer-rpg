@@ -25,10 +25,14 @@ function $(id) { return document.getElementById(id); }
 //   有球/无球两套：持球用 with-ball（脚下带球），出脚后切 without-ball 对应帧，球单独画轨迹
 var SPR_V = 'spr3'; // 精灵资源版本，换图时 bump 防手机缓存（v3 8方向8帧占位符版）
 var spriteAtlas8 = {}; // kit -> { ball: Image, nobal: Image }
-['home'].forEach(function (kit) {
-  var b = new Image(); b.src = 'assets/sprites/' + kit + '/run-8dir-v3-with-ball.png?v=' + SPR_V;
-  var n = new Image(); n.src = 'assets/sprites/' + kit + '/run-8dir-v3-without-ball.png?v=' + SPR_V;
+// ★ v3 占位符图只有一套（home 目录），主/客队共用，加载后按各队实际颜色分别换色
+['home', 'away'].forEach(function (kit) {
+  var b = new Image(); b.src = 'assets/sprites/home/run-8dir-v3-with-ball.png?v=' + SPR_V;
+  var n = new Image(); n.src = 'assets/sprites/home/run-8dir-v3-without-ball.png?v=' + SPR_V;
   // ★ 占位符换色：v3 图用品红衣/青裤/黄袜占位符，加载后按球队实际颜色替换
+  //   客队复用同一套图，把占位符映射到客队颜色（TEAM_COLORS.away）
+  var rcColors = (kit === 'away' && typeof SharedKits !== 'undefined')
+    ? { home: SharedKits.TEAM_COLORS.away } : undefined;
   [b, n].forEach(function (im) {
     im.onload = function () {
       try {
@@ -38,7 +42,7 @@ var spriteAtlas8 = {}; // kit -> { ball: Image, nobal: Image }
         var cx = cv.getContext('2d');
         cx.drawImage(im, 0, 0);
         var id = cx.getImageData(0, 0, cv.width, cv.height);
-        SharedKits.recolorImageData(id);
+        SharedKits.recolorImageData(id, rcColors);
         cx.putImageData(id, 0, 0);
         im.src = cv.toDataURL();
       } catch (e) {}
@@ -46,7 +50,7 @@ var spriteAtlas8 = {}; // kit -> { ball: Image, nobal: Image }
   });
   spriteAtlas8[kit] = { ball: b, nobal: n };
 });
-// 旧 5 帧表保留给 away/gk（待统一）
+// 旧表保留给门将（外场主/客队已统一到 v3）
 var spriteAtlas = {};
 ['home', 'away', 'gk_home', 'gk_away'].forEach(function (kit) {
   var im = new Image();
@@ -80,8 +84,8 @@ function runCycleFor(p, t) {
   st.x = rp.x; st.y = rp.y; st.lt = t;
   var moving = v > 1.2;          // 原 0.02 米/帧在 60Hz 下 = 1.2 米/秒，现固定
   var fps = 6 + Math.min(10, v / 2);
-  // ★ v3 8 帧：主队 8 方向用 8 帧，其他用 4 帧
-  var nF = (p.team === 'home' && p.pos !== 'GK') ? 8 : 4;
+  // ★ v3 8 帧：外场球员 8 帧（主/客队各按自家颜色换色），门将沿用旧表
+  var nF = (p.pos !== 'GK') ? 8 : 4;
   st.ph = (st.ph + fps * dt) % nF;
   return { moving: moving, fps: fps, phase: st.ph / nF, dx: dx, dy: dy, nFrames: nF };
 }
@@ -90,9 +94,9 @@ function spriteFrameFor(p, t) {
   p._cycle = cyc; // 暂存本帧周期，供带球触球读取（state 每轮询重建，帧内有效即可）
   var st = animClock[p.id];
 
-  // ★ 2026-10-12 8 方向：主队外场球员用新 atlas（8 行方向 × 4 列帧）
-  if (p.team === 'home' && p.pos !== 'GK') {
-    var a8 = spriteAtlas8['home'];
+  // ★ 2026-10-12 8 方向：外场球员用新 atlas（8 行方向 × 8 列帧），主/客队各按自家颜色换色；门将沿用旧表
+  if (p.pos !== 'GK') {
+    var a8 = spriteAtlas8[p.team] || spriteAtlas8['home'];
     var img8 = (p.hasBall ? a8.ball : a8.nobal);
     if (!img8 || !img8.complete || !img8.naturalWidth) return null;
     // 方向行：按移动向量；静止时保持上次方向
@@ -106,7 +110,7 @@ function spriteFrameFor(p, t) {
     return { img: img8, dirRow: st.dirRow, col: col, is8dir: true, hasBall: !!p.hasBall };
   }
 
-  // 旧逻辑（away/gk 待统一）
+  // 旧逻辑（门将沿用旧表）
   var kit = (p.pos === 'GK' ? 'gk_' : '') + p.team;
   var img = spriteAtlas[kit];
   if (!img || !img.complete || !img.naturalWidth) return null; // 未加载完→兜底代码帧
