@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>带球动画调试</title>
+<style>
+  body { margin:0; background:#1a1a2e; color:#fff; font-family:sans-serif; }
+  #stage { display:block; margin:10px auto; background:#2d6a4f; image-rendering:pixelated; }
+  .ctl { text-align:center; margin:8px; }
+  button { padding:8px 16px; margin:4px; font-size:16px; }
+  #info { text-align:center; font-size:14px; color:#aaa; }
+  .dirpad { display:grid; grid-template-columns:repeat(3,60px); gap:4px; justify-content:center; margin:10px; }
+</style>
+</head>
+<body>
+<canvas id="stage" width="480" height="360"></canvas>
+<div id="info">frame: - | face: - | v: -</div>
+<div class="ctl">
+  <button id="bPlay">播放/暂停</button>
+  <button id="bStep">单帧</button>
+  <button id="bBall">带球/无球</button>
+  <span>速度: <input type="range" id="speed" min="1" max="12" value="7"></span>
+</div>
+<div class="dirpad">
+  <button data-dx="-1" data-dy="-1">↖</button>
+  <button data-dx="0" data-dy="-1">↑</button>
+  <button data-dx="1" data-dy="-1">↗</button>
+  <button data-dx="-1" data-dy="0">←</button>
+  <button data-dx="0" data-dy="0">■</button>
+  <button data-dx="1" data-dy="0">→</button>
+  <button data-dx="-1" data-dy="1">↙</button>
+  <button data-dx="0" data-dy="1">↓</button>
+  <button data-dx="1" data-dy="1">↘</button>
+</div>
+<script>
+var SPR_V = 'spr1';
+var kits = ['home','away','gk_home','gk_away'];
+var atlas = {};
+kits.forEach(function(k){
+  var im = new Image();
+  im.src = 'assets/sprites/' + k + '/sprite-sheet-alpha.png?v=' + SPR_V;
+  atlas[k] = im;
+});
+var cv = document.getElementById('stage'), g = cv.getContext('2d');
+g.imageSmoothingEnabled = false;
+
+var S = {
+  x: 240, y: 180, dx: 1, dy: 0,           // 位置与方向
+  playing: true, hasBall: true, speed: 7,  // 播放/带球/速度(m/s)
+  ph: 0, lt: 0, face: 1,                   // 相位/时间戳/朝向
+  stepOnce: false,
+};
+
+function frameFor(t) {
+  var dt = (t - S.lt) / 1000; S.lt = t;
+  if (!(dt > 0)) dt = 0.016;
+  var v = (S.dx || S.dy) ? S.speed : 0;
+  var moving = v > 1.2;
+  var fps = 6 + Math.min(10, v / 2);
+  if (S.playing || S.stepOnce) { S.ph = (S.ph + fps * dt) % 4; S.stepOnce = false; }
+  // 朝向：只看 dx（复现线上逻辑）
+  if (S.dx > 0) S.face = 1; else if (S.dx < 0) S.face = -1;
+  var row = moving ? Math.floor(S.ph) % 4 : 4;
+  return { row: row, moving: moving, v: v };
+}
+
+function draw(t) {
+  requestAnimationFrame(draw);
+  var f = frameFor(t || 16);
+  // 移动
+  if (S.playing && (S.dx || S.dy)) {
+    var n = Math.sqrt(S.dx*S.dx + S.dy*S.dy) || 1;
+    S.x += S.dx/n * S.speed / 60 * 3;
+    S.y += S.dy/n * S.speed / 60 * 3;
+    if (S.x < 40) S.x = 440; if (S.x > 440) S.x = 40;
+    if (S.y < 60) S.y = 300; if (S.y > 300) S.y = 60;
+  }
+  g.clearRect(0,0,480,360);
+  g.fillStyle = '#2d6a4f'; g.fillRect(0,0,480,360);
+  // 网格
+  g.strokeStyle = 'rgba(255,255,255,0.1)';
+  for (var i=0;i<480;i+=48){ g.beginPath();g.moveTo(i,0);g.lineTo(i,360);g.stroke(); }
+
+  var img = atlas['home'];
+  if (img.complete && img.naturalWidth) {
+    var sw = 48, sh = 72;
+    var sx = 0, sy = f.row * sh;
+    var dw = 48*2, dh = 72*2; // 放大2倍看清
+    g.save();
+    g.translate(S.x, S.y);
+    if (S.face < 0) g.scale(-1, 1);
+    g.drawImage(img, sx, sy, sw, sh, -dw/2, -dh, dw, dh);
+    g.restore();
+    // 带球：脚下画球（复现线上“精灵自带球+触球循环画球”的双球问题？）
+    if (S.hasBall) {
+      g.fillStyle = '#fff';
+      g.beginPath(); g.arc(S.x + S.face*14, S.y - 6, 6, 0, 7); g.fill();
+      g.fillStyle = '#222'; g.fillRect(S.x + S.face*14 - 2, S.y - 8, 4, 4);
+    }
+  }
+  document.getElementById('info').textContent =
+    'frame(row)=' + f.row + ' | face=' + (S.face>0?'右':'左') +
+    ' | v=' + f.v.toFixed(1) + 'm/s | 方向=(' + S.dx + ',' + S.dy + ')' +
+    (S.hasBall ? ' | 带球' : ' | 无球');
+}
+
+document.getElementById('bPlay').onclick = function(){ S.playing = !S.playing; };
+document.getElementById('bStep').onclick = function(){ S.playing = false; S.stepOnce = true; };
+document.getElementById('bBall').onclick = function(){ S.hasBall = !S.hasBall; };
+document.getElementById('speed').oninput = function(e){ S.speed = +e.target.value; };
+document.querySelectorAll('.dirpad button').forEach(function(b){
+  b.onclick = function(){ S.dx = +b.dataset.dx; S.dy = +b.dataset.dy; };
+});
+requestAnimationFrame(draw);
+</script>
+</body>
+</html>
