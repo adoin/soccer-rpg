@@ -51,6 +51,8 @@ var src = fs.readFileSync(path.join(__dirname, '..', 'docs', 'js', 'main.js'), '
 var driver = '\n;window.__T = { openHeadMenu: openHeadMenu, headMenuKey: headMenuKey, hmTop: hmTop, ' +
   'nudgeAim: nudgeAim, hmConfirmPass: hmConfirmPass, headMenuBack: headMenuBack, ' +
   'setState: function (s) { state = s; }, getState: function () { return state; }, ' +
+  'setScreen: function (s) { screen = s; }, getDbgErr: function () { return dbgErr; }, ' +
+  'frame: frame, ' +
   'setMatchId: function (id) { matchId = id; }, getUi: function () { return ui; }, ' +
   'showingCutscene: showingCutscene, skipCutscene: skipCutscene, ' +
   'setCutImg: function (k, v) { CUT_IMGS[k] = v; } };\n';
@@ -186,6 +188,25 @@ try {
   check('纯文字事件不算特写', !T.showingCutscene());
   check('无特写时 skipCutscene 返回 false', T.skipCutscene() === false);
 } catch (e) { check('特写跳过逻辑无异常', false); console.log('  threw: ' + e.message); }
+
+console.log('== 渲染循环永不死（2026-10-12：偶发"判定中…"冻屏） ==');
+try {
+  // 强制 frameInner 抛异常：state.players 置空，drawActors 的 forEach 必抛 TypeError
+  var rafCalls = 0;
+  sandbox.requestAnimationFrame = function () { rafCalls++; };
+  T.setScreen('game');
+  T.setState({ players: null, ball: { x: 52.5, y: 34, z: 0 } });
+  var threw = false;
+  try { T.frame(0); } catch (e) { threw = true; }
+  check('frame 内异常不抛到外层（循环载体存活）', threw === false);
+  check('异常被记入 dbgErr（可见、可排查）', T.getDbgErr().indexOf('ERR') === 0);
+  check('异常后仍调度下一帧（循环继续）', rafCalls === 1);
+  // 恢复：正常 state 下 frame 照常工作且不再抛
+  T.setState(null);
+  var rafBefore2 = rafCalls;
+  T.frame(0);
+  check('恢复后 frame 正常执行', rafCalls === rafBefore2 + 1);
+} catch (e) { check('渲染循环保护测试无异常', false); console.log('  threw: ' + e.message); }
 
 console.log(failures.length ? ('\nREGRESSION FAIL: ' + failures.join(', ')) : '\nALL CLIENT MENU TESTS PASSED');
 process.exit(failures.length ? 1 : 0);

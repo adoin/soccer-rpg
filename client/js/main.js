@@ -459,6 +459,11 @@ function refresh() {
     var hasDec = !!(state && state.decision);
     if (hasDec && !ui._hadDecision) ui.choosing = false; // 新决策到达：清掉旧标记
     if (!hasDec) ui.choosing = false;
+    // ★ 看门狗（2026-10-12 试玩：偶发"判定中…"永久卡死）：本地引擎指令毫秒级结算，
+    //   5 秒还没清掉 choosing 必是状态错乱，强制恢复 + 提示，不让玩家只能刷新
+    if (ui.choosing && Date.now() - (ui._chooseAt || 0) > 5000) {
+      ui.choosing = false; ui.hmenu = null; toast('指令超时，已恢复');
+    }
     // 决策变化（新球员/决策结束）时关闭头顶菜单
     var decKey = hasDec ? state.decision.playerId : null;
     if (decKey !== ui._hmDecisionKey) { ui.hmenu = null; ui._hmDecisionKey = decKey; }
@@ -488,6 +493,7 @@ function sendCommand(opt, params) {
   if (ui.choosing || !state || !state.decision) return;
   if (!opt.enabled) { toast('体能不足，无法使用该指令'); return; }
   ui.choosing = true;
+  ui._chooseAt = Date.now(); // ★ 指令发出时间戳（配下面的看门狗，防"判定中…"永久卡死）
   ui.hmenu = null; // 指令已发出，关闭头顶菜单（等结算期间头顶显示"判定中"）
   var body = { commandId: opt.id };
   if (params) body.params = params;
@@ -1686,7 +1692,23 @@ function drawToast() {
 }
 
 // ---------------- 主循环 ----------------
+// ★ 渲染循环永不死（2026-10-12 试玩：偶发"判定中…"冻结——frame 内一次异常就永久停帧，
+//   且 err 诊断行由同一循环绘制，死后错误永远不可见）。异常只记入 dbgErr，循环继续，
+//   下帧照常绘制，错误可见、可恢复。
 function frame(t) {
+  try {
+    frameInner(t);
+  } catch (err) {
+    dbgErr = 'ERR: ' + ((err && err.message) || err);
+    try { // 兜底：即使主绘制崩了，也要把错误画出来
+      ctx.fillStyle = 'rgba(0,0,0,0.7)'; ctx.fillRect(8, 8, 460, 30);
+      ctx.fillStyle = '#ff6b6b'; ctx.font = '14px monospace'; ctx.textAlign = 'left'; ctx.textBaseline = 'top';
+      ctx.fillText(dbgErr, 14, 12);
+    } catch (e) {}
+  }
+  requestAnimationFrame(frame);
+}
+function frameInner(t) {
   frameNo++;
   clickables = [];
   ctx.clearRect(0, 0, W, H);
@@ -1717,7 +1739,6 @@ function frame(t) {
       ' own=' + (_bb.ownerId || '-') + ' R=(' + ballR.x.toFixed(1) + ',' + ballR.y.toFixed(1) + ')' +
       (_bp2 ? ' scr=(' + _bp2.x.toFixed(0) + ',' + (_bp2.y - Math.min(+(_bb.z || 0), 5) * 30 * _bp2.s).toFixed(0) + ')' : ' scr=?'), 14, 72);
   }
-  requestAnimationFrame(frame);
 }
 
 // ★ debug 自动开赛：?debug=1&autostart=1 时跳过标题界面直接开赛，
