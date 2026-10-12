@@ -140,6 +140,10 @@ function laneRate(match, passer, params, land) {
     if (d < nearD) nearD = d;
   }
   var rate = 90 - n * 15 - (nearD < 3 ? 12 : 0);
+  // ★ 贴身如实（2026-10-12 试玩：前 3 脚传球全被秒挡却无预兆）：
+  //   1.2m 内出球按 intercept.js 当面规则必被停下（干净断/弹开，不存在穿过），
+  //   菜单成功率必须如实压低，别显示 70%+ 诱导玩家出球。此时应选突破/护球/假动作。
+  if (nearD < 1.2) rate = Math.min(rate, 12);
   return Math.max(5, Math.min(97, rate));
 }
 
