@@ -30,16 +30,9 @@ var SPR_CW = 48, SPR_CH = 72, SPR_COLS = 8, SPR_ROWS = 8;
 
 function isBakedBallWhite(r, g, b, a) {
   if (a < 80) return false;
-  // 近白球面板。黄袜 b 偏低、皮肤 r 明显高于 b，都排除。
-  return r > 175 && g > 175 && b > 145 && Math.abs(r - g) < 45 && (r + g) * 0.5 > b - 15;
-}
-function isBodyPixel(r, g, b, a) {
-  if (a < 40) return false;
-  if (r > 140 && b > 100 && g < 150 && r > g + 20) return true; // 品红衣
-  if (g > 140 && b > 140 && r < 150) return true;               // 青裤
-  if (r > 180 && g > 150 && b < 130) return true;               // 黄袜
-  if (r > 165 && g > 100 && b > 60 && r > b + 15 && g > 80) return true; // 皮肤
-  return false;
+  // 球是近纯白（约 240,240,240）。皮肤约 (240,208,160)，b 只有 160。
+  // 旧条件 b>145 把整张脸当成球挖掉，跑起来脸一帧帧变透明。
+  return r > 200 && g > 200 && b > 200 && Math.abs(r - g) < 40 && Math.abs(g - b) < 40;
 }
 // 挖掉每格里烤死的球，并记下脚底锚点（格子内像素）。球不在时 stripBall=false，只量脚。
 function prepareRunSheet(id, stripBall) {
@@ -51,6 +44,7 @@ function prepareRunSheet(id, stripBall) {
       var ox = col * SPR_CW, oy = row * SPR_CH;
       if (stripBall) {
         var seen = new Uint8Array(SPR_CW * SPR_CH);
+        var comps = [];
         for (var y = 0; y < SPR_CH; y++) {
           for (var x = 0; x < SPR_CW; x++) {
             var li = y * SPR_CW + x;
@@ -74,29 +68,52 @@ function prepareRunSheet(id, stripBall) {
                 }
               }
             }
-            if (comp.length < 24) continue; // 眼睛高光之类，不是球
-            var mark = new Uint8Array(SPR_CW * SPR_CH);
-            for (var ci = 0; ci < comp.length; ci += 2) mark[comp[ci + 1] * SPR_CW + comp[ci]] = 1;
-            for (var ci2 = 0; ci2 < comp.length; ci2 += 2) {
-              var bx = comp[ci2], by = comp[ci2 + 1];
-              d[at(ox + bx, oy + by) + 3] = 0;
-            }
-            // 只擦掉贴着白球的深色拼缝，不把旁边的鞋子一起抹掉
-            for (var ci3 = 0; ci3 < comp.length; ci3 += 2) {
-              var sx0 = comp[ci3], sy0 = comp[ci3 + 1];
-              for (var oy2 = -2; oy2 <= 2; oy2++) {
-                for (var ox2 = -2; ox2 <= 2; ox2++) {
-                  var ex = sx0 + ox2, ey = sy0 + oy2;
-                  if (ex < 0 || ey < 0 || ex >= SPR_CW || ey >= SPR_CH) continue;
-                  if (mark[ey * SPR_CW + ex]) continue;
-                  var ei = at(ox + ex, oy + ey);
-                  if (d[ei + 3] < 40) continue;
-                  if (isBodyPixel(d[ei], d[ei + 1], d[ei + 2], d[ei + 3])) continue;
-                  var rr = d[ei], gg = d[ei + 1], bb = d[ei + 2];
-                  if (rr < 96 && gg < 96 && bb < 96) d[ei + 3] = 0;
+            // comp 里每个像素存两个数。眼睛高光只有几个像素，球在脚下、重心靠下。
+            if (comp.length < 16) continue;
+            var sy = 0;
+            for (var ci = 0; ci < comp.length; ci += 2) sy += comp[ci + 1];
+            if (sy / (comp.length / 2) < 36) continue;
+            comps.push(comp);
+          }
+        }
+        for (var ki = 0; ki < comps.length; ki++) {
+          var blob = comps[ki];
+          var mark = new Uint8Array(SPR_CW * SPR_CH);
+          var minx = SPR_CW, maxx = -1, miny = SPR_CH, maxy = -1;
+          for (var ci2 = 0; ci2 < blob.length; ci2 += 2) {
+            var bx = blob[ci2], by = blob[ci2 + 1];
+            mark[by * SPR_CW + bx] = 1;
+            if (bx < minx) minx = bx;
+            if (bx > maxx) maxx = bx;
+            if (by < miny) miny = by;
+            if (by > maxy) maxy = by;
+            d[at(ox + bx, oy + by) + 3] = 0;
+          }
+          // 只擦球内部被白边包住的黑块（五边形），不向外扩，避免把鞋和头发抹掉
+          for (var ey = miny; ey <= maxy; ey++) {
+            for (var ex = minx; ex <= maxx; ex++) {
+              if (mark[ey * SPR_CW + ex]) continue;
+              var ei = at(ox + ex, oy + ey);
+              if (d[ei + 3] < 40) continue;
+              if (d[ei] > 80 || d[ei + 1] > 80 || d[ei + 2] > 80) continue;
+              var neigh = 0;
+              for (var dy = -1; dy <= 1; dy++) {
+                for (var dx = -1; dx <= 1; dx++) {
+                  if (!dx && !dy) continue;
+                  var nx = ex + dx, ny = ey + dy;
+                  if (nx < 0 || ny < 0 || nx >= SPR_CW || ny >= SPR_CH) continue;
+                  if (mark[ny * SPR_CW + nx]) neigh++;
                 }
               }
+              if (neigh >= 3) d[ei + 3] = 0;
             }
+          }
+        }
+        // 脚下没连成块的白边碎片
+        for (var ry = 44; ry < SPR_CH; ry++) {
+          for (var rx = 0; rx < SPR_CW; rx++) {
+            var ri = at(ox + rx, oy + ry);
+            if (isBakedBallWhite(d[ri], d[ri + 1], d[ri + 2], d[ri + 3])) d[ri + 3] = 0;
           }
         }
       }
@@ -159,6 +176,17 @@ var spriteAtlas = {};
 });
 var animClock = {}; // playerId -> {x,y,lt,ph} 上一帧渲染位置/帧时间戳/累进相位（跑/站判定用）
 
+// 八向的单位向量（世界坐标，+y 朝屏幕上方）。球只跟这个离散朝向走，不跟每帧速度抖动。
+var DIR_UNIT = [
+  { x: 0, y: 1 },
+  { x: 0.7071, y: 0.7071 },
+  { x: 1, y: 0 },
+  { x: 0.7071, y: -0.7071 },
+  { x: 0, y: -1 },
+  { x: -0.7071, y: -0.7071 },
+  { x: -1, y: 0 },
+  { x: -0.7071, y: 0.7071 }
+];
 // ★ 8 方向判定：按移动向量角度选行（0=up 顺时针，屏幕空间）
 // 场地 +y 朝屏幕上方（见 updatePadFromKeys），不是画布的 +y 向下。
 // 之前用 atan2(dy, dx) 把“往上跑”判成 down 行，人物脸朝镜头倒着跑。
@@ -229,9 +257,12 @@ function spriteFrameFor(p, t) {
         // 半个扇区是 22.5°。越过边界再多约 8° 才换行，贴边不会来回翻。
         if (Math.abs(delta) > 0.085) st.dirRow = dRow;
       }
-      if (sSpd > 0.4) { st.fx = cyc.svx / sSpd; st.fy = cyc.svy / sSpd; }
     }
     else if (st.dirRow == null) st.dirRow = 2; // 默认朝右
+    if (st.dirRow != null && DIR_UNIT[st.dirRow]) {
+      st.fx = DIR_UNIT[st.dirRow].x;
+      st.fy = DIR_UNIT[st.dirRow].y;
+    }
     var col = Math.floor(cyc.phase * cyc.nFrames) % cyc.nFrames;
     var frac = cyc.phase * cyc.nFrames - col;
     if (frac < 0) frac = 0;
@@ -1326,12 +1357,8 @@ function drawActors(t) {
         var useRow = spr.dirRow, mirror8 = false;
         if (spr.dirRow === 3) { useRow = 5; mirror8 = true; }
         else if (spr.dirRow === 1) { useRow = 7; mirror8 = true; }
+        // 不叠下一帧。两帧脚的位置差一截，半透明叠上去脸和身体都会发虚，球的残片也会闪。
         blit8(spr.img, spr.anchors, useRow, spr.col, mirror8, pr, dw, dh, 1);
-        // 下一帧按相位淡入，循环在第 7 帧回到第 0 帧时不再整个人弹回去
-        if (spr.moving && spr.frac > 0.02) {
-          var ncol = (spr.col + 1) % 8;
-          blit8(spr.img, spr.anchors, useRow, ncol, mirror8, pr, dw, dh, spr.frac * 0.42);
-        }
       } else {
         var sy = spr.row * 72;
         if (spr.face < 0) {
@@ -1372,42 +1399,30 @@ function drawActors(t) {
   });
 
   // 球
-  // 带球：球贴在脚前，沿行进方向做一圈能首尾相接的小幅趟球（sin 在 0 和 1 处同值，循环不跳）。
-  // 方向用平滑速度，不用本帧位移——快照交接时位移会瞬间反向，球就会被拽回去再弹回。
+  // 带球时球贴在面朝方向前方约 0.5 米，朝向用八向离散方向，不跟本帧速度。
   // 只有球真正离脚飞行时（传球/射门/解围）才绘制轨迹残影。
-  var bbx = ballR.x, bby = ballR.y, ballOwned = false, ownerIdle = false;
+  var bbx = ballR.x, bby = ballR.y, ballOwned = false;
   for (var boi = 0; boi < state.players.length; boi++) {
     if (state.players[boi].hasBall) {
       var owner = state.players[boi];
       ballOwned = true;
       var oc = owner._cycle, orp = renderPos[owner.id] || owner;
       var ost = animClock[owner.id];
-      ownerIdle = !(oc && oc.moving);
       var fx = 1, fy = 0;
       if (ost && (ost.fx || ost.fy)) { fx = ost.fx; fy = ost.fy; }
       else if (oc && (oc.svx || oc.svy)) {
         var sl = Math.sqrt(oc.svx * oc.svx + oc.svy * oc.svy) || 1;
         fx = oc.svx / sl; fy = oc.svy / sl;
       } else if (owner.team === 'away') fx = -1;
-      var phase = oc ? oc.phase : 0;
-      // 球始终在脚前方：每步趟出去再收回，余弦在 0 和 1 处同值，循环不会弹回身后。
-      // 盘带越高，趟球幅度越小。
-      var drib = (owner.stats && owner.stats.dribbling) || 10;
-      var amp = ownerIdle ? 0 : (0.16 - Math.min(0.07, drib / 400));
-      var touch = 0.5 - 0.5 * Math.cos(phase * Math.PI * 4);
-      var along = 0.55 + amp * touch;
-      var side = ownerIdle ? 0 : 0.09 * Math.sin(phase * Math.PI * 2);
-      var tx = orp.x + fx * along + (-fy) * side;
-      var ty = orp.y + fy * along + fx * side;
-      if (!ost) {
-        bbx = tx; bby = ty;
-      } else {
-        if (ost.bx == null) { ost.bx = tx; ost.by = ty; }
-        var bk = Math.min(1, ((oc && oc.dt) || 0.016) / 0.07);
-        ost.bx += (tx - ost.bx) * bk;
-        ost.by += (ty - ost.by) * bk;
-        bbx = ost.bx; bby = ost.by;
-      }
+      // 球固定在面朝方向前方。只在跑动时向前轻轻送一点，余弦在 0 和 1 处同值，停步也不拉回脚下。
+      // 不用横向正弦，也不跟每帧速度：那些会让球左右乱跳。
+      var phase = (oc && oc.moving) ? oc.phase : 0;
+      var nudge = (oc && oc.moving) ? (0.5 - 0.5 * Math.cos(phase * Math.PI * 2)) * 0.10 : 0;
+      var along = 0.48 + nudge;
+      // 直接钉在这一帧的脚前，不做滞后跟随。人的位置按快照走，球再滞后就会甩在身后再弹回来。
+      var tx = orp.x + fx * along;
+      var ty = orp.y + fy * along;
+      bbx = tx; bby = ty;
       break;
     }
   }
