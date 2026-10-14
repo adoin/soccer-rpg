@@ -24,8 +24,9 @@ function $(id) { return document.getElementById(id); }
 //   方向顺序：0=up, 1=upright, 2=right, 3=downright, 4=down, 5=downleft, 6=left, 7=upleft
 //   带球不再按颜色从 with-ball 图里抠球，也不再使用那张图。抠近白色会误伤角色。
 //   身体一律用 without-ball（眼睛是不透明的黑像素），球由代码画在脚前。只量脚底锚点，不改任何像素。
-var SPR_V = 'spr5';
-var spriteAtlas8 = {}; // kit -> { base, anchors, skins }
+var SPR_V = 'spr6';
+var runPack = { anchors: null, data: null, w: 0, h: 0, ready: false };
+var kitCache = {}; // 球衣+肤色 → 画好的整表
 var SPR_CW = 48, SPR_CH = 72, SPR_COLS = 8, SPR_ROWS = 8;
 
 // 只量每帧脚底锚点。不按颜色删像素。
@@ -56,17 +57,58 @@ function prepareRunSheet(id) {
   }
   return anchors;
 }
-// 从一张原图做出每个肤色一套画面。球衣占位符先换，再换皮肤，互不影响。
-function paintSkinVariants(id, rcColors, doKit) {
+// 同一张无球图按球衣和肤色现画。先标球鞋占位符，再换球衣图案，最后换皮肤。
+function paintRunSheet(skinId, kitSpec) {
+  var copy = new ImageData(new Uint8ClampedArray(runPack.data.data), runPack.w, runPack.h);
+  if (typeof SharedKits !== 'undefined') {
+    SharedKits.recolorImageData(copy, { home: kitSpec }, 32, {
+      cellW: SPR_CW, cellH: SPR_CH, pattern: kitSpec.pattern,
+    });
+    if (SharedKits.recolorSkin) SharedKits.recolorSkin(copy, skinId);
+  }
+  var c2 = document.createElement('canvas');
+  c2.width = runPack.w; c2.height = runPack.h;
+  c2.getContext('2d').putImageData(copy, 0, 0);
+  return c2;
+}
+function sheetForPlayer(p) {
+  if (!runPack.ready || typeof SharedKits === 'undefined') return null;
+  var skinId = (p.skin && SharedKits.SKIN_PRESETS && SharedKits.SKIN_PRESETS[p.skin]) ? p.skin : 'fair';
+  var spec = SharedKits.resolveKit(p.team, p.kit);
+  var key = [p.team, skinId, spec.pattern, spec.primary, spec.secondary, spec.shorts, spec.socks, spec.shoes].join('|');
+  if (!kitCache[key]) kitCache[key] = paintRunSheet(skinId, spec);
+  return kitCache[key];
+}
+function loadRunSource(url) {
+  var im = new Image();
+  im.onload = function () {
+    if (runPack.ready) return;
+    try {
+      var cv = document.createElement('canvas');
+      cv.width = im.naturalWidth; cv.height = im.naturalHeight;
+      var cx = cv.getContext('2d');
+      cx.drawImage(im, 0, 0);
+      var id = cx.getImageData(0, 0, cv.width, cv.height);
+      runPack.anchors = prepareRunSheet(id);
+      if (typeof SharedKits !== 'undefined' && SharedKits.markShoePlaceholders) {
+        SharedKits.markShoePlaceholders(id, SPR_CW, SPR_CH);
+      }
+      runPack.data = id;
+      runPack.w = id.width; runPack.h = id.height;
+      runPack.ready = true;
+    } catch (e) {}
+  };
+  im.src = url;
+  if (im.complete && im.naturalWidth) im.onload();
+}
+loadRunSource('assets/sprites/home/run-8dir-v3-without-ball.png?v=' + SPR_V);
+function paintSkinVariants(id) {
   var skins = {};
   var ids = (typeof SharedKits !== 'undefined' && SharedKits.SKIN_PRESETS)
     ? Object.keys(SharedKits.SKIN_PRESETS) : ['fair'];
   ids.forEach(function (sid) {
     var copy = new ImageData(new Uint8ClampedArray(id.data), id.width, id.height);
-    if (typeof SharedKits !== 'undefined') {
-      if (doKit) SharedKits.recolorImageData(copy, rcColors);
-      if (SharedKits.recolorSkin) SharedKits.recolorSkin(copy, sid);
-    }
+    if (typeof SharedKits !== 'undefined' && SharedKits.recolorSkin) SharedKits.recolorSkin(copy, sid);
     var c2 = document.createElement('canvas');
     c2.width = id.width; c2.height = id.height;
     c2.getContext('2d').putImageData(copy, 0, 0);
@@ -74,33 +116,6 @@ function paintSkinVariants(id, rcColors, doKit) {
   });
   return skins;
 }
-// ★ v3 占位符图只有一套（home 目录），主/客队共用。身体用无球图，不加载 with-ball。
-function loadRunSheet(url, rcColors) {
-  var im = new Image();
-  var pack = { base: im, anchors: null, skins: {} };
-  im.onload = function () {
-    if (pack.ready) return;
-    try {
-      var cv = document.createElement('canvas');
-      cv.width = im.naturalWidth; cv.height = im.naturalHeight;
-      var cx = cv.getContext('2d');
-      cx.drawImage(im, 0, 0);
-      var id = cx.getImageData(0, 0, cv.width, cv.height);
-      pack.anchors = prepareRunSheet(id);
-      pack.skins = paintSkinVariants(id, rcColors, true);
-      pack.ready = true;
-    } catch (e) {}
-  };
-  im.src = url;
-  if (im.complete && im.naturalWidth) im.onload();
-  return pack;
-}
-['home', 'away'].forEach(function (kit) {
-  // 客队复用同一套图，把占位符映射到客队颜色
-  var rcColors = (kit === 'away' && typeof SharedKits !== 'undefined')
-    ? { home: SharedKits.TEAM_COLORS.away } : undefined;
-  spriteAtlas8[kit] = loadRunSheet('assets/sprites/home/run-8dir-v3-without-ball.png?v=' + SPR_V, rcColors);
-});
 // 旧表保留给门将。球衣已经是成品色，只换肤。
 var spriteAtlas = {};
 ['home', 'away', 'gk_home', 'gk_away'].forEach(function (kit) {
@@ -114,7 +129,7 @@ var spriteAtlas = {};
       var cx = cv.getContext('2d');
       cx.drawImage(im, 0, 0);
       var id = cx.getImageData(0, 0, cv.width, cv.height);
-      im._skins = paintSkinVariants(id, null, false);
+      im._skins = paintSkinVariants(id);
       im._skinReady = true;
     } catch (e) {}
   };
@@ -188,10 +203,8 @@ function spriteFrameFor(p, t) {
 
   // ★ 2026-10-12 8 方向：外场球员用新 atlas（8 行方向 × 8 列帧），主/客队各按自家颜色换色；门将沿用旧表
   if (p.pos !== 'GK') {
-    var a8 = spriteAtlas8[p.team] || spriteAtlas8['home'];
-    var sid = (p.skin && a8.skins && a8.skins[p.skin]) ? p.skin : 'fair';
-    var sheet = (a8.skins && a8.skins[sid]) || a8.base;
-    if (!a8.anchors && (!a8.base.complete || !a8.base.naturalWidth)) return null;
+    var sheet = sheetForPlayer(p);
+    if (!runPack.anchors || !sheet) return null;
     // 方向行：平滑速度 + 扇区迟滞。低速保持上次朝向。
     var sSpd = Math.sqrt(cyc.svx * cyc.svx + cyc.svy * cyc.svy);
     if (sSpd > 1.5) {
@@ -216,7 +229,7 @@ function spriteFrameFor(p, t) {
     if (frac < 0) frac = 0;
     // 身体用无球图（眼睛和嘴是实心的）。球由 drawActors 画在脚前，不再按颜色抠烤进图里的球。
     return {
-      img: sheet, anchors: a8.anchors, dirRow: st.dirRow, col: col, frac: frac,
+      img: sheet, anchors: runPack.anchors, dirRow: st.dirRow, col: col, frac: frac,
       is8dir: true, hasBall: !!p.hasBall, moving: cyc.moving
     };
   }
@@ -347,14 +360,18 @@ function framesFor(p) {
   var hairColors = ['#23232e', '#3a2a1a', '#101016', '#5a3a1a', '#6b6b7a'];
   var skinHex = (typeof SharedKits !== 'undefined' && SharedKits.SKIN_PRESETS && SharedKits.SKIN_PRESETS[p.skin])
     ? SharedKits.SKIN_PRESETS[p.skin].color : '#f2c89b';
-  var key = p.team + '_' + p.pos + '_' + (p.idx % hairColors.length) + '_' + (p.skin || 'fair');
+  var spec = (typeof SharedKits !== 'undefined' && SharedKits.resolveKit) ? SharedKits.resolveKit(p.team, p.kit) : null;
+  var key = p.team + '_' + p.pos + '_' + (p.idx % hairColors.length) + '_' + (p.skin || 'fair') + '_' +
+    (spec ? spec.pattern + spec.primary + spec.shorts + spec.socks + spec.shoes : '');
   if (!frameCache[key]) {
     var shirt = p.pos === 'GK'
       ? (p.team === 'home' ? '#e8b923' : '#7a7f8a')
-      : (p.team === 'home' ? '#2b5fe3' : '#d23b3b');
-    var shorts = p.team === 'home' ? '#ffffff' : '#2b2b33';
+      : (spec ? spec.primary : (p.team === 'home' ? '#2b5fe3' : '#d23b3b'));
+    var shorts = spec ? spec.shorts : (p.team === 'home' ? '#ffffff' : '#2b2b33');
     frameCache[key] = S.playerFrames({
-      shirt: shirt, shorts: shorts, hair: hairColors[p.idx % hairColors.length], skin: skinHex,
+      shirt: shirt, shorts: shorts, socks: spec ? spec.socks : '#ffffff',
+      shoes: spec ? spec.shoes : '#22222a',
+      hair: hairColors[p.idx % hairColors.length], skin: skinHex,
     });
   }
   return frameCache[key];

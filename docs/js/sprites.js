@@ -19,7 +19,7 @@
   function drawPlayer(g, frame, o) {
     var shirt = o.shirt, shorts = o.shorts || '#f2f2f2',
         skin = o.skin || '#f2c89b', hair = o.hair || '#2b2b33',
-        shoes = '#22222a', socks = o.socks || '#ffffff';
+        shoes = o.shoes || '#22222a', socks = o.socks || '#ffffff';
 
     // 头发
     px(g, 4, 0, 8, 3, hair);
