@@ -19,35 +19,135 @@ function clamp(v, lo, hi) { return v < lo ? lo : v > hi ? hi : v; }
 function $(id) { return document.getElementById(id); }
 
 // ---------------- 序列帧精灵（sprite-gen 管线产出，真像素风，非代码拼图） ----------------
-// ★ 2026-10-12 8 方向重做：run-8dir-with-ball / run-8dir-without-ball
-//   8 行（方向）× 4 列（跑动帧），48×72/帧，整表 192×576
+// ★ 2026-10-12 8 方向：run-8dir-v3-with-ball / without-ball
+//   8 行（方向）× 8 列（跑动帧），48×72/帧，整表 384×576
 //   方向顺序：0=up, 1=upright, 2=right, 3=downright, 4=down, 5=downleft, 6=left, 7=upleft
-//   有球/无球两套：持球用 with-ball（脚下带球），出脚后切 without-ball 对应帧，球单独画轨迹
-var SPR_V = 'spr3'; // 精灵资源版本，换图时 bump 防手机缓存（v3 8方向8帧占位符版）
+//   有球表的球是烤进格子里的，而且每帧脚/球在格子里的位置不一样（根运动）。
+//   加载时挖掉烤进去的球，量出每帧脚底锚点；绘制时把脚钉在逻辑坐标上，球改由代码贴在脚前。
+var SPR_V = 'spr4';
 var spriteAtlas8 = {}; // kit -> { ball: Image, nobal: Image }
+var SPR_CW = 48, SPR_CH = 72, SPR_COLS = 8, SPR_ROWS = 8;
+
+function isBakedBallWhite(r, g, b, a) {
+  if (a < 80) return false;
+  // 近白球面板。黄袜 b 偏低、皮肤 r 明显高于 b，都排除。
+  return r > 175 && g > 175 && b > 145 && Math.abs(r - g) < 45 && (r + g) * 0.5 > b - 15;
+}
+function isBodyPixel(r, g, b, a) {
+  if (a < 40) return false;
+  if (r > 140 && b > 100 && g < 150 && r > g + 20) return true; // 品红衣
+  if (g > 140 && b > 140 && r < 150) return true;               // 青裤
+  if (r > 180 && g > 150 && b < 130) return true;               // 黄袜
+  if (r > 165 && g > 100 && b > 60 && r > b + 15 && g > 80) return true; // 皮肤
+  return false;
+}
+// 挖掉每格里烤死的球，并记下脚底锚点（格子内像素）。球不在时 stripBall=false，只量脚。
+function prepareRunSheet(id, stripBall) {
+  var d = id.data, w = id.width;
+  var anchors = new Array(SPR_ROWS * SPR_COLS);
+  function at(x, y) { return (y * w + x) * 4; }
+  for (var row = 0; row < SPR_ROWS; row++) {
+    for (var col = 0; col < SPR_COLS; col++) {
+      var ox = col * SPR_CW, oy = row * SPR_CH;
+      if (stripBall) {
+        var seen = new Uint8Array(SPR_CW * SPR_CH);
+        for (var y = 0; y < SPR_CH; y++) {
+          for (var x = 0; x < SPR_CW; x++) {
+            var li = y * SPR_CW + x;
+            if (seen[li]) continue;
+            var i0 = at(ox + x, oy + y);
+            if (!isBakedBallWhite(d[i0], d[i0 + 1], d[i0 + 2], d[i0 + 3])) { seen[li] = 1; continue; }
+            var stack = [li], comp = [];
+            seen[li] = 1;
+            while (stack.length) {
+              var p = stack.pop();
+              var px = p % SPR_CW, py = (p / SPR_CW) | 0;
+              comp.push(px, py);
+              for (var ny = py - 1; ny <= py + 1; ny++) {
+                for (var nx = px - 1; nx <= px + 1; nx++) {
+                  if (nx < 0 || ny < 0 || nx >= SPR_CW || ny >= SPR_CH) continue;
+                  var nli = ny * SPR_CW + nx;
+                  if (seen[nli]) continue;
+                  var ni = at(ox + nx, oy + ny);
+                  if (!isBakedBallWhite(d[ni], d[ni + 1], d[ni + 2], d[ni + 3])) { seen[nli] = 1; continue; }
+                  seen[nli] = 1; stack.push(nli);
+                }
+              }
+            }
+            if (comp.length < 24) continue; // 眼睛高光之类，不是球
+            var mark = new Uint8Array(SPR_CW * SPR_CH);
+            for (var ci = 0; ci < comp.length; ci += 2) mark[comp[ci + 1] * SPR_CW + comp[ci]] = 1;
+            for (var ci2 = 0; ci2 < comp.length; ci2 += 2) {
+              var bx = comp[ci2], by = comp[ci2 + 1];
+              d[at(ox + bx, oy + by) + 3] = 0;
+            }
+            // 只擦掉贴着白球的深色拼缝，不把旁边的鞋子一起抹掉
+            for (var ci3 = 0; ci3 < comp.length; ci3 += 2) {
+              var sx0 = comp[ci3], sy0 = comp[ci3 + 1];
+              for (var oy2 = -2; oy2 <= 2; oy2++) {
+                for (var ox2 = -2; ox2 <= 2; ox2++) {
+                  var ex = sx0 + ox2, ey = sy0 + oy2;
+                  if (ex < 0 || ey < 0 || ex >= SPR_CW || ey >= SPR_CH) continue;
+                  if (mark[ey * SPR_CW + ex]) continue;
+                  var ei = at(ox + ex, oy + ey);
+                  if (d[ei + 3] < 40) continue;
+                  if (isBodyPixel(d[ei], d[ei + 1], d[ei + 2], d[ei + 3])) continue;
+                  var rr = d[ei], gg = d[ei + 1], bb = d[ei + 2];
+                  if (rr < 96 && gg < 96 && bb < 96) d[ei + 3] = 0;
+                }
+              }
+            }
+          }
+        }
+      }
+      var maxFoot = -1, sumX = 0, nFoot = 0;
+      for (var fy = 0; fy < SPR_CH; fy++) {
+        for (var fx = 0; fx < SPR_CW; fx++) {
+          var fi = at(ox + fx, oy + fy);
+          if (d[fi + 3] > 40 && fy > maxFoot) maxFoot = fy;
+        }
+      }
+      if (maxFoot < 0) { anchors[row * SPR_COLS + col] = { x: 24, y: 71 }; continue; }
+      var y0 = Math.max(0, maxFoot - 2);
+      for (var gy = y0; gy <= maxFoot; gy++) {
+        for (var gx = 0; gx < SPR_CW; gx++) {
+          var gi = at(ox + gx, oy + gy);
+          if (d[gi + 3] > 40) { sumX += gx; nFoot++; }
+        }
+      }
+      anchors[row * SPR_COLS + col] = { x: nFoot ? sumX / nFoot : 24, y: maxFoot };
+    }
+  }
+  return anchors;
+}
 // ★ v3 占位符图只有一套（home 目录），主/客队共用，加载后按各队实际颜色分别换色
+function loadRunSheet(url, stripBall, rcColors) {
+  var im = new Image();
+  im.onload = function () {
+    if (im._sheet) return;
+    try {
+      var cv = document.createElement('canvas');
+      cv.width = im.naturalWidth; cv.height = im.naturalHeight;
+      var cx = cv.getContext('2d');
+      cx.drawImage(im, 0, 0);
+      var id = cx.getImageData(0, 0, cv.width, cv.height);
+      im._anchors = prepareRunSheet(id, stripBall);
+      if (typeof SharedKits !== 'undefined') SharedKits.recolorImageData(id, rcColors);
+      cx.putImageData(id, 0, 0);
+      im._sheet = cv; // 画处理后的表，不再改 src（避免 onload 重入）
+    } catch (e) {}
+  };
+  im.src = url;
+  if (im.complete && im.naturalWidth) im.onload();
+  return im;
+}
 ['home', 'away'].forEach(function (kit) {
-  var b = new Image(); b.src = 'assets/sprites/home/run-8dir-v3-with-ball.png?v=' + SPR_V;
-  var n = new Image(); n.src = 'assets/sprites/home/run-8dir-v3-without-ball.png?v=' + SPR_V;
   // ★ 占位符换色：v3 图用品红衣/青裤/黄袜占位符，加载后按球队实际颜色替换
   //   客队复用同一套图，把占位符映射到客队颜色（TEAM_COLORS.away）
   var rcColors = (kit === 'away' && typeof SharedKits !== 'undefined')
     ? { home: SharedKits.TEAM_COLORS.away } : undefined;
-  [b, n].forEach(function (im) {
-    im.onload = function () {
-      try {
-        if (typeof SharedKits === 'undefined') return;
-        var cv = document.createElement('canvas');
-        cv.width = im.naturalWidth; cv.height = im.naturalHeight;
-        var cx = cv.getContext('2d');
-        cx.drawImage(im, 0, 0);
-        var id = cx.getImageData(0, 0, cv.width, cv.height);
-        SharedKits.recolorImageData(id, rcColors);
-        cx.putImageData(id, 0, 0);
-        im.src = cv.toDataURL();
-      } catch (e) {}
-    };
-  });
+  var b = loadRunSheet('assets/sprites/home/run-8dir-v3-with-ball.png?v=' + SPR_V, true, rcColors);
+  var n = loadRunSheet('assets/sprites/home/run-8dir-v3-without-ball.png?v=' + SPR_V, false, rcColors);
   spriteAtlas8[kit] = { ball: b, nobal: n };
 });
 // 旧表保留给门将（外场主/客队已统一到 v3）
@@ -59,15 +159,25 @@ var spriteAtlas = {};
 });
 var animClock = {}; // playerId -> {x,y,lt,ph} 上一帧渲染位置/帧时间戳/累进相位（跑/站判定用）
 
-// ★ 8 方向判定：按移动向量角度选行（0=up 顺时针）
+// ★ 8 方向判定：按移动向量角度选行（0=up 顺时针，屏幕空间）
+// 场地 +y 朝屏幕上方（见 updatePadFromKeys），不是画布的 +y 向下。
+// 之前用 atan2(dy, dx) 把“往上跑”判成 down 行，人物脸朝镜头倒着跑。
 function dirRowFor(dx, dy) {
   if (!dx && !dy) return -1;
-  var ang = Math.atan2(dy, dx); // -PI~PI，0=右，PI/2=下
-  // 转为 0=up 顺时针：up=-PI/2 → 0
+  var ang = Math.atan2(-dy, dx); // 屏幕 y 向下，故取反世界 dy。0=右，-PI/2=上
   var t = (ang + Math.PI / 2) / (Math.PI * 2); // 0=up, 0.25=right, 0.5=down, 0.75=left
   if (t < 0) t += 1;
+  if (t >= 1) t -= 1;
   var idx = Math.round(t * 8) % 8;
   return idx; // 0=up,1=upright,2=right,3=downright,4=down,5=downleft,6=left,7=upleft
+}
+// 连续朝向角 0~1（0=上），给方向迟滞用，避免贴着扇区边界来回翻
+function heading01(dx, dy) {
+  var ang = Math.atan2(-dy, dx);
+  var t = (ang + Math.PI / 2) / (Math.PI * 2);
+  if (t < 0) t += 1;
+  if (t >= 1) t -= 1;
+  return t;
 }
 // ★ 跑动周期：序列帧行选择 + 带球触球共用同一相位，保证"球—脚"同步
 // ★ dt 归一化（2026-10-06）：位移按米/秒算帧率与跑/站判定，30/60/120/144Hz 同一速度同一节奏；
@@ -91,8 +201,9 @@ function runCycleFor(p, t) {
   var fps = 6 + Math.min(10, v / 2);
   // ★ v3 8 帧：外场球员 8 帧（主/客队各按自家颜色换色），门将沿用旧表
   var nF = (p.pos !== 'GK') ? 8 : 4;
-  st.ph = (st.ph + fps * dt) % nF;
-  return { moving: moving, fps: fps, phase: st.ph / nF, dx: dx, dy: dy, svx: st.svx, svy: st.svy, nFrames: nF };
+  // 停步时冻住相位，保持落地的那一帧。若立刻切回第 0 帧，姿势会跳一下。
+  if (moving) st.ph = (st.ph + fps * dt) % nF;
+  return { moving: moving, fps: fps, phase: st.ph / nF, dx: dx, dy: dy, svx: st.svx, svy: st.svy, nFrames: nF, dt: dt };
 }
 function spriteFrameFor(p, t) {
   var cyc = runCycleFor(p, t);
@@ -103,19 +214,32 @@ function spriteFrameFor(p, t) {
   if (p.pos !== 'GK') {
     var a8 = spriteAtlas8[p.team] || spriteAtlas8['home'];
     var img8 = (p.hasBall ? a8.ball : a8.nobal);
-    if (!img8 || !img8.complete || !img8.naturalWidth) return null;
-    // 方向行：用平滑速度判定；低速时保持上次方向，避免插值抖动导致精灵来回翻转
+    var sheet = img8._sheet || img8;
+    if (!img8._sheet && (!img8.complete || !img8.naturalWidth)) return null;
+    // 方向行：平滑速度 + 扇区迟滞。低速保持上次朝向。
     var sSpd = Math.sqrt(cyc.svx * cyc.svx + cyc.svy * cyc.svy);
     if (sSpd > 1.5) {
       var dRow = dirRowFor(cyc.svx, cyc.svy);
-      if (dRow >= 0) st.dirRow = dRow;
+      if (st.dirRow == null) st.dirRow = dRow;
+      else if (dRow !== st.dirRow && dRow >= 0) {
+        var center = st.dirRow / 8;
+        var delta = heading01(cyc.svx, cyc.svy) - center;
+        if (delta > 0.5) delta -= 1;
+        if (delta < -0.5) delta += 1;
+        // 半个扇区是 22.5°。越过边界再多约 8° 才换行，贴边不会来回翻。
+        if (Math.abs(delta) > 0.085) st.dirRow = dRow;
+      }
+      if (sSpd > 0.4) { st.fx = cyc.svx / sSpd; st.fy = cyc.svy / sSpd; }
     }
     else if (st.dirRow == null) st.dirRow = 2; // 默认朝右
-    var col = 0;
-    if (cyc.moving) col = Math.floor(cyc.phase * cyc.nFrames) % cyc.nFrames;
-    // ★ 有球/无球切换：持球用 with-ball（脚下带球），出脚后切 without-ball 对应帧，球单独画轨迹
-    //   不再用 baked-ball 逻辑，避免双球抖动
-    return { img: img8, dirRow: st.dirRow, col: col, is8dir: true, hasBall: !!p.hasBall };
+    var col = Math.floor(cyc.phase * cyc.nFrames) % cyc.nFrames;
+    var frac = cyc.phase * cyc.nFrames - col;
+    if (frac < 0) frac = 0;
+    // 持球仍用 with-ball 的跑姿（出脚动作），球本身已在加载时挖掉，由 drawActors 贴在脚前
+    return {
+      img: sheet, anchors: img8._anchors, dirRow: st.dirRow, col: col, frac: frac,
+      is8dir: true, hasBall: !!p.hasBall, moving: cyc.moving
+    };
   }
 
   // 旧逻辑（门将沿用旧表）
@@ -1120,6 +1244,23 @@ function drawGoals() {
   });
 }
 
+// 把一帧钉在脚底锚点上。mirror 时绕着脚的世界坐标水平翻转，脚不离开落点。
+function blit8(img, anchors, row, col, mirror, pr, dw, dh, alpha) {
+  if (!img) return;
+  var a = (anchors && anchors[row * 8 + col]) || { x: 24, y: 71 };
+  var scx = dw / 48, scy = dh / 72;
+  ctx.save();
+  if (alpha != null && alpha < 0.999) ctx.globalAlpha = alpha;
+  if (mirror) {
+    ctx.translate(pr.x, 0);
+    ctx.scale(-1, 1);
+    ctx.drawImage(img, col * 48, row * 72, 48, 72, -a.x * scx, pr.y - a.y * scy, dw, dh);
+  } else {
+    ctx.drawImage(img, col * 48, row * 72, 48, 72, pr.x - a.x * scx, pr.y - a.y * scy, dw, dh);
+  }
+  ctx.restore();
+}
+
 function drawActors(t) {
   if (!state) return;
   // ★ 基于时间的快照线性插值：两帧快照之间按墙钟匀速过渡，消除指数追赶的脉冲感；
@@ -1149,7 +1290,6 @@ function drawActors(t) {
     return renderPos[b.id].y - renderPos[a.id].y; // 远的先画
   });
   var animFrame = Math.floor(t / 280) % 2;
-  var ownerBakedBall = false; // ★ 持球者序列帧里已 baked 了球（outfield 精灵每帧脚下有球），则不再单独画球，避免双球抖动
   order.forEach(function (p) {
     var rp = renderPos[p.id];
     var pr = project(rp.x, rp.y);
@@ -1170,16 +1310,7 @@ function drawActors(t) {
     //   （之前画在各自脚下，会被更靠前的对方球员盖住，看起来像"在控制红方"）
     // ★ 序列帧绘制：跑动播 run 循环 / 静止播 idle；精灵未就绪时兜底用旧代码帧
     var spr = spriteFrameFor(p, t);
-    // ★ 2026-10-12 8 方向：with-ball atlas 脚下自带球（含静止帧），不单独画球；
-    //   without-ball 用于出脚后，球单独画轨迹。旧 5 帧表保持原逻辑。
-    if (p.hasBall && spr && p.pos !== 'GK') {
-      if (spr.is8dir) {
-        // 8 方向 with-ball：静止也有球，不画单独球
-        if (spr.hasBall) ownerBakedBall = true;
-      } else {
-        ownerBakedBall = true; // 旧表：门将帧里没球，仍需单独画
-      }
-    }
+    // 外场 8 方向的烤球已在加载时挖掉，门将旧表本身不带球，所以总是另画球。
     var dw = 16 * s * 1.9, dh = 24 * s * 1.9; // 2:3，与 48×72 帧同比例
     var stagger = !!p.beaten; // ★ 被晃倒：精灵倾斜踉跄，一眼看出被过了
     if (stagger) {
@@ -1190,21 +1321,16 @@ function drawActors(t) {
     }
     if (spr) {
       if (spr.is8dir) {
-        // ★ 2026-10-14 斜向修正：v3 右侧斜向（upright/downright）AI 画成了背面，
-        //   改为左侧斜向水平镜像：downright←downleft(正面3/4)，upright←upleft(背面3/4)，
-        //   保证下斜=见脸、上斜=见背，不再"屁股在前"
+        // ★ 右侧斜向原图是背面（下斜该见脸、上斜该见背）。用左侧斜向镜像：
+        //   downright←downleft，upright←upleft。脚底锚点一起镜像，不会把人拔离落点。
         var useRow = spr.dirRow, mirror8 = false;
         if (spr.dirRow === 3) { useRow = 5; mirror8 = true; }
         else if (spr.dirRow === 1) { useRow = 7; mirror8 = true; }
-        var sx8 = spr.col * 48, sy8 = useRow * 72;
-        if (mirror8) {
-          ctx.save();
-          ctx.translate(pr.x, pr.y - dh);
-          ctx.scale(-1, 1);
-          ctx.drawImage(spr.img, sx8, sy8, 48, 72, -dw / 2, 0, dw, dh);
-          ctx.restore();
-        } else {
-          ctx.drawImage(spr.img, sx8, sy8, 48, 72, pr.x - dw / 2, pr.y - dh, dw, dh);
+        blit8(spr.img, spr.anchors, useRow, spr.col, mirror8, pr, dw, dh, 1);
+        // 下一帧按相位淡入，循环在第 7 帧回到第 0 帧时不再整个人弹回去
+        if (spr.moving && spr.frac > 0.02) {
+          var ncol = (spr.col + 1) % 8;
+          blit8(spr.img, spr.anchors, useRow, ncol, mirror8, pr, dw, dh, spr.frac * 0.42);
         }
       } else {
         var sy = spr.row * 72;
@@ -1246,30 +1372,42 @@ function drawActors(t) {
   });
 
   // 球
-  // ★ 带球触球：球不再焊死在固定偏移上，而是随持球者跑动步频做"趟—追"触球动作，
-  //   与序列帧同一相位（球脚同步）；盘带越好，趟球距离越短（高手球不离脚）。
-  //   只有球真正离脚飞行时（传球/射门/解围）才绘制轨迹残影。
-  var bbx = ballR.x, bby = ballR.y, ballOwned = false, ownerIdle = false, ownerIs8dir = false;
+  // 带球：球贴在脚前，沿行进方向做一圈能首尾相接的小幅趟球（sin 在 0 和 1 处同值，循环不跳）。
+  // 方向用平滑速度，不用本帧位移——快照交接时位移会瞬间反向，球就会被拽回去再弹回。
+  // 只有球真正离脚飞行时（传球/射门/解围）才绘制轨迹残影。
+  var bbx = ballR.x, bby = ballR.y, ballOwned = false, ownerIdle = false;
   for (var boi = 0; boi < state.players.length; boi++) {
     if (state.players[boi].hasBall) {
       var owner = state.players[boi];
       ballOwned = true;
       var oc = owner._cycle, orp = renderPos[owner.id] || owner;
-      // ★ 持球者静止时也单独画球（2026-10-10 用户报"球呢"：暂停时 idle 帧 baked 球太小看不见）
-      //   ★ 2026-10-12 8 方向：with-ball 帧的球够大，静止也不用单独画
+      var ost = animClock[owner.id];
       ownerIdle = !(oc && oc.moving);
-      // 检查是否 8 方向（外场主/客队都用 v3）
-      if (owner.pos !== 'GK') ownerIs8dir = true;
-      if (oc && oc.moving) {
-        var olen = Math.sqrt(oc.dx * oc.dx + oc.dy * oc.dy);
-        if (olen > 1e-6) {
-          var drib = (owner.stats && owner.stats.dribbling) || 10;
-          var touchMax = 1.15 - (drib / 20) * 0.55;
-          var lead = 0.32 + touchMax * (0.5 - 0.5 * Math.cos(oc.phase * Math.PI * 2));
-          bbx = orp.x + (oc.dx / olen) * lead;
-          bby = orp.y + (oc.dy / olen) * lead;
-        } else { bbx = orp.x; bby = orp.y; }
-      } else { bbx = orp.x; bby = orp.y; }
+      var fx = 1, fy = 0;
+      if (ost && (ost.fx || ost.fy)) { fx = ost.fx; fy = ost.fy; }
+      else if (oc && (oc.svx || oc.svy)) {
+        var sl = Math.sqrt(oc.svx * oc.svx + oc.svy * oc.svy) || 1;
+        fx = oc.svx / sl; fy = oc.svy / sl;
+      } else if (owner.team === 'away') fx = -1;
+      var phase = oc ? oc.phase : 0;
+      // 球始终在脚前方：每步趟出去再收回，余弦在 0 和 1 处同值，循环不会弹回身后。
+      // 盘带越高，趟球幅度越小。
+      var drib = (owner.stats && owner.stats.dribbling) || 10;
+      var amp = ownerIdle ? 0 : (0.16 - Math.min(0.07, drib / 400));
+      var touch = 0.5 - 0.5 * Math.cos(phase * Math.PI * 4);
+      var along = 0.55 + amp * touch;
+      var side = ownerIdle ? 0 : 0.09 * Math.sin(phase * Math.PI * 2);
+      var tx = orp.x + fx * along + (-fy) * side;
+      var ty = orp.y + fy * along + fx * side;
+      if (!ost) {
+        bbx = tx; bby = ty;
+      } else {
+        if (ost.bx == null) { ost.bx = tx; ost.by = ty; }
+        var bk = Math.min(1, ((oc && oc.dt) || 0.016) / 0.07);
+        ost.bx += (tx - ost.bx) * bk;
+        ost.by += (ty - ost.by) * bk;
+        bbx = ost.bx; bby = ost.by;
+      }
       break;
     }
   }
@@ -1299,10 +1437,7 @@ function drawActors(t) {
     ctx.beginPath(); ctx.ellipse(bp.x, bp.y + 2, 9 * bp.s, 3.6 * bp.s, 0, 0, Math.PI * 2); ctx.fill();
   }
   var bs = 8 * bp.s * 1.6 * (1 + Math.min(ballZ, 6) * 0.02);
-  // ★ 静止持球也画球（ownerIdle）：跑动时靠 baked 球避免双球抖动，静止时 baked 球太小看不见
-  //   ★ 2026-10-12 8 方向 with-ball 帧球够大，静止也不单独画
-  var drawSeparateBall = !ballOwned || !ownerBakedBall || (ownerIdle && !ownerIs8dir);
-  if (drawSeparateBall) ctx.drawImage(ballImg, bp.x - bs / 2, bp.y - bs - 2 - rise, bs, bs);
+  ctx.drawImage(ballImg, bp.x - bs / 2, bp.y - bs - 2 - rise, bs, bs);
 
   // ★ 被玩家直接操控标记（绿圈）：置顶绘制，不被任何球员遮挡
   //   2 秒无操作被 AI 接管时变暗，提示"动一下方向键拿回控制"
