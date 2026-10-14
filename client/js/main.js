@@ -994,6 +994,10 @@ function headMenuKey(e) {
   var hm = ui.hmenu, lvl = hmTop();
   if (!hm || !lvl) return false;
   var k = (e.key || '').toLowerCase();
+  // ★ Q = 取消/返回上一级（和 Esc 一样）
+  if (k === 'q') { headMenuBack(); e.preventDefault(); return true; }
+  // ★ 按住 E 开菜单时 repeat 不触发确认，松开重按才确认（防"一按就连开带确认"误触）
+  var eConfirm = (k === 'enter' || k === ' ' || (k === 'e' && !e.repeat));
   function moveList(d) {
     var n = lvl.items.length, i = lvl.sel == null ? 0 : lvl.sel;
     for (var c = 0; c < n; c++) { i = (i + d + n) % n; if (lvl.items[i].enabled) break; }
@@ -1006,23 +1010,23 @@ function headMenuKey(e) {
   }
   var handled = true;
   if (lvl.kind === 'aim') {
-    // ★ 落点光标：方向键/WASD 精细移动（Shift 更精细），回车确认
+    // ★ 落点光标：方向键/WASD 精细移动（Shift 更精细），回车/E 确认
     var step = e.shiftKey ? 0.4 : 1.5;
     if (k === 'arrowup' || k === 'w') nudgeAim(0, step);
     else if (k === 'arrowdown' || k === 's') nudgeAim(0, -step);
     else if (k === 'arrowleft' || k === 'a') nudgeAim(-step, 0);
     else if (k === 'arrowright' || k === 'd') nudgeAim(step, 0);
-    else if (k === 'enter' || k === ' ') { pushHmLevel(techLevel()); requestHmPreview(); }
+    else if (eConfirm) { pushHmLevel(techLevel()); requestHmPreview(); }
     else handled = false;
   } else if (lvl.kind === 'confirm') {
     if (k === 'arrowup' || k === 'w' || k === 'arrowdown' || k === 's') lvl.sel = (lvl.sel || 0) === 0 ? 1 : 0;
-    else if (k === 'enter' || k === ' ') { if ((lvl.sel || 0) === 0) hmConfirmPass(); else popHmLevel(); }
+    else if (eConfirm) { if ((lvl.sel || 0) === 0) hmConfirmPass(); else popHmLevel(); }
     else handled = false;
   } else {
-    // 普通列表（顶层指令/脚法/高度）：方向键/WASD 移动，回车/空格确认
+    // 普通列表（顶层指令/脚法/高度）：方向键/WASD 移动，回车/E/空格确认
     if (k === 'arrowup' || k === 'w') moveList(-1);
     else if (k === 'arrowdown' || k === 's') moveList(1);
-    else if (k === 'enter' || k === ' ') activateList();
+    else if (eConfirm) activateList();
     else handled = false;
   }
   if (handled) e.preventDefault();
@@ -1135,7 +1139,7 @@ function drawTitle() {
   text('⚽ 开 始 比 赛', W / 2, by + bh / 2, 28, '#3a2a00', 'center', true);
   addClick(bx, by, bw, bh, startMatch);
 
-  text('电脑：WASD 移动 · J/Shift加速 K减速 · L切换球员 · E指令菜单 · 空格暂停', W / 2, 672, 16, '#5f7099', 'center');
+  text('电脑：WASD 移动 · J/Shift加速 K减速 · L切换球员 · E指令菜单/确定 · Q取消 · 空格暂停', W / 2, 672, 16, '#5f7099', 'center');
   text('手机 / Pad：左虚拟方向盘移动 · 右侧按键加速/减速/切换/菜单', W / 2, 696, 16, '#5f7099', 'center');
 }
 
