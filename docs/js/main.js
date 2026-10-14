@@ -286,6 +286,8 @@ CUT_KEYS.forEach(function (k) {
   };
   CUT_IMGS[k] = im;
 });
+// ★ 漫画分镜资源预加载（动态判定动画）
+if (typeof mangaInit === 'function') mangaInit();
 
 // ---------------- 服务器 API ----------------
 var api = window.__makeLocalApi();
@@ -1748,6 +1750,12 @@ function skipCutscene() {
 function drawCutin() {
   if (!state || !state.lastAction) return;
   var a = state.lastAction;
+  // ★ 漫画分镜优先：dribble-win 走动态漫画分镜引擎
+  if (a.cut === 'dribble-win' && typeof drawMangaCutin === 'function') {
+    if (ui.cutSkipId !== cutActionId(a)) {
+      if (drawMangaCutin(a, performance.now())) return;
+    } else return;
+  }
   // ★ 有演出图键 → 全屏像素风结算演出（仿《天使之翼》指令结算画面）
   var im = a.cut && CUT_IMGS[a.cut];
   if (im && im.complete && im.naturalWidth) {

@@ -1,0 +1,38 @@
+{
+  "ok": false,
+  "engine": "component-row",
+  "engine_revision": "4c9db55ba735",
+  "extract_args": {},
+  "run_dir": "/home/hatch/workspace/soccer-rpg/.agents/manga-cutin/run",
+  "cell": {
+    "shape": "square",
+    "width": 256,
+    "height": 256,
+    "safe_margin_x": 24,
+    "safe_margin_y": 24,
+    "size": 256,
+    "safe_margin": 24
+  },
+  "chroma_key": {
+    "name": "magenta",
+    "hex": "#FF00FF",
+    "rgb": [
+      255,
+      0,
+      255
+    ],
+    "selection": "fallback",
+    "background": {
+      "mode": "absent"
+    },
+    "selection_reason": "no base reference to sample"
+  },
+  "rows": [],
+  "errors": [
+    "idle: missing raw strip /home/hatch/workspace/soccer-rpg/.agents/manga-cutin/run/raw/idle.png",
+    "attack: missing raw strip /home/hatch/workspace/soccer-rpg/.agents/manga-cutin/run/raw/attack.png",
+    "jump: missing raw strip /home/hatch/workspace/soccer-rpg/.agents/manga-cutin/run/raw/jump.png",
+    "wave: missing raw strip /home/hatch/workspace/soccer-rpg/.agents/manga-cutin/run/raw/wave.png"
+  ],
+  "warnings": []
+}

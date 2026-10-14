@@ -1,0 +1,66 @@
+{
+  "version": 1,
+  "kind": "sprite-gen-request",
+  "engine": "component-row",
+  "character": {
+    "id": "manga-cutin",
+    "description": "",
+    "base_image": null
+  },
+  "cell": {
+    "shape": "square",
+    "width": 256,
+    "height": 256,
+    "safe_margin_x": 24,
+    "safe_margin_y": 24,
+    "size": 256,
+    "safe_margin": 24
+  },
+  "chroma_key": {
+    "name": "magenta",
+    "hex": "#FF00FF",
+    "rgb": [
+      255,
+      0,
+      255
+    ],
+    "selection": "fallback",
+    "background": {
+      "mode": "absent"
+    },
+    "selection_reason": "no base reference to sample"
+  },
+  "states": {
+    "idle": {
+      "frames": 4,
+      "fps": 4,
+      "loop": true,
+      "action": "subtle breathing and blinking"
+    },
+    "attack": {
+      "frames": 4,
+      "fps": 8,
+      "loop": false,
+      "action": "simple windup, strike, recovery attack pose sequence with no detached effects"
+    },
+    "jump": {
+      "frames": 4,
+      "fps": 8,
+      "loop": false,
+      "action": "jump arc through body position only"
+    },
+    "wave": {
+      "frames": 4,
+      "fps": 6,
+      "loop": false,
+      "action": "friendly hand wave gesture; arm changes clearly while feet stay planted"
+    }
+  },
+  "style": "match the attached base/anchor reference image EXACTLY: same pixel density (logical pixel block size), same body proportions, same outline weight, same palette, same shading style, same level of detail. Do not restyle, do not change proportions, do not add or remove detail density.",
+  "layout": "taxonomy/v1",
+  "chroma": {
+    "mode": "rgb",
+    "unmix_reach": 4,
+    "spill_max_fraction": 0.005
+  }
+}
