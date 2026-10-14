@@ -1902,6 +1902,7 @@ Match.prototype.serialize = function () {
         stamina: Math.round(p.stamina), maxStamina: p.maxStamina,
         special: p.special ? { name: p.special.name } : null,
         skin: p.skin || 'fair',
+        kit: p.kit || null,
         hasBall: self.ball.ownerId === p.id,
         frozen: self.now < p.frozenUntil,
         beaten: self.now < p.beatenUntil, // ★ 被晃倒：客户端画踉跄倾斜
