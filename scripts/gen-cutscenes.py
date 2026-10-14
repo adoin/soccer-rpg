@@ -14,7 +14,10 @@ OUT_DIRS = [
     os.path.join(ROOT, 'docs', 'assets', 'cutscene'),
 ]
 W, H = 960, 640
-U = 8  # 像素单位。小人约 128px 高，在 960 画面上能看清五官和出脚。
+U = 8
+# 标题栏从这里开始。所有人的鞋底必须高于这条线。
+BANNER_TOP = 536
+FOOT = 508
 FONT = '/usr/share/fonts/truetype/wqy/wqy-microhei.ttc'
 
 HOME = {'j': (255, 0, 255), 's': (0, 255, 255), 'k': (255, 255, 0)}
@@ -58,158 +61,164 @@ def draw_ball(dr, x, y, s=18):
     px(dr, x - s * 0.12, y - s * 0.48, s * 0.24, s * 0.16, (32, 32, 38))
 
 
-# 侧身小人，每格 U 像素。字符从左到右是“背后 → 身前”（face>0 时朝右）。
-# H 发 S 肤 E 眼 J 衣 P 裤 K 袜 O 鞋 A 臂 W 白（手套/号码）
+# 严格侧身。字符从左到右 = 背后 → 身前（face>0 朝右，鼻子在右侧）。
+# H 发 S 肤 N 鼻 E 眼 J 衣 P 裤 K 袜 O 鞋 A 臂 W 号码/手套 Y 旗
 POSES = {
     'run': [
-        "........HHH.........",
-        "......HHHHHHH.......",
-        ".....HHHSSSHH.......",
-        ".....HHSEESSH.......",
+        ".......HHHHH........",
+        ".....HHHHHHHHH......",
+        "....HHHSSSSSHH......",
+        "....HHHSSSEESHH.....",
+        "....HHHSSSSSNHH.....",
         ".....HHSSSSSH.......",
-        "......HSSSSH........",
-        "....JJJJJJJJJJ......",
-        "...AJJJJWJJJJA......",
-        "...AJJJJJJJJJA......",
-        "....JJJJJJJJJ.......",
-        ".....PPPPPPP........",
-        ".....PPPPPPP........",
-        "....KK....KKK.......",
-        "....KK.....KK.......",
-        "....KK......K.......",
-        "...OOO.....OOO......",
+        "....JJJJJJJJJJJ.....",
+        "...AJJJJJWWJJJJA....",
+        "..AAJJJJJJJJJJJAA...",
+        "...A.JJJJJJJJJ.A....",
+        "......PPPPPPPP......",
+        "......PPPPPPPP......",
+        ".....KKK...KKKK.....",
+        "....KK......KKK.....",
+        "...KK........KK.....",
+        "..OOO.......OOOO....",
     ],
     'kick': [
-        "........HHH.........",
-        "......HHHHHHH.......",
-        ".....HHHSSSHH.......",
-        ".....HHSEESSH.......",
+        ".......HHHHH........",
+        ".....HHHHHHHHH......",
+        "....HHHSSSSSHH......",
+        "....HHHSSSEESHH.....",
+        "....HHHSSSSSNHH.....",
         ".....HHSSSSSH.......",
-        "......HSSSSH........",
-        "...A.JJJJJJJJ..AAA..",
-        "...A.JJJWJJJJ.AAAA..",
-        ".....JJJJJJJJ.......",
-        ".....PPPPPPP........",
-        "....KK.PPPPP........",
+        "..A..JJJJJJJJJ..AAA.",
+        ".AA.JJJJJWWJJJ.AAAA.",
+        "..A..JJJJJJJJJ......",
+        "......PPPPPPPP......",
+        ".....KK.PPPPPP......",
         "....KK..............",
-        "...OOO......KKKKK...",
-        "............KKKKKO..",
-        "...............OOO..",
+        "...OOO......KKKKKK..",
+        "............KKKKKKO.",
+        "...............OOOO.",
     ],
     'fall': [
         "....................",
-        "..............HHH...",
-        ".........HHHHHHHH...",
-        "........HHSSSHHH....",
-        ".......HHSEESSHH....",
-        "AA.....HHSSSSH......",
-        "AAA...JJJJJJJJJ.....",
-        ".A....JJJWJJJJJ.....",
-        "......PPPPPPPP......",
-        "..KKKKKK....KKKKKK..",
-        ".OOO..........OOOO..",
+        "...............HHHH.",
+        "..........HHHHHHHHH.",
+        ".........HHSSSSSHHH.",
+        "........HHSSSEESHHH.",
+        "AA......HHSSSSSNH...",
+        "AAA....JJJJJJJJJJ...",
+        ".AA....JJJJWWJJJJ...",
+        "........PPPPPPPP....",
+        "..KKKKKKK....KKKKKKK",
+        ".OOOO..........OOOO.",
     ],
     'pass': [
-        "........HHH.........",
-        "......HHHHHHH.......",
-        ".....HHHSSSHH.......",
-        ".....HHSEESSH.......",
+        ".......HHHHH........",
+        ".....HHHHHHHHH......",
+        "....HHHSSSSSHH......",
+        "....HHHSSSEESHH.....",
+        "....HHHSSSSSNHH.....",
         ".....HHSSSSSH.......",
-        "......HSSSSH........",
-        "...A.JJJJJJJJ..AA...",
-        "...A.JJJWJJJJ.AAA...",
-        ".....JJJJJJJJ.......",
-        ".....PPPPPPP........",
-        "....KK..PPPP........",
-        "....KK...KKK........",
+        "..A..JJJJJJJJJ..AA..",
+        ".AA.JJJJJWWJJJ.AAA..",
+        "..A..JJJJJJJJJ......",
+        "......PPPPPPPP......",
+        ".....KK..PPPPP......",
+        "....KK....KKK.......",
         "...OOO....KK........",
         "..........OOO.......",
     ],
     'celebrate': [
-        "..A..............A..",
-        "..A......HHH.....A..",
-        "..SA...HHHHHHH..AS..",
-        "...A..HHHSSSHH..A...",
-        "......HHSEESSH......",
+        ".A................A.",
+        ".A......HHHHH.....A.",
+        ".SA...HHHHHHHHH..AS.",
+        "..A..HHHSSSSSHH..A..",
+        ".....HHHSSSEESH.....",
+        ".....HHHSSSSSNH.....",
         "......HHSSSSSH......",
-        ".......HSSSSH.......",
-        ".....JJJJJJJJJ......",
-        ".....JJJWWJJJJ......",
-        ".....JJJJJJJJJ......",
-        "......PPPPPPP.......",
-        ".....KK....KK.......",
-        ".....KK....KK.......",
-        "....OOO....OOO......",
+        ".....JJJJJJJJJJ.....",
+        ".....JJJJWWJJJJ.....",
+        ".....JJJJJJJJJJ.....",
+        "......PPPPPPPP......",
+        ".....KKK....KKK.....",
+        ".....KK......KK.....",
+        "....OOO......OOO....",
     ],
     'stun': [
-        "........HHH.........",
-        "......HHHHHHH.......",
-        ".....HHHSSSHH.......",
-        ".....HHSEESSH.......",
+        ".......HHHHH........",
+        ".....HHHHHHHHH......",
+        "....HHHSSSSSHH......",
+        "....HHHSSSEESHH.....",
+        "....HHHSSSSSNHH.....",
         ".....HHSSSSSH.......",
-        "......HSSSSH........",
-        "....JJJJJJJJJJ......",
-        "...AJJJJWJJJJ..A....",
-        "..AA.JJJJJJJJ.AAA...",
-        ".....PPPPPPP........",
-        "....KK....KK........",
-        "...KKK....KKK.......",
-        "..OO......OOO.......",
+        "....JJJJJJJJJJJ.....",
+        "..AAJJJJJWWJJJ..AA..",
+        ".AAA.JJJJJJJJJ.AAA..",
+        "......PPPPPPPP......",
+        ".....KK.....KK......",
+        "....KKK.....KKK.....",
+        "...OOO......OOO.....",
     ],
     'flag': [
-        "........HHH.........",
-        "......HHHHHHH..YYYY.",
-        ".....HHHSSSHH..YYYY.",
-        ".....HHSEESSH..Y....",
-        ".....HHSSSSSH..Y....",
-        "......HSSSSH...Y....",
-        "....JJJJJJJJJ..Y....",
-        "...AJJJJWJJJJ..Y....",
-        "...AJJJJJJJJJ..Y....",
-        "....PPPPPPP....Y....",
-        "....KK...KK....Y....",
-        "....KK...KK....Y....",
-        "...OOO...OOO........",
+        ".......HHHHH........",
+        ".....HHHHHHHHH.YYYY.",
+        "....HHHSSSSSHH.YYYY.",
+        "....HHHSSSEESH..Y...",
+        "....HHHSSSSSNH..Y...",
+        ".....HHSSSSSH...Y...",
+        "....JJJJJJJJJJ..Y...",
+        "...AJJJJJWWJJJ..Y...",
+        "..AAJJJJJJJJJJ..Y...",
+        "......PPPPPPPP..Y...",
+        ".....KKK...KKK......",
+        ".....KK.....KK......",
+        "....OOO.....OOO.....",
+    ],
+    'dive': [
+        "....................",
+        "...............HHHH.",
+        "..........HHHHHHHHH.",
+        "OOOO....HHSSSSSSHHH.",
+        "KKKK...HHSSSEESNHHH.",
+        "KK....JJJJJJJJJJJ...",
+        ".....JJJJJWWJJJJJWW.",
+        ".....PPPPPPPPPPP....",
     ],
 }
-PAL = None  # filled per call
 
 
 def draw_player(dr, ox, foot_y, team, pose, face=1):
-    """ox 是躯干中心，foot_y 是图案最底一行的下沿。face>0 朝右。"""
+    """ox 是图案水平中心，foot_y 是鞋底下沿。face>0 朝右。"""
+    if foot_y > BANNER_TOP:
+        raise ValueError('feet overlap banner: %s %s' % (pose, foot_y))
     rows = POSES.get(pose, POSES['run'])
+    width_cells = len(rows[0])
+    if any(len(row) != width_cells for row in rows):
+        raise ValueError('pose %s has uneven rows' % pose)
     u = U
     j, pcol, k = team['j'], team['s'], team['k']
     cmap = {
-        'H': HAIR, 'S': SKIN, 'E': LINE, 'J': j, 'P': pcol, 'K': k,
-        'O': SHOE, 'A': j, 'W': WHITE, 'Y': (255, 208, 48),
+        'H': HAIR, 'S': SKIN, 'N': (214, 150, 114), 'E': LINE, 'J': j, 'P': pcol,
+        'K': k, 'O': SHOE, 'A': j, 'W': WHITE, 'Y': (255, 208, 48),
     }
     h = len(rows) * u
-    w = len(rows[0]) * u
+    width = len(rows[0]) * u
     top = foot_y - h
+    cells = []
     for ry, row in enumerate(rows):
         for rx, ch in enumerate(row):
             if ch == '.':
                 continue
             colx = rx if face > 0 else (len(row) - 1 - rx)
-            px(dr, ox - w / 2 + colx * u, top + ry * u, u, u, cmap[ch])
-
-
-def draw_player_dive(dr, ox, oy, team, face=1):
-    """横向飞扑。oy 是身体中线。"""
-    u = U
-    j, s, k = team['j'], team['s'], team['k']
-    def B(x, y, w, h, c):
-        left = ox + face * x - w / 2.0
-        px(dr, left, oy - y - h / 2.0, w, h, c)
-    B(-2 * u, 0, 20 * u, 7 * u, j)
-    B(-2 * u, -4 * u, 16 * u, 3.5 * u, s)
-    B(10 * u, 1 * u, 8 * u, 8 * u, HAIR)
-    B(10 * u, 0, 6 * u, 5 * u, SKIN)
-    B(12 * u, 0.6 * u, 1.3 * u, 1.4 * u, LINE)
-    B(-14 * u, -1 * u, 8 * u, 3 * u, k)
-    B(-16 * u, -1 * u, 4 * u, 2.4 * u, SHOE)
-    B(6 * u, 3 * u, 5 * u, 3 * u, WHITE)  # 手套
+            cells.append((colx, ry, ch))
+    occ = set((c[0], c[1]) for c in cells)
+    # 先铺一圈深色轮廓，侧身剪影在草地上能分开
+    for colx, ry, ch in cells:
+        for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+            if (colx + dx, ry + dy) not in occ:
+                px(dr, ox - width / 2 + (colx + dx) * u, top + (ry + dy) * u, u, u, (16, 14, 22))
+    for colx, ry, ch in cells:
+        px(dr, ox - width / 2 + colx * u, top + ry * u, u, u, cmap[ch])
 
 
 def floodlights(dr):
@@ -260,12 +269,12 @@ def background(kind):
     for i, x in enumerate(range(0, W, 80)):
         if i % 2 == 0:
             dr.rectangle([x, 246, x + 80, H], fill=(22, 92, 42))
-    # 球场线
+    # 球场线停在人物脚上方，不伸进标题栏
     px(dr, 40, 300, W - 80, 6, (230, 236, 220))
-    px(dr, 40, 520, W - 80, 6, (230, 236, 220))
-    px(dr, 470, 300, 6, 226, (230, 236, 220))
+    px(dr, 40, 468, W - 80, 6, (230, 236, 220))
+    px(dr, 470, 300, 6, 174, (230, 236, 220))
     # 中圈
-    dr.ellipse([400, 360, 560, 500], outline=(230, 236, 220), width=6)
+    dr.ellipse([400, 340, 560, 468], outline=(230, 236, 220), width=6)
     # 灯光
     for x0 in (70, 890):
         px(dr, x0 - 6, 86, 12, 80, (190, 198, 214))
@@ -292,15 +301,19 @@ def banner(im, title, tone):
         'foul': (120, 78, 16),
     }
     bg = colors[tone]
-    dr.rectangle([40, 500, W - 41, 600], fill=bg)
-    dr.rectangle([40, 500, W - 41, 508], fill=GOLD)
-    dr.rectangle([40, 592, W - 41, 600], fill=GOLD)
-    font = ImageFont.truetype(FONT, 64)
+    # 标题栏整体低于鞋底（FOOT=508），中间留出草地
+    bar_top = BANNER_TOP
+    bar_bot = 616
+    dr.rectangle([40, bar_top, W - 41, bar_bot], fill=bg)
+    dr.rectangle([40, bar_top, W - 41, bar_top + 8], fill=GOLD)
+    dr.rectangle([40, bar_bot - 8, W - 41, bar_bot], fill=GOLD)
+    font = ImageFont.truetype(FONT, 52)
     # 描边
     bbox = dr.textbbox((0, 0), title, font=font)
     tw = bbox[2] - bbox[0]
+    th = bbox[3] - bbox[1]
     tx = (W - tw) / 2
-    ty = 516
+    ty = bar_top + 8 + (bar_bot - 8 - (bar_top + 8) - th) / 2 - bbox[1]
     for dx in (-3, 0, 3):
         for dy in (-3, 0, 3):
             if dx or dy:
@@ -336,77 +349,78 @@ def goal_net(dr, x, side):
 def paint(key, title, tone):
     im = background('special' if tone == 'special' or key.startswith('special') else 'normal')
     dr = ImageDraw.Draw(im)
-    foot = 488
+    foot = FOOT
+    dive_foot = 456  # 横向飞扑悬在门前，鞋底仍高于标题栏
     if key == 'dribble-win':
         draw_player(dr, 600, foot, HOME, 'run', 1)
-        draw_ball(dr, 710, foot - 28, 28)
-        draw_player(dr, 300, foot + 8, AWAY, 'fall', -1)
-        stars(dr, 230, 330)
+        draw_ball(dr, 730, foot - 36, 28)
+        draw_player(dr, 280, foot, AWAY, 'fall', -1)
+        stars(dr, 180, 300)
     elif key == 'dribble-lose':
-        draw_player(dr, 280, foot + 6, HOME, 'fall', 1)
-        draw_player(dr, 620, foot, AWAY, 'run', -1)
+        draw_player(dr, 280, foot, HOME, 'fall', 1)
+        draw_player(dr, 640, foot, AWAY, 'run', -1)
         draw_ball(dr, 500, foot - 36, 28)
-        stars(dr, 200, 330)
+        stars(dr, 160, 300)
     elif key == 'pass-win':
         draw_player(dr, 200, foot, HOME, 'pass', 1)
-        draw_player(dr, 740, foot - 8, HOME, 'run', 1)
+        draw_player(dr, 740, foot, HOME, 'run', 1)
         draw_ball(dr, 470, 340, 26)
-        dr.line([(280, 420), (460, 350), (700, 400)], fill=WHITE, width=5)
+        dr.line([(300, 400), (460, 350), (680, 400)], fill=WHITE, width=5)
     elif key == 'pass-lose':
         draw_player(dr, 200, foot, HOME, 'pass', 1)
-        draw_player(dr, 620, foot, AWAY, 'kick', -1)
-        draw_ball(dr, 500, 390, 28)
-        dr.line([(270, 430), (490, 400)], fill=(255, 180, 160), width=5)
+        draw_player(dr, 640, foot, AWAY, 'kick', -1)
+        draw_ball(dr, 500, 380, 28)
+        dr.line([(300, 410), (490, 390)], fill=(255, 180, 160), width=5)
     elif key == 'shoot-goal':
         goal_net(dr, 860, 1)
-        draw_player(dr, 360, foot, HOME, 'kick', 1)
+        draw_player(dr, 340, foot, HOME, 'kick', 1)
         draw_ball(dr, 800, 320, 30)
-        dr.line([(460, 420), (780, 330)], fill=WHITE, width=6)
-        stars(dr, 680, 260)
+        dr.line([(480, 400), (780, 330)], fill=WHITE, width=6)
+        stars(dr, 640, 250)
     elif key == 'shoot-save':
         goal_net(dr, 860, 1)
-        draw_player(dr, 240, foot, HOME, 'kick', 1)
-        draw_player_dive(dr, 640, 390, AWAY, 1)
-        draw_ball(dr, 760, 370, 28)
+        draw_player(dr, 220, foot, HOME, 'kick', 1)
+        draw_player(dr, 680, dive_foot, AWAY, 'dive', 1)
+        draw_ball(dr, 790, 400, 28)
     elif key == 'shoot-miss':
         goal_net(dr, 800, 1)
-        draw_player(dr, 280, foot, HOME, 'kick', 1)
+        draw_player(dr, 260, foot, HOME, 'kick', 1)
         draw_ball(dr, 880, 230, 28)
-        dr.line([(400, 420), (860, 240)], fill=(255, 160, 140), width=5)
+        dr.line([(400, 400), (860, 240)], fill=(255, 160, 140), width=5)
     elif key == 'special-goal':
         goal_net(dr, 870, 1)
-        draw_player(dr, 250, foot, HOME, 'kick', 1)
+        draw_player(dr, 240, foot, HOME, 'kick', 1)
         for rad, col in ((40, (255, 140, 40)), (26, (255, 220, 80)), (14, WHITE)):
             dr.ellipse([780 - rad, 330 - rad, 780 + rad, 330 + rad], fill=col)
-        dr.line([(360, 430), (750, 340)], fill=(255, 180, 60), width=8)
-        stars(dr, 600, 250)
+        dr.line([(380, 410), (750, 340)], fill=(255, 180, 60), width=8)
+        stars(dr, 560, 240)
     elif key == 'special-save':
         goal_net(dr, 870, 1)
         draw_player(dr, 200, foot, HOME, 'kick', 1)
-        draw_player_dive(dr, 600, 380, AWAY, 1)
+        draw_player(dr, 640, dive_foot, AWAY, 'dive', 1)
         for rad, col in ((36, (255, 120, 40)), (20, (255, 210, 80))):
-            dr.ellipse([740 - rad, 360 - rad, 740 + rad, 360 + rad], fill=col)
+            dr.ellipse([790 - rad, 390 - rad, 790 + rad, 390 + rad], fill=col)
     elif key == 'feint-win':
-        draw_player(dr, 520, foot, HOME, 'run', 1)
-        draw_ball(dr, 640, foot - 30, 26)
-        draw_player(dr, 260, foot + 4, AWAY, 'stun', -1)
-        stars(dr, 180, 310)
-        dr.line([(460, 390), (360, 340)], fill=(180, 220, 255), width=5)
-        dr.line([(560, 400), (660, 350)], fill=WHITE, width=5)
+        draw_player(dr, 560, foot, HOME, 'run', 1)
+        draw_ball(dr, 690, foot - 36, 26)
+        draw_player(dr, 250, foot, AWAY, 'stun', -1)
+        stars(dr, 140, 290)
+        dr.line([(500, 390), (380, 340)], fill=(180, 220, 255), width=5)
+        dr.line([(600, 400), (700, 350)], fill=WHITE, width=5)
     elif key == 'foul':
-        draw_player(dr, 360, foot + 4, HOME, 'fall', 1)
-        draw_player(dr, 600, foot, AWAY, 'kick', -1)
-        px(dr, 760, 280, 48, 68, (255, 214, 40))
-        px(dr, 752, 270, 64, 12, SHOE)
-        stars(dr, 250, 320)
+        draw_player(dr, 340, foot, HOME, 'fall', 1)
+        draw_player(dr, 620, foot, AWAY, 'kick', -1)
+        px(dr, 800, 250, 48, 68, (255, 214, 40))
+        px(dr, 792, 240, 64, 12, SHOE)
+        stars(dr, 180, 290)
     elif key == 'offside':
-        draw_player(dr, 680, foot, HOME, 'run', 1)
-        draw_ball(dr, 790, foot - 28, 26)
-        draw_player(dr, 220, foot, AWAY, 'flag', 1)
-        dr.line([(520, 280), (520, 490)], fill=(255, 80, 80), width=8)
-        px(dr, 496, 280, 48, 10, (255, 80, 80))
+        draw_player(dr, 700, foot, HOME, 'run', 1)
+        draw_ball(dr, 830, foot - 36, 26)
+        draw_player(dr, 200, foot, AWAY, 'flag', 1)
+        dr.line([(500, 280), (500, 490)], fill=(255, 80, 80), width=8)
+        px(dr, 476, 280, 48, 10, (255, 80, 80))
     else:
-        draw_player(dr, 480, 500, HOME, 'run', 1)
+        draw_player(dr, 480, foot, HOME, 'run', 1)
     # 轻微统一阴影在脚下
     banner(im, title, tone)
     return im
