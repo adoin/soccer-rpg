@@ -1190,9 +1190,22 @@ function drawActors(t) {
     }
     if (spr) {
       if (spr.is8dir) {
-        // ★ 2026-10-12 8 方向：行=方向（0-7），列=跑动帧（0-3），无翻转
-        var sx8 = spr.col * 48, sy8 = spr.dirRow * 72;
-        ctx.drawImage(spr.img, sx8, sy8, 48, 72, pr.x - dw / 2, pr.y - dh, dw, dh);
+        // ★ 2026-10-14 斜向修正：v3 右侧斜向（upright/downright）AI 画成了背面，
+        //   改为左侧斜向水平镜像：downright←downleft(正面3/4)，upright←upleft(背面3/4)，
+        //   保证下斜=见脸、上斜=见背，不再"屁股在前"
+        var useRow = spr.dirRow, mirror8 = false;
+        if (spr.dirRow === 3) { useRow = 5; mirror8 = true; }
+        else if (spr.dirRow === 1) { useRow = 7; mirror8 = true; }
+        var sx8 = spr.col * 48, sy8 = useRow * 72;
+        if (mirror8) {
+          ctx.save();
+          ctx.translate(pr.x, pr.y - dh);
+          ctx.scale(-1, 1);
+          ctx.drawImage(spr.img, sx8, sy8, 48, 72, -dw / 2, 0, dw, dh);
+          ctx.restore();
+        } else {
+          ctx.drawImage(spr.img, sx8, sy8, 48, 72, pr.x - dw / 2, pr.y - dh, dw, dh);
+        }
       } else {
         var sy = spr.row * 72;
         if (spr.face < 0) {
