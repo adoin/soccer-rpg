@@ -75,19 +75,24 @@ function dirRowFor(dx, dy) {
 //   相位改累进式（每帧推进 fps*dt），加减速不再跳帧。返回的 dx/dy 仍为本帧位移（带球触球只取方向）。
 function runCycleFor(p, t) {
   var rp = renderPos[p.id] || p;
-  var st = animClock[p.id] || (animClock[p.id] = { x: rp.x, y: rp.y, lt: t, ph: 0 });
+  var st = animClock[p.id] || (animClock[p.id] = { x: rp.x, y: rp.y, lt: t, ph: 0, svx: 0, svy: 0 });
   var dx = rp.x - st.x, dy = rp.y - st.y;
   var dt = (t - st.lt) / 1000;
   if (!(dt > 0)) dt = 0.001;   // 首帧/时间戳异常兜底
   else if (dt > 0.1) dt = 0.1; // 切后台回来钳到 100ms，避免相位乱跳
   var v = (Math.abs(dx) + Math.abs(dy)) / dt; // 米/秒，刷新率无关
+  // ★ 平滑速度（指数滑动平均，约120ms时间常数）：方向判定用平滑值，
+  //   过滤快照插值在新旧快照交接时的瞬间反向抖动，避免精灵来回翻转（"回退"感）
+  var k = Math.min(1, dt / 0.12);
+  st.svx += (dx / dt - st.svx) * k;
+  st.svy += (dy / dt - st.svy) * k;
   st.x = rp.x; st.y = rp.y; st.lt = t;
   var moving = v > 1.2;          // 原 0.02 米/帧在 60Hz 下 = 1.2 米/秒，现固定
   var fps = 6 + Math.min(10, v / 2);
   // ★ v3 8 帧：外场球员 8 帧（主/客队各按自家颜色换色），门将沿用旧表
   var nF = (p.pos !== 'GK') ? 8 : 4;
   st.ph = (st.ph + fps * dt) % nF;
-  return { moving: moving, fps: fps, phase: st.ph / nF, dx: dx, dy: dy, nFrames: nF };
+  return { moving: moving, fps: fps, phase: st.ph / nF, dx: dx, dy: dy, svx: st.svx, svy: st.svy, nFrames: nF };
 }
 function spriteFrameFor(p, t) {
   var cyc = runCycleFor(p, t);
@@ -99,9 +104,12 @@ function spriteFrameFor(p, t) {
     var a8 = spriteAtlas8[p.team] || spriteAtlas8['home'];
     var img8 = (p.hasBall ? a8.ball : a8.nobal);
     if (!img8 || !img8.complete || !img8.naturalWidth) return null;
-    // 方向行：按移动向量；静止时保持上次方向
-    var dRow = dirRowFor(cyc.dx, cyc.dy);
-    if (dRow >= 0) st.dirRow = dRow;
+    // 方向行：用平滑速度判定；低速时保持上次方向，避免插值抖动导致精灵来回翻转
+    var sSpd = Math.sqrt(cyc.svx * cyc.svx + cyc.svy * cyc.svy);
+    if (sSpd > 1.5) {
+      var dRow = dirRowFor(cyc.svx, cyc.svy);
+      if (dRow >= 0) st.dirRow = dRow;
+    }
     else if (st.dirRow == null) st.dirRow = 2; // 默认朝右
     var col = 0;
     if (cyc.moving) col = Math.floor(cyc.phase * cyc.nFrames) % cyc.nFrames;
@@ -1237,8 +1245,8 @@ function drawActors(t) {
       // ★ 持球者静止时也单独画球（2026-10-10 用户报"球呢"：暂停时 idle 帧 baked 球太小看不见）
       //   ★ 2026-10-12 8 方向：with-ball 帧的球够大，静止也不用单独画
       ownerIdle = !(oc && oc.moving);
-      // 检查是否 8 方向（主队外场）
-      if (owner.team === 'home' && owner.pos !== 'GK') ownerIs8dir = true;
+      // 检查是否 8 方向（外场主/客队都用 v3）
+      if (owner.pos !== 'GK') ownerIs8dir = true;
       if (oc && oc.moving) {
         var olen = Math.sqrt(oc.dx * oc.dx + oc.dy * oc.dy);
         if (olen > 1e-6) {
