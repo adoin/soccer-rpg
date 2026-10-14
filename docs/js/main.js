@@ -539,14 +539,13 @@ function menuDpadStep(p) {
   if (dir !== menuDpadDir) { menuDpadDir = dir; menuKeySynth(dir); } // 进入新方向扇区才走一步
 }
 function menuBtn(id) {
-  if (id === 'sprint') menuKeySynth('Enter');                          // 确定
-  else if (id === 'slow') { if (headMenuOpen()) headMenuBack(); }      // 返回
+  // ★ 2026-10-14：加速键不再挪用为确定（用户要求），菜单里加速就是加速
+  if (id === 'slow') { if (headMenuOpen()) headMenuBack(); }      // 返回
   else if (id === 'menu') togglePause();
   else toast('请先完成头顶菜单选择');
 }
 function menuBtnLabel(id, def) {
   if (!headMenuOpen()) return def;
-  if (id === 'sprint') return '确定';
   if (id === 'slow') return '返回';
   return def;
 }
