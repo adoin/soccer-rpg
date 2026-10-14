@@ -50,6 +50,7 @@ copy(path.join(ROOT, 'shared/constants.js'), path.join(DOCS, 'shared/constants.j
 copy(path.join(ROOT, 'shared/teams.js'), path.join(DOCS, 'shared/teams.js'));
 copy(path.join(ROOT, 'shared/kits.js'), path.join(DOCS, 'shared/kits.js')); // ★ 球衣调色板（2026-10-10）
 copy(path.join(ROOT, 'client/js/sprites.js'), path.join(DOCS, 'js/sprites.js'));
+copy(path.join(ROOT, 'client/js/manga-cutin.js'), path.join(DOCS, 'js/manga-cutin.js')); // ★ 漫画分镜引擎（2026-10-14）
 walk(path.join(ROOT, 'client/css')).forEach(function (f) {
   copy(path.join(ROOT, 'client/css', f), path.join(DOCS, 'css', f));
 });
@@ -222,6 +223,7 @@ html = html
   .replace('src="/shared/teams.js"', 'src="shared/teams.js?v=' + ver + '"')
   .replace('src="/shared/kits.js"', 'src="shared/kits.js?v=' + ver + '"')
   .replace('src="js/sprites.js"', 'src="js/sprites.js?v=' + ver + '"')
+  .replace('src="js/manga-cutin.js"', 'src="js/manga-cutin.js?v=' + ver + '"')
   .replace('src="js/main.js"', 'src="js/main.js?v=' + ver + '"')
   .replace(
     '<!-- 客户端 -->',
