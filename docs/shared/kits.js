@@ -108,11 +108,52 @@
     return imgData;
   }
 
+  // 肤色预设。原画像的皮肤是平涂的暖色，不是占位符。
+  // 球衣换色只动品红/青/黄；肤色另走一条，只改判定为皮肤的像素，阴影按明度比例保留。
+  // 同一张跑动图换肤后，八个方向、每一帧一起变。
+  var SKIN_SOURCE = '#f0c8a0';
+  var SKIN_PRESETS = {
+    fair: { name: '浅肤', color: '#f0c8a6' },
+    east: { name: '暖黄', color: '#e0a878' },
+    tan:  { name: '小麦', color: '#c47a45' },
+    deep: { name: '深肤', color: '#6a3a28' },
+  };
+
+  function isSkinPixel(r, g, b, a) {
+    if (a < 128) return false;
+    if (r < 150 || g < 100 || b < 60) return false;
+    if (g < b - 5 || r < g - 5) return false;
+    if (r - b < 28) return false;
+    // 黄袜是高 R 高 G 低 B，不能算皮肤
+    if (b < 90 && g > 180 && r > 180) return false;
+    return true;
+  }
+
+  function recolorSkin(imgData, presetId) {
+    var preset = SKIN_PRESETS[presetId] || SKIN_PRESETS.fair;
+    var dst = hexToHsl(preset.color);
+    var srcL = hexToHsl(SKIN_SOURCE).l || 0.75;
+    var d = imgData.data;
+    for (var i = 0; i < d.length; i += 4) {
+      if (!isSkinPixel(d[i], d[i + 1], d[i + 2], d[i + 3])) continue;
+      var lum = (0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2]) / 255;
+      var outL = dst.l * (lum / srcL);
+      if (outL < 0.05) outL = 0.05;
+      if (outL > 0.96) outL = 0.96;
+      var rgb = hslToRgb(dst.h, dst.s, outL);
+      d[i] = rgb[0]; d[i + 1] = rgb[1]; d[i + 2] = rgb[2];
+    }
+    return imgData;
+  }
+
   return {
     TEAM_COLORS: TEAM_COLORS,
     PLACEHOLDERS: PLACEHOLDERS,
+    SKIN_PRESETS: SKIN_PRESETS,
     hexToHsl: hexToHsl,
     hslToRgb: hslToRgb,
     recolorImageData: recolorImageData,
+    isSkinPixel: isSkinPixel,
+    recolorSkin: recolorSkin,
   };
 });

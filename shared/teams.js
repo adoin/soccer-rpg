@@ -106,6 +106,8 @@
           maxStamina: 100,
           stamina: 100,
           special: p.special ? { name: p.special.name } : null,
+          // 肤色 id，对应 shared/kits.js 的 SKIN_PRESETS。跑动图按这个换全部帧。
+          skin: ({ 10: 'deep', 9: 'tan', 7: 'east', 11: 'fair', 2: 'deep', 4: 'tan', 6: 'east' })[p.num] || ['fair', 'east', 'tan', 'deep'][i % 4],
           // 站位：主队按阵型，客队镜像
           hx: team === 'home' ? home.x : 105 - home.x,
           hy: home.y,

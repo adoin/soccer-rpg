@@ -22,84 +22,20 @@ function $(id) { return document.getElementById(id); }
 // ★ 2026-10-12 8 方向：run-8dir-v3-with-ball / without-ball
 //   8 行（方向）× 8 列（跑动帧），48×72/帧，整表 384×576
 //   方向顺序：0=up, 1=upright, 2=right, 3=downright, 4=down, 5=downleft, 6=left, 7=upleft
-//   有球表的球是烤进格子里的，而且每帧脚/球在格子里的位置不一样（根运动）。
-//   加载时挖掉烤进去的球，量出每帧脚底锚点；绘制时把脚钉在逻辑坐标上，球改由代码贴在脚前。
-var SPR_V = 'spr4';
-var spriteAtlas8 = {}; // kit -> { ball: Image, nobal: Image }
+//   带球不再按颜色从 with-ball 图里抠球，也不再使用那张图。抠近白色会误伤角色。
+//   身体一律用 without-ball（眼睛是不透明的黑像素），球由代码画在脚前。只量脚底锚点，不改任何像素。
+var SPR_V = 'spr5';
+var spriteAtlas8 = {}; // kit -> { base, anchors, skins }
 var SPR_CW = 48, SPR_CH = 72, SPR_COLS = 8, SPR_ROWS = 8;
 
-function isBakedBallWhite(r, g, b, a) {
-  if (a < 80) return false;
-  // 近白球面板。黄袜 b 偏低、皮肤 r 明显高于 b，都排除。
-  return r > 175 && g > 175 && b > 145 && Math.abs(r - g) < 45 && (r + g) * 0.5 > b - 15;
-}
-function isBodyPixel(r, g, b, a) {
-  if (a < 40) return false;
-  if (r > 140 && b > 100 && g < 150 && r > g + 20) return true; // 品红衣
-  if (g > 140 && b > 140 && r < 150) return true;               // 青裤
-  if (r > 180 && g > 150 && b < 130) return true;               // 黄袜
-  if (r > 165 && g > 100 && b > 60 && r > b + 15 && g > 80) return true; // 皮肤
-  return false;
-}
-// 挖掉每格里烤死的球，并记下脚底锚点（格子内像素）。球不在时 stripBall=false，只量脚。
-function prepareRunSheet(id, stripBall) {
+// 只量每帧脚底锚点。不按颜色删像素。
+function prepareRunSheet(id) {
   var d = id.data, w = id.width;
   var anchors = new Array(SPR_ROWS * SPR_COLS);
   function at(x, y) { return (y * w + x) * 4; }
   for (var row = 0; row < SPR_ROWS; row++) {
     for (var col = 0; col < SPR_COLS; col++) {
       var ox = col * SPR_CW, oy = row * SPR_CH;
-      if (stripBall) {
-        var seen = new Uint8Array(SPR_CW * SPR_CH);
-        for (var y = 0; y < SPR_CH; y++) {
-          for (var x = 0; x < SPR_CW; x++) {
-            var li = y * SPR_CW + x;
-            if (seen[li]) continue;
-            var i0 = at(ox + x, oy + y);
-            if (!isBakedBallWhite(d[i0], d[i0 + 1], d[i0 + 2], d[i0 + 3])) { seen[li] = 1; continue; }
-            var stack = [li], comp = [];
-            seen[li] = 1;
-            while (stack.length) {
-              var p = stack.pop();
-              var px = p % SPR_CW, py = (p / SPR_CW) | 0;
-              comp.push(px, py);
-              for (var ny = py - 1; ny <= py + 1; ny++) {
-                for (var nx = px - 1; nx <= px + 1; nx++) {
-                  if (nx < 0 || ny < 0 || nx >= SPR_CW || ny >= SPR_CH) continue;
-                  var nli = ny * SPR_CW + nx;
-                  if (seen[nli]) continue;
-                  var ni = at(ox + nx, oy + ny);
-                  if (!isBakedBallWhite(d[ni], d[ni + 1], d[ni + 2], d[ni + 3])) { seen[nli] = 1; continue; }
-                  seen[nli] = 1; stack.push(nli);
-                }
-              }
-            }
-            if (comp.length < 24) continue; // 眼睛高光之类，不是球
-            var mark = new Uint8Array(SPR_CW * SPR_CH);
-            for (var ci = 0; ci < comp.length; ci += 2) mark[comp[ci + 1] * SPR_CW + comp[ci]] = 1;
-            for (var ci2 = 0; ci2 < comp.length; ci2 += 2) {
-              var bx = comp[ci2], by = comp[ci2 + 1];
-              d[at(ox + bx, oy + by) + 3] = 0;
-            }
-            // 只擦掉贴着白球的深色拼缝，不把旁边的鞋子一起抹掉
-            for (var ci3 = 0; ci3 < comp.length; ci3 += 2) {
-              var sx0 = comp[ci3], sy0 = comp[ci3 + 1];
-              for (var oy2 = -2; oy2 <= 2; oy2++) {
-                for (var ox2 = -2; ox2 <= 2; ox2++) {
-                  var ex = sx0 + ox2, ey = sy0 + oy2;
-                  if (ex < 0 || ey < 0 || ex >= SPR_CW || ey >= SPR_CH) continue;
-                  if (mark[ey * SPR_CW + ex]) continue;
-                  var ei = at(ox + ex, oy + ey);
-                  if (d[ei + 3] < 40) continue;
-                  if (isBodyPixel(d[ei], d[ei + 1], d[ei + 2], d[ei + 3])) continue;
-                  var rr = d[ei], gg = d[ei + 1], bb = d[ei + 2];
-                  if (rr < 96 && gg < 96 && bb < 96) d[ei + 3] = 0;
-                }
-              }
-            }
-          }
-        }
-      }
       var maxFoot = -1, sumX = 0, nFoot = 0;
       for (var fy = 0; fy < SPR_CH; fy++) {
         for (var fx = 0; fx < SPR_CW; fx++) {
@@ -120,45 +56,85 @@ function prepareRunSheet(id, stripBall) {
   }
   return anchors;
 }
-// ★ v3 占位符图只有一套（home 目录），主/客队共用，加载后按各队实际颜色分别换色
-function loadRunSheet(url, stripBall, rcColors) {
+// 从一张原图做出每个肤色一套画面。球衣占位符先换，再换皮肤，互不影响。
+function paintSkinVariants(id, rcColors, doKit) {
+  var skins = {};
+  var ids = (typeof SharedKits !== 'undefined' && SharedKits.SKIN_PRESETS)
+    ? Object.keys(SharedKits.SKIN_PRESETS) : ['fair'];
+  ids.forEach(function (sid) {
+    var copy = new ImageData(new Uint8ClampedArray(id.data), id.width, id.height);
+    if (typeof SharedKits !== 'undefined') {
+      if (doKit) SharedKits.recolorImageData(copy, rcColors);
+      if (SharedKits.recolorSkin) SharedKits.recolorSkin(copy, sid);
+    }
+    var c2 = document.createElement('canvas');
+    c2.width = id.width; c2.height = id.height;
+    c2.getContext('2d').putImageData(copy, 0, 0);
+    skins[sid] = c2;
+  });
+  return skins;
+}
+// ★ v3 占位符图只有一套（home 目录），主/客队共用。身体用无球图，不加载 with-ball。
+function loadRunSheet(url, rcColors) {
   var im = new Image();
+  var pack = { base: im, anchors: null, skins: {} };
   im.onload = function () {
-    if (im._sheet) return;
+    if (pack.ready) return;
     try {
       var cv = document.createElement('canvas');
       cv.width = im.naturalWidth; cv.height = im.naturalHeight;
       var cx = cv.getContext('2d');
       cx.drawImage(im, 0, 0);
       var id = cx.getImageData(0, 0, cv.width, cv.height);
-      im._anchors = prepareRunSheet(id, stripBall);
-      if (typeof SharedKits !== 'undefined') SharedKits.recolorImageData(id, rcColors);
-      cx.putImageData(id, 0, 0);
-      im._sheet = cv; // 画处理后的表，不再改 src（避免 onload 重入）
+      pack.anchors = prepareRunSheet(id);
+      pack.skins = paintSkinVariants(id, rcColors, true);
+      pack.ready = true;
     } catch (e) {}
   };
   im.src = url;
   if (im.complete && im.naturalWidth) im.onload();
-  return im;
+  return pack;
 }
 ['home', 'away'].forEach(function (kit) {
-  // ★ 占位符换色：v3 图用品红衣/青裤/黄袜占位符，加载后按球队实际颜色替换
-  //   客队复用同一套图，把占位符映射到客队颜色（TEAM_COLORS.away）
+  // 客队复用同一套图，把占位符映射到客队颜色
   var rcColors = (kit === 'away' && typeof SharedKits !== 'undefined')
     ? { home: SharedKits.TEAM_COLORS.away } : undefined;
-  var b = loadRunSheet('assets/sprites/home/run-8dir-v3-with-ball.png?v=' + SPR_V, true, rcColors);
-  var n = loadRunSheet('assets/sprites/home/run-8dir-v3-without-ball.png?v=' + SPR_V, false, rcColors);
-  spriteAtlas8[kit] = { ball: b, nobal: n };
+  spriteAtlas8[kit] = loadRunSheet('assets/sprites/home/run-8dir-v3-without-ball.png?v=' + SPR_V, rcColors);
 });
-// 旧表保留给门将（外场主/客队已统一到 v3）
+// 旧表保留给门将。球衣已经是成品色，只换肤。
 var spriteAtlas = {};
 ['home', 'away', 'gk_home', 'gk_away'].forEach(function (kit) {
   var im = new Image();
-  im.src = 'assets/sprites/' + kit + '/sprite-sheet-alpha.png?v=spr1';
+  im._skins = {};
+  im.onload = function () {
+    if (im._skinReady) return;
+    try {
+      var cv = document.createElement('canvas');
+      cv.width = im.naturalWidth; cv.height = im.naturalHeight;
+      var cx = cv.getContext('2d');
+      cx.drawImage(im, 0, 0);
+      var id = cx.getImageData(0, 0, cv.width, cv.height);
+      im._skins = paintSkinVariants(id, null, false);
+      im._skinReady = true;
+    } catch (e) {}
+  };
+  im.src = 'assets/sprites/' + kit + '/sprite-sheet-alpha.png?v=spr5';
+  if (im.complete && im.naturalWidth) im.onload();
   spriteAtlas[kit] = im;
 });
 var animClock = {}; // playerId -> {x,y,lt,ph} 上一帧渲染位置/帧时间戳/累进相位（跑/站判定用）
 
+// 八向的单位向量（世界坐标，+y 朝屏幕上方）。球只跟这个离散朝向走，不跟每帧速度抖动。
+var DIR_UNIT = [
+  { x: 0, y: 1 },
+  { x: 0.7071, y: 0.7071 },
+  { x: 1, y: 0 },
+  { x: 0.7071, y: -0.7071 },
+  { x: 0, y: -1 },
+  { x: -0.7071, y: -0.7071 },
+  { x: -1, y: 0 },
+  { x: -0.7071, y: 0.7071 }
+];
 // ★ 8 方向判定：按移动向量角度选行（0=up 顺时针，屏幕空间）
 // 场地 +y 朝屏幕上方（见 updatePadFromKeys），不是画布的 +y 向下。
 // 之前用 atan2(dy, dx) 把“往上跑”判成 down 行，人物脸朝镜头倒着跑。
@@ -213,9 +189,9 @@ function spriteFrameFor(p, t) {
   // ★ 2026-10-12 8 方向：外场球员用新 atlas（8 行方向 × 8 列帧），主/客队各按自家颜色换色；门将沿用旧表
   if (p.pos !== 'GK') {
     var a8 = spriteAtlas8[p.team] || spriteAtlas8['home'];
-    var img8 = (p.hasBall ? a8.ball : a8.nobal);
-    var sheet = img8._sheet || img8;
-    if (!img8._sheet && (!img8.complete || !img8.naturalWidth)) return null;
+    var sid = (p.skin && a8.skins && a8.skins[p.skin]) ? p.skin : 'fair';
+    var sheet = (a8.skins && a8.skins[sid]) || a8.base;
+    if (!a8.anchors && (!a8.base.complete || !a8.base.naturalWidth)) return null;
     // 方向行：平滑速度 + 扇区迟滞。低速保持上次朝向。
     var sSpd = Math.sqrt(cyc.svx * cyc.svx + cyc.svy * cyc.svy);
     if (sSpd > 1.5) {
@@ -229,23 +205,27 @@ function spriteFrameFor(p, t) {
         // 半个扇区是 22.5°。越过边界再多约 8° 才换行，贴边不会来回翻。
         if (Math.abs(delta) > 0.085) st.dirRow = dRow;
       }
-      if (sSpd > 0.4) { st.fx = cyc.svx / sSpd; st.fy = cyc.svy / sSpd; }
     }
     else if (st.dirRow == null) st.dirRow = 2; // 默认朝右
+    if (st.dirRow != null && DIR_UNIT[st.dirRow]) {
+      st.fx = DIR_UNIT[st.dirRow].x;
+      st.fy = DIR_UNIT[st.dirRow].y;
+    }
     var col = Math.floor(cyc.phase * cyc.nFrames) % cyc.nFrames;
     var frac = cyc.phase * cyc.nFrames - col;
     if (frac < 0) frac = 0;
-    // 持球仍用 with-ball 的跑姿（出脚动作），球本身已在加载时挖掉，由 drawActors 贴在脚前
+    // 身体用无球图（眼睛和嘴是实心的）。球由 drawActors 画在脚前，不再按颜色抠烤进图里的球。
     return {
-      img: sheet, anchors: img8._anchors, dirRow: st.dirRow, col: col, frac: frac,
+      img: sheet, anchors: a8.anchors, dirRow: st.dirRow, col: col, frac: frac,
       is8dir: true, hasBall: !!p.hasBall, moving: cyc.moving
     };
   }
 
   // 旧逻辑（门将沿用旧表）
   var kit = (p.pos === 'GK' ? 'gk_' : '') + p.team;
-  var img = spriteAtlas[kit];
-  if (!img || !img.complete || !img.naturalWidth) return null; // 未加载完→兜底代码帧
+  var img0 = spriteAtlas[kit];
+  if (!img0 || !img0.complete || !img0.naturalWidth) return null; // 未加载完→兜底代码帧
+  var img = (img0._skins && p.skin && img0._skins[p.skin]) || img0;
   // ★ 朝向：按移动 dx 决定（2026-10-10 修"月球漫步"——向左跑还朝右）。
   //   静止时保持上次朝向；默认主队朝右、客队朝左。
   if (cyc.dx > 0.05) st.face = 1;
@@ -375,14 +355,16 @@ function setPad(dx, dy, sprint, slow) {
 var frameCache = {};
 function framesFor(p) {
   var hairColors = ['#23232e', '#3a2a1a', '#101016', '#5a3a1a', '#6b6b7a'];
-  var key = p.team + '_' + p.pos + '_' + (p.idx % hairColors.length);
+  var skinHex = (typeof SharedKits !== 'undefined' && SharedKits.SKIN_PRESETS && SharedKits.SKIN_PRESETS[p.skin])
+    ? SharedKits.SKIN_PRESETS[p.skin].color : '#f2c89b';
+  var key = p.team + '_' + p.pos + '_' + (p.idx % hairColors.length) + '_' + (p.skin || 'fair');
   if (!frameCache[key]) {
     var shirt = p.pos === 'GK'
       ? (p.team === 'home' ? '#e8b923' : '#7a7f8a')
       : (p.team === 'home' ? '#2b5fe3' : '#d23b3b');
     var shorts = p.team === 'home' ? '#ffffff' : '#2b2b33';
     frameCache[key] = S.playerFrames({
-      shirt: shirt, shorts: shorts, hair: hairColors[p.idx % hairColors.length],
+      shirt: shirt, shorts: shorts, hair: hairColors[p.idx % hairColors.length], skin: skinHex,
     });
   }
   return frameCache[key];
@@ -1320,7 +1302,7 @@ function drawActors(t) {
     //   （之前画在各自脚下，会被更靠前的对方球员盖住，看起来像"在控制红方"）
     // ★ 序列帧绘制：跑动播 run 循环 / 静止播 idle；精灵未就绪时兜底用旧代码帧
     var spr = spriteFrameFor(p, t);
-    // 外场 8 方向的烤球已在加载时挖掉，门将旧表本身不带球，所以总是另画球。
+    // 外场图和门将旧表都不带烤进去的球，球一律另画。
     var dw = 16 * s * 1.9, dh = 24 * s * 1.9; // 2:3，与 48×72 帧同比例
     var stagger = !!p.beaten; // ★ 被晃倒：精灵倾斜踉跄，一眼看出被过了
     if (stagger) {
@@ -1336,12 +1318,8 @@ function drawActors(t) {
         var useRow = spr.dirRow, mirror8 = false;
         if (spr.dirRow === 3) { useRow = 5; mirror8 = true; }
         else if (spr.dirRow === 1) { useRow = 7; mirror8 = true; }
+        // 不叠下一帧。两帧脚的位置差一截，半透明叠上去脸和身体都会发虚，球的残片也会闪。
         blit8(spr.img, spr.anchors, useRow, spr.col, mirror8, pr, dw, dh, 1);
-        // 下一帧按相位淡入，循环在第 7 帧回到第 0 帧时不再整个人弹回去
-        if (spr.moving && spr.frac > 0.02) {
-          var ncol = (spr.col + 1) % 8;
-          blit8(spr.img, spr.anchors, useRow, ncol, mirror8, pr, dw, dh, spr.frac * 0.42);
-        }
       } else {
         var sy = spr.row * 72;
         if (spr.face < 0) {
@@ -1382,42 +1360,30 @@ function drawActors(t) {
   });
 
   // 球
-  // 带球：球贴在脚前，沿行进方向做一圈能首尾相接的小幅趟球（sin 在 0 和 1 处同值，循环不跳）。
-  // 方向用平滑速度，不用本帧位移——快照交接时位移会瞬间反向，球就会被拽回去再弹回。
+  // 带球时球贴在面朝方向前方约 0.5 米，朝向用八向离散方向，不跟本帧速度。
   // 只有球真正离脚飞行时（传球/射门/解围）才绘制轨迹残影。
-  var bbx = ballR.x, bby = ballR.y, ballOwned = false, ownerIdle = false;
+  var bbx = ballR.x, bby = ballR.y, ballOwned = false;
   for (var boi = 0; boi < state.players.length; boi++) {
     if (state.players[boi].hasBall) {
       var owner = state.players[boi];
       ballOwned = true;
       var oc = owner._cycle, orp = renderPos[owner.id] || owner;
       var ost = animClock[owner.id];
-      ownerIdle = !(oc && oc.moving);
       var fx = 1, fy = 0;
       if (ost && (ost.fx || ost.fy)) { fx = ost.fx; fy = ost.fy; }
       else if (oc && (oc.svx || oc.svy)) {
         var sl = Math.sqrt(oc.svx * oc.svx + oc.svy * oc.svy) || 1;
         fx = oc.svx / sl; fy = oc.svy / sl;
       } else if (owner.team === 'away') fx = -1;
-      var phase = oc ? oc.phase : 0;
-      // 球始终在脚前方：每步趟出去再收回，余弦在 0 和 1 处同值，循环不会弹回身后。
-      // 盘带越高，趟球幅度越小。
-      var drib = (owner.stats && owner.stats.dribbling) || 10;
-      var amp = ownerIdle ? 0 : (0.16 - Math.min(0.07, drib / 400));
-      var touch = 0.5 - 0.5 * Math.cos(phase * Math.PI * 4);
-      var along = 0.55 + amp * touch;
-      var side = ownerIdle ? 0 : 0.09 * Math.sin(phase * Math.PI * 2);
-      var tx = orp.x + fx * along + (-fy) * side;
-      var ty = orp.y + fy * along + fx * side;
-      if (!ost) {
-        bbx = tx; bby = ty;
-      } else {
-        if (ost.bx == null) { ost.bx = tx; ost.by = ty; }
-        var bk = Math.min(1, ((oc && oc.dt) || 0.016) / 0.07);
-        ost.bx += (tx - ost.bx) * bk;
-        ost.by += (ty - ost.by) * bk;
-        bbx = ost.bx; bby = ost.by;
-      }
+      // 球固定在面朝方向前方。只在跑动时向前轻轻送一点，余弦在 0 和 1 处同值，停步也不拉回脚下。
+      // 不用横向正弦，也不跟每帧速度：那些会让球左右乱跳。
+      var phase = (oc && oc.moving) ? oc.phase : 0;
+      var nudge = (oc && oc.moving) ? (0.5 - 0.5 * Math.cos(phase * Math.PI * 2)) * 0.10 : 0;
+      var along = 0.48 + nudge;
+      // 直接钉在这一帧的脚前，不做滞后跟随。人的位置按快照走，球再滞后就会甩在身后再弹回来。
+      var tx = orp.x + fx * along;
+      var ty = orp.y + fy * along;
+      bbx = tx; bby = ty;
       break;
     }
   }
