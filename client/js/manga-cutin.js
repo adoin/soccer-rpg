@@ -117,8 +117,17 @@ function mangaFlash(alpha) {
   ctx.fillRect(0, 0, W, H);
 }
 
+// 二次贝塞尔曲线点（闪身轨迹用）
+function qbez(p0, pc, p1, t) {
+  var u = 1 - t;
+  return {
+    x: u * u * p0.x + 2 * u * t * pc.x + t * t * p1.x,
+    y: u * u * p0.y + 2 * u * t * pc.y + t * t * p1.y,
+  };
+}
+
 // ---------- dribble-win 分镜时间线 ----------
-// 三幕：假动作（0-1s）→ 呆住（1-2s）→ 突破（2-3s+）
+// 四幕：假动作（0-0.9s）→ 呆住+扬长而去（0.9-1.8s）→ 闪身轨迹（1.8-2.7s）→ 突破（2.7s+）
 function drawMangaDribbleWin(a, t) {
   var id = cutActionId(a);
   if (MANGA.lastId !== id) { MANGA.lastId = id; MANGA.startT = t; }
@@ -134,64 +143,123 @@ function drawMangaDribbleWin(a, t) {
   ctx.fillStyle = 'rgba(4,6,14,0.92)';
   ctx.fillRect(0, 0, W, H);
 
-  // 震屏（面板切换时）
-  var shake = 0;
-  if ((el > 0 && el < 0.25) || (el > 1 && el < 1.25) || (el > 2 && el < 2.25)) shake = 8;
-  var shx = shake ? (Math.random() - 0.5) * shake : 0;
-  var shy = shake ? (Math.random() - 0.5) * shake : 0;
+  var ACT = 0.9; // 每幕秒数
+  var act = el < ACT ? 0 : el < ACT * 2 ? 1 : el < ACT * 3 ? 2 : 3;
+  var ae = el - act * ACT; // 本幕内经过秒数
+
+  // 震屏（每幕切换时）
+  var shake = ae < 0.22 ? 8 : 0;
   ctx.save();
-  ctx.translate(shx, shy);
+  ctx.translate(shake ? (Math.random() - 0.5) * shake : 0, shake ? (Math.random() - 0.5) * shake : 0);
 
   var cx = W / 2, pw = Math.min(620, W - 60), ph = pw * 0.72;
   var py = Math.max(40, (H - ph) / 2 - 60);
+  var gy = py + ph - 8; // 地面线
+  var p = Math.min(1, ae / 0.25); // 砸入进度
+  var sc = 0.7 + 0.3 * easeOutBack(p);
 
-  if (el < 1) {
-    // 第一幕：假动作
-    var p1 = Math.min(1, el / 0.25); // 砸入
-    var sc = 0.7 + 0.3 * easeOutBack(p1);
+  function beginPanel(rot) {
     ctx.save();
     ctx.translate(cx, py + ph / 2); ctx.scale(sc, sc); ctx.translate(-cx, -(py + ph / 2));
-    mangaPanel(cx - pw / 2, py, pw, ph, -0.02);
-    if (feintIm && feintIm.complete && feintIm.naturalWidth) {
-      var ih = ph * 0.92, iw = ih;
-      ctx.drawImage(feintIm, cx - iw / 2, py + ph - ih - 8, iw, ih);
+    mangaPanel(cx - pw / 2, py, pw, ph, rot);
+  }
+  function imOk(im) { return im && im.complete && im.naturalWidth; }
+
+  if (act === 0) {
+    // ===== 第一幕：假动作 =====
+    beginPanel(-0.02);
+    if (imOk(feintIm)) {
+      var ih = ph * 0.92;
+      ctx.drawImage(feintIm, cx - ih / 2, gy - ih, ih, ih);
     }
     ctx.restore();
     mangaSpeedLines(cx, py + ph / 2, 60, pw * 0.7, 24, '#111', 2.5);
-    if (el > 0.3) mangaSFX('假动作！', cx, py + 70, 54, -0.1, (el - 0.3) / 0.3);
-    mangaFlash(Math.max(0, 0.7 - el * 2));
-  } else if (el < 2) {
-    // 第二幕：呆住
-    var p2 = Math.min(1, (el - 1) / 0.25);
-    var sc2 = 0.7 + 0.3 * easeOutBack(p2);
-    ctx.save();
-    ctx.translate(cx, py + ph / 2); ctx.scale(sc2, sc2); ctx.translate(-cx, -(py + ph / 2));
-    mangaPanel(cx - pw / 2, py, pw, ph, 0.015);
-    if (frozenIm && frozenIm.complete && frozenIm.naturalWidth) {
-      var ih2 = ph * 0.92, iw2 = ih2;
-      // 轻微左右摇（僵直颤抖）
+    if (ae > 0.3) mangaSFX('假动作！', cx, py + 70, 54, -0.1, (ae - 0.3) / 0.3);
+    mangaFlash(Math.max(0, 0.7 - ae * 2));
+  } else if (act === 1) {
+    // ===== 第二幕：呆住（前景）+ 控球者扬长而去（背景）=====
+    beginPanel(0.015);
+    // 背景：控球者小号在右后方离去
+    if (imOk(burstIm)) {
+      var bh = ph * 0.52, bx = cx + pw * 0.22, bgy = gy - ph * 0.10;
+      ctx.globalAlpha = 0.92;
+      ctx.drawImage(burstIm, bx - bh / 2, bgy - bh, bh, bh);
+      ctx.globalAlpha = 1;
+      // 离去的横向速度线
+      ctx.save();
+      ctx.strokeStyle = '#111'; ctx.lineWidth = 3;
+      ctx.beginPath();
+      for (var li = 0; li < 4; li++) {
+        var ly = bgy - bh * 0.25 - li * bh * 0.18;
+        ctx.moveTo(bx - bh / 2 - 70, ly);
+        ctx.lineTo(bx - bh / 2 - 14, ly);
+      }
+      ctx.stroke();
+      ctx.restore();
+    }
+    // 前景：防守人呆住，僵直颤抖
+    if (imOk(frozenIm)) {
+      var ih2 = ph * 0.88;
       var tremble = Math.sin(el * 40) * 3;
-      ctx.drawImage(frozenIm, cx - iw2 / 2 + tremble, py + ph - ih2 - 8, iw2, ih2);
+      ctx.drawImage(frozenIm, cx - pw * 0.12 - ih2 / 2 + tremble, gy - ih2, ih2, ih2);
     }
     ctx.restore();
-    // 大感叹号
-    if (el > 1.3) mangaSFX('！', cx + pw * 0.32, py + 90, 88, 0.12, (el - 1.3) / 0.3);
-    mangaFlash(Math.max(0, 0.5 - (el - 1) * 2));
-  } else {
-    // 第三幕：突破
-    var p3 = Math.min(1, (el - 2) / 0.25);
-    var sc3 = 0.7 + 0.3 * easeOutBack(p3);
+    if (ae > 0.35) mangaSFX('！', cx - pw * 0.12, py + 84, 88, 0.12, (ae - 0.35) / 0.3);
+    mangaFlash(Math.max(0, 0.5 - ae * 2));
+  } else if (act === 2) {
+    // ===== 第三幕：闪身而过 — 带球轨迹 + 残影 =====
+    beginPanel(-0.01);
+    // 防守人被留在左侧
+    if (imOk(frozenIm)) {
+      var dh = ph * 0.62, dx = cx - pw * 0.30;
+      ctx.globalAlpha = 0.85;
+      ctx.drawImage(frozenIm, dx - dh / 2, gy - dh, dh, dh);
+      ctx.globalAlpha = 1;
+    }
+    // 闪身弧线：从防守人身侧绕过
+    var p0 = { x: cx - pw * 0.22, y: gy };
+    var pc = { x: cx + pw * 0.02, y: gy - ph * 0.42 };
+    var p1 = { x: cx + pw * 0.30, y: gy };
     ctx.save();
-    ctx.translate(cx, py + ph / 2); ctx.scale(sc3, sc3); ctx.translate(-cx, -(py + ph / 2));
-    mangaPanel(cx - pw / 2, py, pw, ph, -0.01);
-    if (burstIm && burstIm.complete && burstIm.naturalWidth) {
-      var ih3 = ph * 0.95, iw3 = ih3;
-      ctx.drawImage(burstIm, cx - iw3 / 2, py + ph - ih3 - 8, iw3, ih3);
+    ctx.strokeStyle = '#111'; ctx.lineWidth = 4; ctx.setLineDash([14, 9]);
+    ctx.beginPath();
+    for (var si = 0; si <= 24; si++) {
+      var spt = qbez(p0, pc, p1, si / 24);
+      if (si === 0) ctx.moveTo(spt.x, spt.y); else ctx.lineTo(spt.x, spt.y);
+    }
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.restore();
+    // 三重残影沿轨迹
+    if (imOk(burstIm)) {
+      var ghosts = [
+        { t: 0.38, alpha: 0.22, s: 0.62 },
+        { t: 0.68, alpha: 0.45, s: 0.80 },
+        { t: 1.00, alpha: 1.00, s: 0.95 },
+      ];
+      for (var gi = 0; gi < ghosts.length; gi++) {
+        var g = ghosts[gi], gp = qbez(p0, pc, p1, g.t);
+        var gh = ph * 0.80 * g.s;
+        ctx.globalAlpha = g.alpha;
+        ctx.drawImage(burstIm, gp.x - gh / 2, gp.y - gh, gh, gh);
+      }
+      ctx.globalAlpha = 1;
+    }
+    ctx.restore();
+    mangaSpeedLines(cx + pw * 0.18, py + ph * 0.45, 40, pw * 0.5, 20, '#111', 3);
+    if (ae > 0.3) mangaSFX('唰！', cx + pw * 0.08, py + 64, 60, -0.06, (ae - 0.3) / 0.3);
+    mangaFlash(Math.max(0, 0.55 - ae * 2));
+  } else {
+    // ===== 第四幕：突破 =====
+    beginPanel(-0.01);
+    if (imOk(burstIm)) {
+      var ih3 = ph * 0.95;
+      ctx.drawImage(burstIm, cx - ih3 / 2, gy - ih3, ih3, ih3);
     }
     ctx.restore();
     mangaSpeedLines(cx, py + ph / 2, 40, pw * 0.75, 36, '#111', 3.5);
-    if (el > 2.3) mangaSFX('突破！', cx, py + 70, 64, -0.06, (el - 2.3) / 0.3);
-    mangaFlash(Math.max(0, 0.6 - (el - 2) * 2));
+    if (ae > 0.3) mangaSFX('突破！', cx, py + 70, 64, -0.06, (ae - 0.3) / 0.3);
+    mangaFlash(Math.max(0, 0.6 - ae * 2));
   }
   ctx.restore(); // 震屏
 
