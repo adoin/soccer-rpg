@@ -263,12 +263,21 @@ Match.prototype.startShotFlight = function (p, keeper, o) {
     // 瞄死角：打进球门内
     x1 = goalX;
     y1 = clamp(gy + shotSide * (goalHalf - 0.5 - this.rng() * 1.4), gy - goalHalf + 0.3, gy + goalHalf - 0.3);
-  } else if (o.outcome === 'saved') {
+  } else if (o.outcome === 'saved' || o.outcome === 'catch') {
     // 朝门将方向打：落点在门将可及范围
     x1 = goalX;
     y1 = clamp(keeper.y + (this.rng() - 0.5) * 5, gy - goalHalf + 0.3, gy + goalHalf - 0.3);
+  } else if (o.outcome === 'spill') {
+    x1 = goalX - dir * 5;
+    y1 = clamp(keeper.y, gy - goalHalf, gy + goalHalf);
+  } else if (o.outcome === 'post') {
+    x1 = goalX;
+    y1 = gy + shotSide * goalHalf;
+  } else if (o.outcome === 'tip') {
+    x1 = goalX;
+    y1 = gy + shotSide * 1.1;
   } else {
-    // 偏出：飞出门框范围
+    // 偏出 / 托出底线：飞出门框范围
     x1 = goalX + dir * 2.5;
     y1 = gy + shotSide * (goalHalf + 1.4 + this.rng() * 2.6);
   }
@@ -289,7 +298,7 @@ Match.prototype.startShotFlight = function (p, keeper, o) {
     kx = clamp(x1 - dir * 0.8, 2, FIELD.W - 2);
     ky = clamp(y1, 2, FIELD.H - 2);
     var kd = Math.sqrt((kx - keeper.x) * (kx - keeper.x) + (ky - keeper.y) * (ky - keeper.y));
-    kSpd = clamp(kd / (durMs / 1000) * (o.outcome === 'saved' ? 1.02 : 0.9), 8, 24);
+    kSpd = clamp(kd / (durMs / 1000) * (o.outcome === 'saved' || o.outcome === 'catch' ? 1.02 : 0.9), 8, 24);
   }
   // 两名回追的防守球员（不含门将）：离落点最近的对方球员
   var chasers = [];
@@ -334,30 +343,71 @@ Match.prototype.finishShotFlight = function () {
   var shooter = this.byId[sf.shooterId];
   var keeper = this.byId[sf.keeperId];
   this.ball.x = sf.x1; this.ball.y = sf.y1;
-  if (sf.outcome === 'goal') {
+    var shotRoles = this.roleLooks({
+      shooter: shooter, scorer: shooter, keeper: keeper, striker: shooter,
+    });
+    var selfShot = this;
+    function shotAct(cut, text) {
+      selfShot.setAction({
+        kind: 'shoot', label: '射门', playerName: shooter.name, team: sf.team, success: cut === 'shoot-goal' || cut === 'special-goal',
+        cut: cut, text: text, roles: shotRoles, until: Date.now() + 2600,
+      });
+    }
+    if (sf.outcome === 'goal') {
     var ga = this.goal(shooter, sf.team);
     ga.cut = sf.isSpecial ? 'special-goal' : 'shoot-goal';
+    ga.roles = shotRoles;
     return;
   }
-  if (sf.outcome === 'saved') {
+  if (sf.outcome === 'saved' || sf.outcome === 'catch') {
     this.ball.ownerId = keeper.id;
     // ★ 门将扑救反弹：以射门瞬间快照判断越位位置获益 → 吹越位
     var osReb = Offside.judgeRebound(this, sf.team, sf.snap);
     if (osReb.type === 'offside') return this.whistleOffside(osReb, shooter);
-    this.setAction({
-      kind: 'shoot', label: '射门', playerName: shooter.name, team: sf.team, success: false,
-      cut: sf.isSpecial ? 'special-save' : 'shoot-save',
-      text: shooter.name + ' 的' + sf.label + '被门将 ' + keeper.name + ' 扑出！',
-      until: Date.now() + 2600,
-    });
+    if (sf.outcome === 'catch') {
+      shotAct('gk-catch', keeper.name + ' 把 ' + shooter.name + ' 的' + sf.label + '稳稳没收！');
+    } else {
+      shotAct(sf.isSpecial ? 'special-save' : 'shoot-save',
+        shooter.name + ' 的' + sf.label + '被门将 ' + keeper.name + ' 扑出！');
+    }
+  } else if (sf.outcome === 'spill') {
+    var spillIn = sf.team === 'home' ? -1 : 1;
+    this.ball.ownerId = null;
+    this.ball.x = (sf.team === 'home' ? FIELD.W : 0) + spillIn * 6;
+    this.ball.y = sf.y1;
+    this.ball.vx = spillIn * 4.5;
+    this.ball.vy = (this.rng() - 0.5) * 3;
+    this.ball.vz = 0.4;
+    this.ball.z = 0.3;
+    shotAct('gk-spill', keeper.name + ' 脱手了，' + shooter.name + ' 的射门弹在身前！');
+  } else if (sf.outcome === 'parry' || sf.outcome === 'tip') {
+    this.ball.lastTouchTeam = keeper.team;
+    this.ball.lastTouchId = keeper.id;
+    this.ball.x = sf.team === 'home' ? FIELD.W + 1 : -1;
+    this.ball.y = sf.y1 < FIELD.H / 2 ? 8 : FIELD.H - 8;
+    this.whistleCorner(sf.team);
+    shotAct(sf.outcome === 'tip' ? 'gk-tip' : 'gk-parry',
+      sf.outcome === 'tip'
+        ? keeper.name + ' 把球托出横梁，球出了底线！'
+        : keeper.name + ' 把球托出底线！');
+    return;
+  } else if (sf.outcome === 'post') {
+    var postIn = sf.team === 'home' ? -1 : 1;
+    this.ball.ownerId = null;
+    this.ball.x = (sf.team === 'home' ? FIELD.W : 0) + postIn * 1.2;
+    this.ball.y = clamp(sf.y1, 2, FIELD.H - 2);
+    this.ball.vx = postIn * 7;
+    this.ball.vy = (sf.y1 - FIELD.H / 2) * 0.35;
+    this.ball.vz = 0;
+    this.ball.z = 0.2;
+    shotAct('hit-post', shooter.name + ' 的' + sf.label + '击中了门柱！');
+  } else if (sf.outcome === 'wide') {
+    shotAct('shot-wide', shooter.name + ' 的' + sf.label + '偏出了球门……');
+    this.enterStoppage('whistle', 1600, keeper.id);
+    return;
   } else {
-    // 偏出 → 门球
-    this.setAction({
-      kind: 'shoot', label: '射门', playerName: shooter.name, team: sf.team, success: false,
-      cut: 'shoot-miss',
-      text: shooter.name + ' 的' + sf.label + '偏出了球门……',
-      until: Date.now() + 2600,
-    });
+    // 偏出 → 门球（旧结果键，测试仍认 shoot-miss）
+    shotAct('shoot-miss', shooter.name + ' 的' + sf.label + '偏出了球门……');
     this.enterStoppage('whistle', 1600, keeper.id);
     return;
   }
@@ -373,8 +423,7 @@ Match.prototype.finishShotFlight = function () {
 //     - 防守队员在线路上 + 球在其可及高度内 → 按能力掷骰 断/弹开/扑空；
 //     - 超高球中段在高空无人能及，初段/末段才能断；
 //   落地时按落点 1.6m 内最近球员归属（争抢看 anticipation+firstTouch），
-//   无人则成自由球。完成/拦截都不播全屏演出 —— 断球是开放比赛的一部分，
-//   场上看得见，不需要遮罩。
+//   无人则成自由球。常规传到人手里不播全屏；干净断球才播拦截切入。
 Match.prototype.startPassFlight = function (p, o) {
   var peak = (Pass.HEIGHTS[o.height] || Pass.HEIGHTS.mid).peak;
   var dx = o.x1 - p.x, dy = o.y1 - p.y;
@@ -442,9 +491,11 @@ Match.prototype.finishPassFlight = function () {
   this.lastDecisionPos = c ? { x: c.x, y: c.y } : { x: this.ball.x, y: this.ball.y };
 };
 
-// ★ 干净拦截：防守队员得球，比赛继续。不播全屏演出 ——
-//   断球是开放比赛的一部分，场上动作本身就是演出；只留一条侧栏文字。
+// ★ 干净拦截：防守队员得球，比赛继续。
+//   封堵射门播 shot-blocked，断传球播 intercept。弹开不播全屏。
 Match.prototype.interceptClean = function (def, kind) {
+  var shot = this.shotFlight;
+  var pass = this.passFlight;
   this.passFlight = null;
   this.shotFlight = null;
   this.ball.ownerId = def.id;
@@ -453,10 +504,26 @@ Match.prototype.interceptClean = function (def, kind) {
   this.phase = 'play';
   this.nextDecisionAt = this.now + DECISION_COOLDOWN;
   var verb = kind === 'shot' ? '挡下了这脚射门' : '断下了这脚传球';
+  var cut = null;
+  var roles = null;
+  if (kind === 'shot' && def.pos !== 'GK') {
+    cut = 'shot-blocked';
+    roles = this.roleLooks({
+      shooter: shot ? this.byId[shot.shooterId] : null,
+      blocker: def,
+    });
+  } else if (kind !== 'shot') {
+    cut = 'intercept';
+    var passer = pass ? this.byId[pass.passerId] : null;
+    roles = this.roleLooks({
+      passer: passer || this.nearestOpponent(def).player,
+      interceptor: def,
+    });
+  }
   this.setAction({
-    kind: 'intercept', label: '拦截', playerName: def.name, team: def.team,
-    success: true, cut: null, text: def.name + ' ' + verb + '！',
-    until: Date.now() + 1800,
+    kind: 'intercept', label: kind === 'shot' ? '封堵' : '拦截', playerName: def.name, team: def.team,
+    success: true, cut: cut, roles: roles, text: def.name + ' ' + verb + '！',
+    until: Date.now() + (cut ? CUT_OVERLAY_MS : 1800),
   });
   var c = this.carrier();
   this.lastDecisionPos = c ? { x: c.x, y: c.y } : { x: this.ball.x, y: this.ball.y };
@@ -689,6 +756,20 @@ Match.prototype.opponentsOf = function (team) {
   return this.players.filter(function (p) { return p.team !== team && !p.sentOff; });
 };
 
+Match.prototype.lookOf = function (p) {
+  if (!p) return null;
+  return {
+    id: p.id, name: p.name, team: p.team, pos: p.pos,
+    skin: p.skin || 'fair', hair: p.hair || 'black', kit: p.kit || null,
+  };
+};
+
+Match.prototype.roleLooks = function (map) {
+  var out = {};
+  for (var k in map) if (map[k]) out[k] = this.lookOf(map[k]);
+  return out;
+};
+
 Match.prototype.nearestOpponent = function (p) {
   var best = null, bd = 1e9, self = this;
   this.players.forEach(function (q) {
@@ -714,6 +795,46 @@ Match.prototype.isPressured = function (carrier, near) {
   return closing > 2;
 };
 
+// 自由球被拿走时，按情形补一张切入。已有字幕还在显示时不抢。
+Match.prototype.looseBallCut = function (winner, z0) {
+  if (this.lastAction && this.lastAction.until > Date.now()) return;
+  var rival = null, bd = 1e9;
+  this.players.forEach(function (q) {
+    if (q.team === winner.team || q.sentOff) return;
+    var d = dist(q, winner);
+    if (d < bd) { bd = d; rival = q; }
+  });
+  var cut = null, roles = null, label = '', text = '';
+  if (winner.pos === 'GK') {
+    if ((winner._gkMode === 'sweep' || winner._gkMode === 'onevone') && rival && bd < 4.5) {
+      cut = 'gk-rush'; label = '出击';
+      text = winner.name + ' 出击把球没收在脚下！';
+      roles = this.roleLooks({ striker: rival, keeper: winner, shooter: rival });
+    } else if (winner._gkCross === 'claim') {
+      cut = 'gk-claim'; label = '摘球';
+      text = winner.name + ' 把传中球摘了下来！';
+      roles = this.roleLooks({ striker: rival, keeper: winner });
+    }
+  } else if (z0 >= 1.45 && rival && bd < 3.2) {
+    cut = 'header-duel'; label = '争顶';
+    text = winner.name + ' 在空中顶赢了 ' + rival.name + '！';
+    roles = this.roleLooks({ winner: winner, loser: rival });
+  } else if (winner.pos === 'DF') {
+    var ownThird = winner.team === 'home' ? winner.x < 32 : winner.x > FIELD.W - 32;
+    if (ownThird && rival && bd < 8) {
+      cut = 'clearance'; label = '解围';
+      text = winner.name + ' 把球从身边解围出去！';
+      roles = this.roleLooks({ clearer: winner, chaser: rival });
+    }
+  }
+  if (!cut) return;
+  this.setAction({
+    kind: cut, label: label, playerName: winner.name, team: winner.team,
+    success: true, cut: cut, roles: roles, text: text,
+    until: Date.now() + CUT_OVERLAY_MS,
+  });
+};
+
 // 门将一步：选位模块给出目标、速度和站定/张开。speedMul 为 0 时是站定，不能当成“没填”。
 Match.prototype.keeperStep = function (p, dt) {
   var kt = Behavior.keeperTarget(this, p);
@@ -722,6 +843,8 @@ Match.prototype.keeperStep = function (p, dt) {
   p.gkSet = !!kt.set;
   p.gkCrouch = !!kt.crouch;
   p.gkSpread = !!kt.spread;
+  p._gkMode = kt.mode || null;
+  p._gkCross = kt.crossAct || null;
 };
 
 Match.prototype.moveToward = function (p, tx, ty, speed, dt) {
@@ -912,6 +1035,7 @@ Match.prototype.simulate = function (dt) {
       self.updateEnergy(p, dt);
     });
     // ★ 拾取：高度在脚/胸/头范围内才够得着；贴身不同队比预判+第一脚
+    var zClaim = this.ball.z || 0;
     var bestP = Receive.claim(this);
     if (bestP) {
       this.ball.ownerId = bestP.id;
@@ -919,6 +1043,7 @@ Match.prototype.simulate = function (dt) {
       this.ball.receive = null;
       this.ball.lastTouchTeam = bestP.team; this.ball.lastTouchId = bestP.id;
       this.ball.restartExempt = null;
+      this.looseBallCut(bestP, zClaim);
     }
     return;
   }
@@ -1282,6 +1407,7 @@ Match.prototype.resolveAction = function (p, commandId, rate, params) {
   var dir = p.team === 'home' ? 1 : -1;
   var text = '';
   var cut = null; // ★ 结算演出图键（客户端全屏像素风演出），无则用旧版侧栏面板
+  var roles = null;
 
   switch (commandId) {
     case 'dribble': {
@@ -1292,7 +1418,10 @@ Match.prototype.resolveAction = function (p, commandId, rate, params) {
         // ★ 全屏演出期间引擎不停表：踉跄时长盖住演出，否则演完用户就看不到了
         def.beatenUntil = this.now + 2000 + CUT_OVERLAY_MS;
         text = p.name + ' 用突破晃过了 ' + def.name + '！';
-        cut = 'dribble-win';
+        cut = def.pos === 'GK' ? 'round-gk' : 'dribble-win';
+        roles = def.pos === 'GK'
+          ? this.roleLooks({ striker: p, keeper: def, attacker: p, defender: def })
+          : this.roleLooks({ attacker: p, defender: def });
       } else {
         // ★ 抢断对决：干净抢断 / 犯规 / 被过掉（基于数值随机）；上抢的防守方消耗体能
         var t = Foul.judgeTackle(this, def, p, {
@@ -1304,12 +1433,16 @@ Match.prototype.resolveAction = function (p, commandId, rate, params) {
         if (t.outcome === 'clean') {
           this.ball.ownerId = def.id;
           text = p.name + ' 的突破被 ' + def.name + ' 干净地断下！';
-          cut = 'dribble-lose';
+          cut = 'tackle-win';
+          roles = this.roleLooks({ tackler: def, dribbler: p, attacker: p, defender: def });
         } else if (t.outcome === 'beaten') {
           def.beatenUntil = this.now + 2000 + CUT_OVERLAY_MS; // ★ 盖住全屏演出
           p.x = clamp(def.x + 7 * dir, 2, FIELD.W - 2);
           text = p.name + ' 强行抹过了 ' + def.name + '！';
-          cut = 'dribble-win';
+          cut = def.pos === 'GK' ? 'round-gk' : 'dribble-win';
+          roles = def.pos === 'GK'
+            ? this.roleLooks({ striker: p, keeper: def, attacker: p, defender: def })
+            : this.roleLooks({ attacker: p, defender: def });
         } else {
           return this.applyFoulResult(t.foul);
         }
@@ -1397,7 +1530,9 @@ Match.prototype.resolveAction = function (p, commandId, rate, params) {
       if (sh.outcome === 'foul') return this.lastAction;
       text = applied.text;
       success = applied.success;
-      if (sh.outcome === 'poke') cut = 'dribble-lose';
+      roles = this.roleLooks({ holder: p, presser: presser, attacker: p, defender: presser, tackler: presser, dribbler: p });
+      if (sh.outcome === 'poke') cut = 'tackle-win';
+      else if (sh.outcome === 'hold') cut = 'shield-win';
       break;
     }
     case 'shoot':
@@ -1418,7 +1553,18 @@ Match.prototype.resolveAction = function (p, commandId, rate, params) {
       if (success) outcome = 'goal';
       else {
         var stop = keeper ? GK.shotStop(this, keeper, p) : { pSave: 0.55 };
-        outcome = this.rng() < stop.pSave ? 'saved' : 'miss';
+        var shotRoll = this.rng();
+        if (shotRoll < stop.pSave) {
+          var uSave = stop.pSave > 0 ? shotRoll / stop.pSave : 0;
+          if (uSave < 0.34) outcome = 'catch';
+          else if (uSave < 0.56) outcome = 'parry';
+          else if (uSave < 0.78) outcome = 'tip';
+          else outcome = 'spill';
+        } else {
+          var span = 1 - stop.pSave;
+          var uMiss = span > 0 ? (shotRoll - stop.pSave) / span : 1;
+          outcome = uMiss < 0.18 ? 'post' : 'wide';
+        }
       }
       this.startShotFlight(p, keeper, {
         isSpecial: isSpecial, label: label, outcome: outcome,
@@ -1433,6 +1579,7 @@ Match.prototype.resolveAction = function (p, commandId, rate, params) {
         p.x = clamp(p.x + 3 * dir, 2, FIELD.W - 2);
         text = p.name + ' 的假动作晃晕了 ' + d2.name + '！';
         cut = 'feint-win';
+        roles = this.roleLooks({ attacker: p, defender: d2 });
       } else {
         // ★ 假动作被看穿：防守方上抢，同样走抢断对决；上抢消耗体能
         var t2 = Foul.judgeTackle(this, d2, p, {
@@ -1444,11 +1591,15 @@ Match.prototype.resolveAction = function (p, commandId, rate, params) {
         if (t2.outcome === 'clean') {
           this.ball.ownerId = d2.id;
           text = p.name + ' 的假动作被 ' + d2.name + ' 看穿并断下！';
-          cut = 'dribble-lose';
+          cut = 'tackle-win';
+          roles = this.roleLooks({ tackler: d2, dribbler: p });
         } else if (t2.outcome === 'beaten') {
           d2.beatenUntil = this.now + 1500 + CUT_OVERLAY_MS; // ★ 盖住全屏演出
           text = p.name + ' 的假动作没晃开 ' + d2.name + '，但顺势抹了过去！';
-          cut = 'dribble-win';
+          cut = d2.pos === 'GK' ? 'round-gk' : 'dribble-win';
+          roles = d2.pos === 'GK'
+            ? this.roleLooks({ striker: p, keeper: d2, attacker: p, defender: d2 })
+            : this.roleLooks({ attacker: p, defender: d2 });
         } else {
           return this.applyFoulResult(t2.foul);
         }
@@ -1474,12 +1625,16 @@ Match.prototype.resolveAction = function (p, commandId, rate, params) {
       if (t.outcome === 'clean') {
         this.ball.ownerId = p.id;
         text = p.name + ' 干净地从 ' + carrier.name + ' 脚下断下皮球！';
-        cut = 'dribble-lose'; // 复用拼抢对决演出图（防守方获胜视角）
+        cut = 'tackle-win';
+        roles = this.roleLooks({ tackler: p, dribbler: carrier, attacker: carrier, defender: p });
         success = true;
       } else if (t.outcome === 'beaten') {
         p.beatenUntil = this.now + 2000 + CUT_OVERLAY_MS; // ★ 盖住全屏演出
         text = p.name + ' 上抢落空，被 ' + carrier.name + ' 闪了过去！';
-        cut = 'dribble-win'; // 复用拼抢对决演出图（进攻方获胜视角）
+        cut = p.pos === 'GK' ? 'round-gk' : 'dribble-win';
+        roles = p.pos === 'GK'
+          ? this.roleLooks({ striker: carrier, keeper: p, attacker: carrier, defender: p })
+          : this.roleLooks({ attacker: carrier, defender: p });
         success = false;
       } else {
         return this.applyFoulResult(t.foul);
@@ -1502,6 +1657,7 @@ Match.prototype.resolveAction = function (p, commandId, rate, params) {
     success: success,
     text: text,
     cut: cut,
+    roles: roles,
     until: Date.now() + CUT_OVERLAY_MS,
   });
   return this.lastAction;
@@ -2012,6 +2168,7 @@ Match.prototype.serialize = function () {
         stamina: Math.round(p.stamina), maxStamina: p.maxStamina,
         special: p.special ? { name: p.special.name } : null,
         skin: p.skin || 'fair',
+        hair: p.hair || 'black',
         kit: p.kit || null,
         hasBall: self.ball.ownerId === p.id,
         frozen: self.now < p.frozenUntil,

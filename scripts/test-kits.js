@@ -52,7 +52,9 @@ var j1 = px(cell, 16, 22), j2 = px(cell, 18, 22);
 eq('竖条两种颜色都出现', j1[0] !== j2[0] || j1[2] !== j2[2]);
 var shorts = px(cell, 20, 40);
 eq('短裤不再是青色，变成蓝色', shorts[2] > shorts[0] && shorts[2] > shorts[1] && shorts[1] < 200);
-eq('球袜跟着主色', px(cell, 22, 48)[2] > px(cell, 22, 48)[0]);
+eq('没写球袜时跟着短裤', spec.socks === spec.shorts && spec.shorts === kits.TEAM_COLORS.home.shorts);
+eq('客队默认球袜等于短裤', kits.TEAM_COLORS.away.socks === kits.TEAM_COLORS.away.shorts);
+eq('球袜跟着短裤', px(cell, 22, 48)[2] > px(cell, 22, 48)[0]);
 var shoe = px(cell, 22, 58);
 eq('鞋是金色而不是黑或皮肤', shoe[0] > 160 && shoe[1] > 120 && shoe[2] < 100);
 eq('眼睛换色后仍是黑的', px(cell, 21, 12)[0] < 5 && px(cell, 21, 12)[1] < 5);
@@ -80,9 +82,61 @@ eq('深肤没有把鞋涂掉', px(cell, 22, 58)[0] > 160);
   eq(pat + ' 同时有主色和副色', seenDark && seenLight);
 });
 
+// 漫画色键：换色之后画面上不能再留下占位色。鞋和头发两边各换各的。
+(function () {
+  var keys = [
+    [255, 0, 255], [0, 255, 255], [255, 136, 0], [136, 0, 255],
+    [255, 0, 136], [0, 0, 255], [240, 200, 160], [255, 255, 0], [0, 255, 136],
+  ];
+  var shot = img(72, 40, function (set) {
+    var x, y;
+    for (y = 0; y < 40; y++) for (x = 0; x < 72; x++) set(x, y, 40, 140, 40);
+    set(1, 36, 250, 250, 250);
+    set(3, 36, 0, 0, 0);
+    for (y = 8; y < 20; y++) for (x = 4; x < 18; x++) set(x, y, 255, 0, 255);
+    for (y = 20; y < 26; y++) for (x = 6; x < 16; x++) set(x, y, 0, 255, 255);
+    for (y = 30; y < 35; y++) for (x = 8; x < 13; x++) set(x, y, 255, 0, 136);
+    for (y = 2; y < 6; y++) for (x = 6; x < 14; x++) set(x, y, 0, 0, 255);
+    set(16, 4, 240, 200, 160);
+    set(18, 12, 248, 6, 250);
+    set(20, 22, 255, 255, 0);
+    for (y = 8; y < 20; y++) for (x = 48; x < 64; x++) set(x, y, 255, 136, 0);
+    for (y = 20; y < 26; y++) for (x = 50; x < 62; x++) set(x, y, 136, 0, 255);
+    for (y = 30; y < 35; y++) for (x = 52; x < 58; x++) set(x, y, 255, 0, 136);
+    for (y = 2; y < 6; y++) for (x = 50; x < 60; x++) set(x, y, 0, 0, 255);
+    set(64, 4, 240, 200, 160);
+    set(46, 22, 0, 255, 136);
+  });
+  kits.recolorManga(shot, {
+    team: 'home', skin: 'deep', hair: 'blonde', kit: { shoes: '#2030c0' },
+  }, {
+    team: 'away', skin: 'tan', hair: 'auburn', kit: { shoes: '#c0a020' },
+  });
+  var leftKey = 0, x, y;
+  for (y = 0; y < 40; y++) for (x = 0; x < 72; x++) {
+    var p = px(shot, x, y);
+    for (var ki = 0; ki < keys.length; ki++) {
+      if (p[0] === keys[ki][0] && p[1] === keys[ki][1] && p[2] === keys[ki][2]) leftKey++;
+    }
+  }
+  eq('换色后没有剩余色键', leftKey === 0);
+  var g = px(shot, 0, 0), chalk = px(shot, 1, 36), ink = px(shot, 3, 36);
+  eq('草地没有被换色', g[0] === 40 && g[1] === 140 && g[2] === 40);
+  eq('白线没有被换色', chalk[0] === 250 && chalk[1] === 250 && chalk[2] === 250);
+  eq('墨线没有被换色', ink[0] === 0 && ink[1] === 0 && ink[2] === 0);
+  var bootA = px(shot, 10, 32), bootB = px(shot, 54, 32);
+  var hairA = px(shot, 8, 3), hairB = px(shot, 54, 3);
+  var skinA = px(shot, 16, 4), skinB = px(shot, 64, 4);
+  eq('两边球鞋颜色不同', bootA[0] !== bootB[0] || bootA[1] !== bootB[1] || bootA[2] !== bootB[2]);
+  eq('两边头发颜色不同', hairA[0] !== hairB[0] || hairA[1] !== hairB[1]);
+  eq('两边肤色不同', skinA[0] !== skinB[0] || skinA[1] !== skinB[1]);
+  eq('近品红也被换掉', px(shot, 18, 12)[0] !== 248 || px(shot, 18, 12)[2] !== 250);
+})();
+
 var made = teams.makeTeams();
 eq('10 号是斜带金鞋', made.home[9] && made.home.filter(function (p) { return p.num === 10; })[0].kit.pattern === 'sash');
 eq('没有单独配置的球员 kit 为空', made.home.filter(function (p) { return p.num === 3; })[0].kit === null);
+eq('球员带发型预设', made.home.filter(function (p) { return p.num === 10; })[0].hair === 'blonde');
 
 if (failed) {
   console.log('\n' + failed + ' FAILED');

@@ -108,6 +108,7 @@
           special: p.special ? { name: p.special.name } : null,
           // 肤色 id，对应 shared/kits.js 的 SKIN_PRESETS。跑动图按这个换全部帧。
           skin: ({ 10: 'deep', 9: 'tan', 7: 'east', 11: 'fair', 2: 'deep', 4: 'tan', 6: 'east' })[p.num] || ['fair', 'east', 'tan', 'deep'][i % 4],
+          hair: ({ 1: 'gray', 2: 'black', 3: 'brown', 4: 'auburn', 5: 'blonde', 6: 'black', 7: 'brown', 8: 'gray', 9: 'black', 10: 'blonde', 11: 'auburn' })[p.num] || 'black',
           // 没写的球衣字段用球队默认（shared/kits.js 的 TEAM_COLORS）。null 表示整套跟球队走。
           kit: ({
             10: { pattern: 'sash', primary: '#f2f2f2', secondary: '#1d3f8f', shoes: '#e6c34a' },

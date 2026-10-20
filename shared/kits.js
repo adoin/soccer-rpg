@@ -5,9 +5,11 @@
 // 跑动图只有一套占位符，运行时换成球队或单个球员的颜色和球衣图案。
 //
 // 占位符规范（新图生成时必须遵守）：
-//   #FF00FF (品红) = 球衣 | #00FFFF (青) = 球裤 | #FFFF00 (黄) = 球袜
-//   #FF0088 (玫红) = 球鞋。现有跑动图的鞋是深色，加载时会自动标成这个颜色。
-//   #FF8800 / #8800FF / #00FF88 仍是客队球衣/球裤/球袜，给结算图用。
+//   #FF00FF (品红) = A 方球衣 | #00FFFF (青) = A 方短裤+球袜
+//   #FF8800 (橙) = B 方球衣 | #8800FF (紫) = B 方短裤+球袜
+//   #FF0088 (玫红) = 双方球鞋 | #0000FF (纯蓝) = 双方头发（只在漫画分镜里用，不进跑动图）
+//   皮肤平涂 #F0C8A0。#FFFF00 / #00FF88 是旧跑动图的球袜，仍能换色。
+//   球袜颜色跟着短裤。草地、白线、球、手套、门框不参与换色。
 //
 // 怎么配一套球衣（改 TEAM_COLORS，或给球员对象加 kit）：
 //   pattern: 'solid' | 'stripes' | 'hoops' | 'sash' | 'halves'
@@ -39,7 +41,7 @@
       secondary: '#f4f4f4',
       jersey: '#2a5db0',
       shorts: '#1e3f7a',
-      socks: '#2a5db0',
+      socks: '#1e3f7a',
       shoes: '#1a1a1a',
     },
     away: {
@@ -49,7 +51,7 @@
       secondary: '#f4f4f4',
       jersey: '#d03030',
       shorts: '#8f1f1f',
-      socks: '#d03030',
+      socks: '#8f1f1f',
       shoes: '#f4f4f4',
     },
   };
@@ -186,6 +188,8 @@
       return kit.primary || kit.jersey || '#2a5db0';
     }
     if (part === 'shoes') return kit.shoes || '#222222';
+    // 球袜占位符跟着短裤，漫画里短裤和球袜是同一个色键。
+    if (part === 'socks') return kit.shorts || kit.socks;
     return kit[part];
   }
 
@@ -263,14 +267,17 @@
     var primary = src.primary || src.jersey || base.primary || base.jersey || '#2a5db0';
     var pattern = src.pattern || base.pattern || 'solid';
     if (PATTERNS.indexOf(pattern) < 0) pattern = 'solid';
+    var shorts = src.shorts || base.shorts || '#ffffff';
+    var socks = (src.socks != null && src.socks !== '') ? src.socks
+      : (src.shorts ? shorts : (base.socks || shorts));
     return {
       name: src.name || base.name || '',
       pattern: pattern,
       primary: primary,
       secondary: src.secondary || base.secondary || '#f4f4f4',
       jersey: primary,
-      shorts: src.shorts || base.shorts || '#ffffff',
-      socks: src.socks || base.socks || primary,
+      shorts: shorts,
+      socks: socks,
       shoes: src.shoes || base.shoes || '#222222',
     };
   }
@@ -301,6 +308,209 @@
     return true;
   }
 
+  // 头发预设。漫画分镜的头发是纯蓝 #0000FF，按球员换成这里的颜色。
+  // 不放进 PLACEHOLDERS：跑动图的容差会把别的蓝色吃掉，而且双方头发不是同一个队。
+  var HAIR_PRESETS = {
+    black:  { name: '黑发', color: '#1a1a1a' },
+    brown:  { name: '棕发', color: '#5a3a1a' },
+    blonde: { name: '金发', color: '#d8c07a' },
+    auburn: { name: '赤褐', color: '#8a3a22' },
+    gray:   { name: '灰发', color: '#8a8a92' },
+  };
+  var HAIR_KEY = [0, 0, 255];
+
+  function hexRgb(hex) {
+    return [parseInt(hex.slice(1, 3), 16), parseInt(hex.slice(3, 5), 16), parseInt(hex.slice(5, 7), 16)];
+  }
+  function pixelHsv(r, g, b) {
+    var max = r > g ? r : g; if (b > max) max = b;
+    var min = r < g ? r : g; if (b < min) min = b;
+    var d = max - min;
+    var s = max === 0 ? 0 : d / max;
+    var h = 0;
+    if (d !== 0) {
+      if (max === r) h = ((g - b) / d) % 6;
+      else if (max === g) h = (b - r) / d + 2;
+      else h = (r - g) / d + 4;
+      h *= 60;
+      if (h < 0) h += 360;
+    }
+    return { h: h, s: s, v: max };
+  }
+
+  // 漫画色键分类。JPG 会把品红 #FF00FF 压成低 G 的粉，和球鞋 #FF0088 叠在一起，
+  // 那种像素先标成 ambiguous，再按连通块大小分开（大块是球衣，孤立小块是鞋）。
+  // 返回 null 表示草地、白线、球、手套、门框、墨线，不换色。
+  function mangaPixelClass(r, g, b, a) {
+    if (a != null && a < 128) return null;
+    // 已经吸附过的精确色键直接认，避免大块球鞋在「有品红」的图里被并回球衣。
+    var bootD = Math.abs(r - 255) + Math.abs(g) + Math.abs(b - 136);
+    if (bootD <= 18 && g < 30 && b > r * 0.4 && b < r * 0.7) return 'boot';
+    var c = pixelHsv(r, g, b);
+    var h = c.h, s = c.s, v = c.v;
+    if (v < 34 && s < 0.55) return null;
+    if (s < 0.12 && v > 200) return null;
+    if (h >= 70 && h <= 160 && g > r + 8 && g + 8 >= b && b < g * 0.48 && s > 0.22 && g > 55) return null;
+    if ((h < 16 || h > 350) && s > 0.5 && b < 75 && g < 110 && v > 90) return null;
+    if (s >= 0.14 && s <= 0.58 && r > 165 && g > 120 && b > 75 && r > g && g + 8 > b && (r - b) > 22 && h < 55) return 'skin';
+    if (h >= 12 && h <= 44 && s > 0.62 && v > 85 && g > 40 && b < g * 0.55 && r > g) return 'defJersey';
+    if (h >= 282 && h <= 318 && s > 0.4 && v >= 40 && g < v * 0.4 && Math.abs(r - b) <= Math.max(28, v * 0.32) && b > r * 0.72) return 'atkJersey';
+    // 品红被 JPG 压成低到中等 G 的粉，和球鞋 #FF0088 叠在同一色相。先标成待定，再按块拆开。
+    if ((h >= 305 || h <= 12) && s > 0.45 && v > 70 && r > 120 && b > 40 && g < 110 && (b / (r || 1)) > 0.32 && (b / (r || 1)) < 0.85) return 'ambiguous';
+    if (h >= 250 && h <= 292 && s > 0.35 && v > 48 && b > r && r > 32 && g < b * 0.72) return 'defShorts';
+    if (h >= 48 && h <= 72 && s > 0.7 && v > 140 && b < 80 && r > 160 && g > 160) return 'atkShorts';
+    if (h >= 140 && h <= 162 && s > 0.55 && v > 120 && r < 40 && g > 180 && b > 90 && b < g * 0.8) return 'defShorts';
+    if (h >= 195 && h <= 255 && b > 70 && r < 95 && b > g + 32 && g < b * 0.7 && r < b * 0.6) return 'hair';
+    if (h >= 165 && h <= 220 && r < 100 && g > 70 && b > 90 && g > b * 0.62) return 'atkShorts';
+    return null;
+  }
+
+  function jerseyHexOf(look, kit) {
+    if (look && look.pos === 'GK') return look.team === 'home' ? '#e8b923' : '#7a7f8a';
+    return kit.primary;
+  }
+
+  // 漫画复合图换色。atkLook / defLook: { team, skin, hair, kit, pos }
+  // A 色键（品红/青）给 atkLook，B 色键（橙/紫）给 defLook。
+  // 鞋、头发、皮肤两边共用色键，按离哪一件球衣更近归到那个人。
+  function recolorManga(imgData, atkLook, defLook) {
+    atkLook = atkLook || {};
+    defLook = defLook || {};
+    var atkKit = resolveKit(atkLook.team || 'home', atkLook.kit);
+    var defKit = resolveKit(defLook.team || 'away', defLook.kit);
+    var atkSkin = hexRgb((SKIN_PRESETS[atkLook.skin] || SKIN_PRESETS.fair).color);
+    var defSkin = hexRgb((SKIN_PRESETS[defLook.skin] || SKIN_PRESETS.fair).color);
+    var atkHair = hexRgb((HAIR_PRESETS[atkLook.hair] || HAIR_PRESETS.black).color);
+    var defHair = hexRgb((HAIR_PRESETS[defLook.hair] || HAIR_PRESETS.black).color);
+    var paintOf = {
+      atk: {
+        atkJersey: hexRgb(jerseyHexOf(atkLook, atkKit)),
+        atkShorts: hexRgb(atkKit.shorts),
+        boot: hexRgb(atkKit.shoes || '#222222'),
+        hair: atkHair,
+        skin: atkSkin,
+      },
+      def: {
+        defJersey: hexRgb(jerseyHexOf(defLook, defKit)),
+        defShorts: hexRgb(defKit.shorts),
+        boot: hexRgb(defKit.shoes || '#222222'),
+        hair: defHair,
+        skin: defSkin,
+      },
+    };
+    var d = imgData.data, w = imgData.width, h = imgData.height, n = w * h;
+    var cls = new Array(n);
+    for (var p = 0; p < n; p++) {
+      var i = p * 4;
+      cls[p] = mangaPixelClass(d[i], d[i + 1], d[i + 2], d[i + 3]);
+    }
+    // 待定的粉：有成片真品红时，小块孤立的是鞋；否则最大块是球衣，
+    // G 通道接近它的也是球衣（第二名进攻球员），其余是鞋。
+    var trueMag = 0;
+    for (var ti = 0; ti < n; ti++) if (cls[ti] === 'atkJersey') trueMag++;
+    var seen = new Uint8Array(n);
+    var q = [];
+    var comps = [];
+    for (var s = 0; s < n; s++) {
+      if (cls[s] !== 'ambiguous' || seen[s]) continue;
+      q.length = 0;
+      q.push(s);
+      seen[s] = 1;
+      var comp = [s];
+      var sumG = d[s * 4 + 1];
+      for (var qi = 0; qi < q.length; qi++) {
+        var id = q[qi];
+        var x = id % w, y = (id / w) | 0;
+        for (var dy = -4; dy <= 4; dy++) {
+          for (var dx = -4; dx <= 4; dx++) {
+            if (!dx && !dy) continue;
+            var nx = x + dx, ny = y + dy;
+            if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue;
+            var nid = ny * w + nx;
+            if (cls[nid] !== 'ambiguous' || seen[nid]) continue;
+            seen[nid] = 1;
+            q.push(nid);
+            comp.push(nid);
+            sumG += d[nid * 4 + 1];
+          }
+        }
+      }
+      var minY = h, maxY = 0;
+      for (var yi = 0; yi < comp.length; yi++) {
+        var yy = (comp[yi] / w) | 0;
+        if (yy < minY) minY = yy;
+        if (yy > maxY) maxY = yy;
+      }
+      comps.push({ ids: comp, g: sumG / comp.length, minY: minY, maxY: maxY });
+    }
+    if (trueMag > 200) {
+      for (var ci = 0; ci < comps.length; ci++) {
+        var asJersey = comps[ci].ids.length >= 400;
+        var label = asJersey ? 'atkJersey' : 'boot';
+        for (var cj = 0; cj < comps[ci].ids.length; cj++) cls[comps[ci].ids[cj]] = label;
+      }
+    } else if (comps.length) {
+      comps.sort(function (a, b) { return b.ids.length - a.ids.length; });
+      var refG = comps[0].g;
+      var refMaxY = comps[0].maxY;
+      for (var ck = 0; ck < comps.length; ck++) {
+        var below = comps[ck].minY > refMaxY + 8;
+        var jersey = ck === 0 || (!below && Math.abs(comps[ck].g - refG) <= 12);
+        var lab = jersey ? 'atkJersey' : 'boot';
+        for (var cz = 0; cz < comps[ck].ids.length; cz++) cls[comps[ck].ids[cz]] = lab;
+      }
+    }
+    var INF = 1e9;
+    var da = new Float64Array(n);
+    var dd = new Float64Array(n);
+    for (var pi = 0; pi < n; pi++) {
+      da[pi] = cls[pi] === 'atkJersey' ? 0 : INF;
+      dd[pi] = cls[pi] === 'defJersey' ? 0 : INF;
+    }
+    function chamfer(dist) {
+      var y, x, i, best;
+      for (y = 0; y < h; y++) {
+        for (x = 0; x < w; x++) {
+          i = y * w + x; best = dist[i];
+          if (x > 0 && dist[i - 1] + 3 < best) best = dist[i - 1] + 3;
+          if (y > 0) {
+            if (dist[i - w] + 3 < best) best = dist[i - w] + 3;
+            if (x > 0 && dist[i - w - 1] + 4 < best) best = dist[i - w - 1] + 4;
+            if (x + 1 < w && dist[i - w + 1] + 4 < best) best = dist[i - w + 1] + 4;
+          }
+          dist[i] = best;
+        }
+      }
+      for (y = h - 1; y >= 0; y--) {
+        for (x = w - 1; x >= 0; x--) {
+          i = y * w + x; best = dist[i];
+          if (x + 1 < w && dist[i + 1] + 3 < best) best = dist[i + 1] + 3;
+          if (y + 1 < h) {
+            if (dist[i + w] + 3 < best) best = dist[i + w] + 3;
+            if (x > 0 && dist[i + w - 1] + 4 < best) best = dist[i + w - 1] + 4;
+            if (x + 1 < w && dist[i + w + 1] + 4 < best) best = dist[i + w + 1] + 4;
+          }
+          dist[i] = best;
+        }
+      }
+    }
+    chamfer(da); chamfer(dd);
+    function fill(i, rgb) {
+      d[i] = rgb[0]; d[i + 1] = rgb[1]; d[i + 2] = rgb[2]; d[i + 3] = 255;
+    }
+    for (var k = 0; k < n; k++) {
+      var kind = cls[k];
+      if (!kind) continue;
+      var side = da[k] <= dd[k] ? 'atk' : 'def';
+      var rgb = null;
+      if (kind === 'atkJersey' || kind === 'atkShorts') rgb = paintOf.atk[kind];
+      else if (kind === 'defJersey' || kind === 'defShorts') rgb = paintOf.def[kind];
+      else rgb = paintOf[side][kind];
+      if (rgb) fill(k * 4, rgb);
+    }
+    return imgData;
+  }
+
   function recolorSkin(imgData, presetId) {
     var preset = SKIN_PRESETS[presetId] || SKIN_PRESETS.fair;
     var dst = hexToHsl(preset.color);
@@ -323,6 +533,8 @@
     TEAM_COLORS: TEAM_COLORS,
     PLACEHOLDERS: PLACEHOLDERS,
     SKIN_PRESETS: SKIN_PRESETS,
+    HAIR_PRESETS: HAIR_PRESETS,
+    HAIR_KEY: HAIR_KEY,
     hexToHsl: hexToHsl,
     hslToRgb: hslToRgb,
     markShoePlaceholders: markShoePlaceholders,
@@ -330,5 +542,7 @@
     resolveKit: resolveKit,
     isSkinPixel: isSkinPixel,
     recolorSkin: recolorSkin,
+    mangaPixelClass: mangaPixelClass,
+    recolorManga: recolorManga,
   };
 });

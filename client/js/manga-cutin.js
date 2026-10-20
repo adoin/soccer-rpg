@@ -1,158 +1,170 @@
-// ---------------- 漫画分镜引擎（动态判定动画） ----------------
-// 动态漫画风判定演出：分镜面板 + 拟声词 + 速度线 + 震屏，全部代码驱动。
-// 人物姿势图用占位符体系，走 kits.js 换色管线（球衣图案/肤色/球鞋），保证可替换。
+// ---------------- 漫画分镜 ----------------
+// 每张切入图自带草地和白线。A/B 色键按本场球员换球衣、短裤（球袜同色）、
+// 球鞋、皮肤和头发。速度线是代码画的风线，不画一串球。
 var MANGA = {
-  imgs: {},        // pose -> {home: Image, away: Image}
+  srcs: {},
   ready: false,
-  startT: 0,       // 本次分镜开始时间
-  lastId: null,    // 上次播放的 action id
+  startT: 0,
+  lastId: null,
+  cache: {},
 };
-// 单图方案（2026-10-15 用户拍板）：只用 Grok 截图抠图改占位色的复合图
-var MANGA_POSES = ['grok_beaten'];
-// 背景图（球场+观众席）不需要换色，单独加载
-MANGA.bgImgs = {};
-var MANGA_V = 'manga1';
+var MANGA_V = 'manga2';
 
-function mangaRecolor(src, team) {
-  // 按 kits.js 管线换色：标球鞋占位符 → 球衣图案/颜色 → 肤色
-  var cv = document.createElement('canvas');
-  cv.width = src.naturalWidth; cv.height = src.naturalHeight;
-  var cx = cv.getContext('2d');
-  cx.drawImage(src, 0, 0);
-  var id = cx.getImageData(0, 0, cv.width, cv.height);
-  if (typeof SharedKits !== 'undefined') {
-    if (SharedKits.markShoePlaceholders) SharedKits.markShoePlaceholders(id, cv.width, cv.height);
-    var spec = SharedKits.resolveKit(team, null);
-    SharedKits.recolorImageData(id, { home: spec }, 32, { pattern: spec.pattern });
-    if (SharedKits.recolorSkin) SharedKits.recolorSkin(id, 'fair');
-    cx.putImageData(id, 0, 0);
-  }
-  var out = new Image();
-  out.src = cv.toDataURL();
-  return out;
-}
+// a / b：这张图里品红/青（A）和橙/紫（B）分别对应 action.roles 的哪个角色。
+// trail.split 为真时，start→impact 是被改变前的淡线，impact→end 是加粗的新路线。
+var MANGA_CUTS = {
+  'dribble-win':  { pose: 'dribble_win', sfx: '突破！', shake: 8, a: 'attacker', b: 'defender',
+    trail: { start: [0.40, 0.70], end: [0.76, 0.75] } },
+  'feint-win':    { pose: 'dribble_win', sfx: '晃开！', shake: 6, a: 'attacker', b: 'defender',
+    trail: { start: [0.38, 0.68], end: [0.76, 0.75] } },
+  'shield-win':   { pose: 'shield_win', sfx: '护球！', shake: 5, a: 'holder', b: 'presser',
+    trail: { start: [0.42, 0.68], end: [0.72, 0.75] } },
+  'dribble-lose': { pose: 'tackle_win', sfx: '抢断！', shake: 8, a: 'tackler', b: 'dribbler',
+    trail: { start: [0.74, 0.64], end: [0.52, 0.71] } },
+  'tackle-win':   { pose: 'tackle_win', sfx: '抢断！', shake: 8, a: 'tackler', b: 'dribbler',
+    trail: { start: [0.74, 0.64], end: [0.52, 0.71] } },
+  'intercept':    { pose: 'intercept', sfx: '拦截！', shake: 6, a: 'passer', b: 'interceptor',
+    trail: { start: [0.14, 0.40], end: [0.46, 0.60] } },
+  'header-duel':  { pose: 'header_duel', sfx: '争顶！', shake: 7, a: 'loser', b: 'winner',
+    trail: { start: [0.22, 0.52], impact: [0.52, 0.28], end: [0.78, 0.10], split: true } },
+  'shot-blocked': { pose: 'shot_blocked', sfx: '封堵！', shake: 8, a: 'shooter', b: 'blocker',
+    trail: { start: [0.76, 0.48], impact: [0.32, 0.35], end: [0.16, 0.52], split: true } },
+  'clearance':    { pose: 'clearance', sfx: '解围！', shake: 6, a: 'chaser', b: 'clearer',
+    trail: { start: [0.26, 0.70], impact: [0.56, 0.58], end: [0.80, 0.18], split: true } },
+  'shoot-goal':   { pose: 'goal', sfx: '进球！', shake: 10, a: 'scorer', b: 'keeper',
+    trail: { start: [0.78, 0.52], end: [0.42, 0.64] } },
+  'special-goal': { pose: 'goal', sfx: '进球！', shake: 10, a: 'scorer', b: 'keeper',
+    trail: { start: [0.78, 0.50], end: [0.42, 0.64] } },
+  'gk-catch':     { pose: 'gk_catch', sfx: '没收！', shake: 6, a: 'shooter', b: 'keeper',
+    trail: { start: [0.74, 0.48], end: [0.41, 0.36] } },
+  'shoot-save':   { pose: 'gk_catch', sfx: '扑救！', shake: 8, a: 'shooter', b: 'keeper',
+    trail: { start: [0.74, 0.48], end: [0.41, 0.36] } },
+  'special-save': { pose: 'gk_catch', sfx: '扑救！', shake: 8, a: 'shooter', b: 'keeper',
+    trail: { start: [0.74, 0.46], end: [0.41, 0.36] } },
+  'gk-parry':     { pose: 'gk_parry_byline', sfx: '托出！', shake: 8, a: 'shooter', b: 'keeper',
+    trail: { start: [0.55, 0.62], impact: [0.34, 0.34], end: [0.15, 0.31], split: true } },
+  'gk-tip':       { pose: 'gk_tip_over', sfx: '高出！', shake: 8, a: 'shooter', b: 'keeper',
+    trail: { start: [0.24, 0.58], impact: [0.48, 0.30], end: [0.50, 0.12], split: true } },
+  'gk-spill':     { pose: 'gk_spill', sfx: '脱手！', shake: 7, a: 'shooter', b: 'keeper',
+    trail: { start: [0.18, 0.42], impact: [0.50, 0.46], end: [0.37, 0.77], split: true } },
+  'gk-rush':      { pose: 'gk_rush_win', sfx: '出击！', shake: 8, a: 'striker', b: 'keeper',
+    trail: { start: [0.80, 0.48], end: [0.53, 0.71] } },
+  'gk-claim':     { pose: 'gk_claim_cross', sfx: '摘下！', shake: 6, a: 'striker', b: 'keeper',
+    trail: { start: [0.12, 0.36], end: [0.53, 0.08] } },
+  'round-gk':     { pose: 'round_gk', sfx: '过掉！', shake: 8, a: 'striker', b: 'keeper',
+    trail: { start: [0.36, 0.66], end: [0.79, 0.72] } },
+  'shot-wide':    { pose: 'shot_wide', sfx: '偏出！', shake: 4, a: 'shooter', b: 'keeper',
+    trail: { start: [0.68, 0.52], end: [0.08, 0.41] } },
+  'shoot-miss':   { pose: 'shot_wide', sfx: '偏出！', shake: 4, a: 'shooter', b: 'keeper',
+    trail: { start: [0.68, 0.52], end: [0.08, 0.41] } },
+  'hit-post':     { pose: 'hit_post', sfx: '中柱！', shake: 10, a: 'shooter', b: 'keeper',
+    trail: { start: [0.28, 0.55], impact: [0.92, 0.42], end: [0.68, 0.58], split: true } },
+};
 
-// 复合图换色：主队占位色→进攻方，客队占位色→防守方（结算图只认纯色，不铺图案）
-function mangaRecolorComposite(src, atkTeam, defTeam) {
-  var cv = document.createElement('canvas');
-  cv.width = src.naturalWidth; cv.height = src.naturalHeight;
-  var cx = cv.getContext('2d');
-  cx.drawImage(src, 0, 0);
-  var id = cx.getImageData(0, 0, cv.width, cv.height);
-  if (typeof SharedKits !== 'undefined') {
-    var atkSpec = SharedKits.resolveKit(atkTeam, null);
-    var defSpec = SharedKits.resolveKit(defTeam, null);
-    // home 占位符画的是进攻者，away 占位符画的是防守者
-    SharedKits.recolorImageData(id, { home: atkSpec, away: defSpec }, 32, {});
-    if (SharedKits.recolorSkin) SharedKits.recolorSkin(id, 'fair');
-    cx.putImageData(id, 0, 0);
-  }
-  var out = new Image();
-  out.src = cv.toDataURL();
-  return out;
+function mangaPoseList() {
+  var seen = {}, list = [];
+  Object.keys(MANGA_CUTS).forEach(function (k) {
+    var name = MANGA_CUTS[k].pose;
+    if (seen[name]) return;
+    seen[name] = true;
+    list.push(name);
+  });
+  return list;
 }
 
 function mangaInit() {
-  MANGA_POSES.forEach(function (name) {
+  var poses = mangaPoseList();
+  var left = poses.length;
+  function done() {
+    left--;
+    if (left <= 0) MANGA.ready = true;
+  }
+  poses.forEach(function (name) {
     var src = new Image();
-    src.onload = function () {
-      try {
-        if (name === 'beaten' || name === 'grok_beaten') {
-          // 复合图：按攻守双方分别换色
-          MANGA.imgs[name] = {
-            home: mangaRecolorComposite(src, 'home', 'away'),
-            away: mangaRecolorComposite(src, 'away', 'home'),
-          };
-        } else {
-          MANGA.imgs[name] = {
-            home: mangaRecolor(src, 'home'),
-            away: mangaRecolor(src, 'away'),
-          };
-        }
-        // 全部就绪才算 ready
-        if (MANGA_POSES.every(function (k) { return MANGA.imgs[k]; })) MANGA.ready = true;
-      } catch (e) {}
-    };
+    src.onload = function () { MANGA.srcs[name] = src; done(); };
+    src.onerror = function () { MANGA.srcs[name] = null; done(); };
     src.src = 'assets/manga/' + name + '.png?v=' + MANGA_V;
   });
-  // 背景图单独加载（不换色）
-  var bgsrc = new Image();
-  bgsrc.onload = function () { MANGA.bgImgs.stadium = bgsrc; };
-  bgsrc.src = 'assets/manga/stadium_bg.jpg?v=' + MANGA_V;
 }
 
-// ---------- 漫画视觉元素 ----------
-
-// 分镜面板：黑边 + 白底 + 网点纸
-function mangaPanel(x, y, w, h, rot) {
-  ctx.save();
-  ctx.translate(x + w / 2, y + h / 2);
-  ctx.rotate(rot || 0);
-  ctx.translate(-w / 2, -h / 2);
-  // 网点纸底
-  ctx.fillStyle = '#f4f1e8';
-  ctx.fillRect(0, 0, w, h);
-  mangaTone(0, 0, w, h, 6, 'rgba(0,0,0,0.06)');
-  // 黑边（漫画描线）
-  ctx.strokeStyle = '#111'; ctx.lineWidth = 6;
-  ctx.strokeRect(3, 3, w - 6, h - 6);
-  ctx.strokeStyle = '#111'; ctx.lineWidth = 2;
-  ctx.strokeRect(10, 10, w - 20, h - 20);
-  ctx.restore();
+function mangaLookKey(look) {
+  if (!look) return '';
+  var k = look.kit || {};
+  return [look.team || '', look.pos || '', look.skin || '', look.hair || '',
+    k.pattern || '', k.primary || '', k.secondary || '', k.shorts || '', k.shoes || ''].join('|');
 }
 
-// 网点纸
-function mangaTone(x, y, w, h, gap, color) {
-  ctx.save();
-  ctx.beginPath(); ctx.rect(x, y, w, h); ctx.clip();
-  ctx.fillStyle = color;
-  for (var yy = y + gap / 2; yy < y + h; yy += gap)
-    for (var xx = x + gap / 2; xx < x + w; xx += gap) {
-      ctx.beginPath(); ctx.arc(xx, yy, 1.2, 0, Math.PI * 2); ctx.fill();
-    }
-  ctx.restore();
-}
-
-// 速度线（从焦点放射）
-function mangaSpeedLines(cx, cy, r0, r1, n, color, lw) {
-  ctx.save();
-  ctx.strokeStyle = color || '#111'; ctx.lineWidth = lw || 3;
-  ctx.beginPath();
-  for (var i = 0; i < n; i++) {
-    var a = (i / n) * Math.PI * 2 + 0.3;
-    ctx.moveTo(cx + Math.cos(a) * r0, cy + Math.sin(a) * r0);
-    ctx.lineTo(cx + Math.cos(a) * r1, cy + Math.sin(a) * r1);
+function mangaPaint(src, aLook, bLook) {
+  var key = src.src + '>' + mangaLookKey(aLook) + '>' + mangaLookKey(bLook);
+  if (MANGA.cache[key]) return MANGA.cache[key];
+  var cv = document.createElement('canvas');
+  cv.width = src.naturalWidth;
+  cv.height = src.naturalHeight;
+  var cx = cv.getContext('2d');
+  cx.drawImage(src, 0, 0);
+  if (typeof SharedKits !== 'undefined' && SharedKits.recolorManga) {
+    var id = cx.getImageData(0, 0, cv.width, cv.height);
+    SharedKits.recolorManga(id, aLook || { team: 'home' }, bLook || { team: 'away' });
+    cx.putImageData(id, 0, 0);
   }
-  ctx.stroke();
-  ctx.restore();
+  var out = new Image();
+  out.src = cv.toDataURL();
+  MANGA.cache[key] = out;
+  return out;
 }
 
-// 拟声词：粗黑描边 + 白字 + 弹出动画
-function mangaSFX(text, x, y, size, rot, pop) {
-  // pop: 0..1 弹出进度
-  var s = size * (0.6 + 0.4 * easeOutBack(Math.min(1, pop * 1.4)));
-  ctx.save();
-  ctx.translate(x, y); ctx.rotate(rot || -0.08);
-  ctx.font = '900 ' + Math.round(s) + 'px "Noto Sans SC", sans-serif';
-  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-  ctx.lineWidth = Math.max(4, s * 0.12); ctx.strokeStyle = '#111';
-  ctx.strokeText(text, 0, 0);
-  ctx.fillStyle = '#fff'; ctx.fillText(text, 0, 0);
-  ctx.restore();
+function mangaDefaultLook(team) {
+  return { team: team, skin: 'fair', hair: 'black', kit: null };
 }
+
+function mangaLooks(a, cfg) {
+  var roles = a.roles || {};
+  var aLook = roles[cfg.a];
+  var bLook = roles[cfg.b];
+  if (aLook && bLook) return { a: aLook, b: bLook };
+  var team = a.team === 'away' ? 'away' : 'home';
+  var other = team === 'home' ? 'away' : 'home';
+  return {
+    a: aLook || mangaDefaultLook(team),
+    b: bLook || mangaDefaultLook(other),
+  };
+}
+
+function mangaCutAvailable(a) {
+  if (!a || !MANGA.ready) return false;
+  var cfg = MANGA_CUTS[a.cut];
+  if (!cfg) return false;
+  var src = MANGA.srcs[cfg.pose];
+  return !!(src && src.complete && src.naturalWidth);
+}
+
 function easeOutBack(x) {
   var c = 1.70158;
   return 1 + (c + 1) * Math.pow(x - 1, 3) + c * Math.pow(x - 1, 2);
 }
 
-// 冲击闪光
+function mangaSFX(text, x, y, size, rot, pop) {
+  var s = size * (0.6 + 0.4 * easeOutBack(Math.min(1, pop * 1.4)));
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.rotate(rot || -0.08);
+  ctx.font = '900 ' + Math.round(s) + 'px "Noto Sans SC", sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.lineWidth = Math.max(4, s * 0.12);
+  ctx.strokeStyle = '#111';
+  ctx.strokeText(text, 0, 0);
+  ctx.fillStyle = '#fff';
+  ctx.fillText(text, 0, 0);
+  ctx.restore();
+}
+
 function mangaFlash(alpha) {
   if (alpha <= 0) return;
   ctx.fillStyle = 'rgba(255,255,255,' + alpha.toFixed(3) + ')';
   ctx.fillRect(0, 0, W, H);
 }
 
-// 二次贝塞尔曲线点（闪身轨迹用）
 function qbez(p0, pc, p1, t) {
   var u = 1 - t;
   return {
@@ -161,84 +173,73 @@ function qbez(p0, pc, p1, t) {
   };
 }
 
-// ---------- dribble-win 分镜时间线 ----------
-// 四幕：假动作（0-0.9s）→ 被过复合（0.9-1.8s）→ 扬长而去（1.8-2.7s）→ 突破（2.7s+）
-function drawMangaDribbleWin(a, t) {
-  var id = cutActionId(a);
-  if (MANGA.lastId !== id) { MANGA.lastId = id; MANGA.startT = t; }
-  var el = (t - MANGA.startT) / 1000; // 秒
-
-  var atkTeam = a.team === 'away' ? 'away' : 'home';
-  var grokIm = MANGA.imgs.grok_beaten && MANGA.imgs.grok_beaten[atkTeam];
-  var stadiumIm = MANGA.bgImgs.stadium;
-
-  // 暗场
-  ctx.fillStyle = 'rgba(4,6,14,0.92)';
-  ctx.fillRect(0, 0, W, H);
-
-  // 开场震屏
-  var shake = el < 0.22 ? 8 : 0;
+// 风线：3 到 5 条略弯的细墨线，中间留空，尾端变细变淡。不是一串球。
+function mangaWind(p0, p1, t, bold) {
+  var dx = p1.x - p0.x, dy = p1.y - p0.y;
+  var len = Math.sqrt(dx * dx + dy * dy) || 1;
+  var nx = -dy / len, ny = dx / len;
+  var bow = len * (bold ? 0.10 : 0.07);
+  var c = { x: (p0.x + p1.x) / 2 + nx * bow, y: (p0.y + p1.y) / 2 + ny * bow };
+  var reach = t < 0 ? 0 : t > 1 ? 1 : t;
+  var count = bold ? 5 : 3;
+  var dashes = bold ? 5 : 4;
   ctx.save();
-  ctx.translate(shake ? (Math.random() - 0.5) * shake : 0, shake ? (Math.random() - 0.5) * shake : 0);
-
-  var cx = W / 2, pw = Math.min(680, W - 40), ph = pw * 0.72;
-  var py = Math.max(40, (H - ph) / 2 - 60);
-  var p = Math.min(1, el / 0.25); // 砸入进度
-  var sc = 0.7 + 0.3 * easeOutBack(p);
-
-  function imOk(im) { return im && im.complete && im.naturalWidth; }
-
-  // 单图：面板砸入 + 球场背景 + 复合图
-  ctx.save();
-  ctx.translate(cx, py + ph / 2); ctx.scale(sc, sc); ctx.translate(-cx, -(py + ph / 2));
-  // 先画边框（不填充底色，背景图当底）
-  ctx.save();
-  ctx.translate(cx, py + ph / 2); ctx.rotate(-0.01); ctx.translate(-cx, -(py + ph / 2));
-  ctx.strokeStyle = '#111'; ctx.lineWidth = 6;
-  ctx.strokeRect(cx - pw / 2 + 3, py + 3, pw - 6, ph - 6);
-  ctx.lineWidth = 2;
-  ctx.strokeRect(cx - pw / 2 + 10, py + 10, pw - 20, ph - 20);
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+  for (var s = 0; s < count; s++) {
+    var lat = (s - (count - 1) / 2) * (bold ? 5.2 : 3.4);
+    for (var d = 0; d < dashes; d++) {
+      var u0 = (d / dashes) * reach;
+      var u1 = ((d + 0.62) / dashes) * reach;
+      if (u1 - u0 < 0.012) continue;
+      var mid = (u0 + u1) / 2;
+      var alpha = (0.18 + 0.82 * mid) * (bold ? 0.92 : 0.42);
+      var lw = (bold ? 2.5 : 1.25) * (0.28 + 0.72 * mid);
+      ctx.beginPath();
+      for (var k = 0; k <= 5; k++) {
+        var u = u0 + (u1 - u0) * k / 5;
+        var p = qbez(p0, c, p1, u);
+        var wave = Math.sin(u * 5.5 + s * 1.3) * 1.1;
+        var x = p.x + nx * (lat + wave);
+        var y = p.y + ny * (lat + wave);
+        if (k === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+      }
+      ctx.strokeStyle = 'rgba(255,255,255,' + (alpha * 0.55).toFixed(3) + ')';
+      ctx.lineWidth = lw + 1.6;
+      ctx.stroke();
+      ctx.strokeStyle = 'rgba(16,16,16,' + alpha.toFixed(3) + ')';
+      ctx.lineWidth = lw;
+      ctx.stroke();
+    }
+  }
   ctx.restore();
-  // 面板内区域裁剪画背景和人物
-  ctx.save();
-  ctx.beginPath();
-  ctx.rect(cx - pw / 2 + 12, py + 12, pw - 24, ph - 24);
-  ctx.clip();
-  if (stadiumIm && stadiumIm.complete && stadiumIm.naturalWidth) {
-    var bw = pw, bh = bw * stadiumIm.naturalHeight / stadiumIm.naturalWidth;
-    if (bh < ph) { bh = ph; bw = bh * stadiumIm.naturalWidth / stadiumIm.naturalHeight; }
-    ctx.drawImage(stadiumIm, cx - bw / 2, py + ph - bh, bw, bh);
-  } else {
-    // 背景没加载时用网点纸兜底
-    ctx.fillStyle = '#f4f1e8';
-    ctx.fillRect(cx - pw / 2 + 12, py + 12, pw - 24, ph - 24);
-  }
-  if (imOk(grokIm)) {
-    // 远景构图：人物缩小，多露球场
-    var iw = pw * 0.72, ih = iw * grokIm.naturalHeight / grokIm.naturalWidth;
-    if (ih > ph * 0.72) { ih = ph * 0.72; iw = ih * grokIm.naturalWidth / grokIm.naturalHeight; }
-    // 人物放下面，脚踩草地
-    ctx.drawImage(grokIm, cx - iw / 2, py + ph - ih - 14, iw, ih);
-  }
-  ctx.restore(); // clip
-  ctx.restore(); // panel transform
-
-  // 拟声词
-  if (el > 0.35) mangaSFX('突破！', cx, py + 66, 58, -0.08, (el - 0.35) / 0.3);
-  mangaFlash(Math.max(0, 0.6 - el * 2));
-
-  ctx.restore(); // 震屏
-
-  // 底部信息条（比分/标题/跳过提示，复用现有风格）
-  drawMangaBar(a);
 }
 
-function drawMangaBar(a) {
+function mangaTrailPoint(pair, rect) {
+  return { x: rect.x + pair[0] * rect.w, y: rect.y + pair[1] * rect.h };
+}
+
+function mangaDrawTrails(trail, rect, t) {
+  if (!trail || !trail.start || !trail.end) return;
+  var a = mangaTrailPoint(trail.start, rect);
+  var b = mangaTrailPoint(trail.end, rect);
+  if (trail.split && trail.impact) {
+    var hit = mangaTrailPoint(trail.impact, rect);
+    mangaWind(a, hit, Math.min(1, t / 0.55), false);
+    if (t > 0.28) mangaWind(hit, b, Math.min(1, (t - 0.28) / 0.55), true);
+  } else {
+    mangaWind(a, b, t, true);
+  }
+}
+
+function drawMangaBar(a, py, ph) {
   var bw = Math.min(620, W - 60), bx = (W - bw) / 2;
-  var by = Math.max(40, (H - bw * 0.72) / 2 - 60) + bw * 0.72 + 16;
+  var by = py + ph + 16;
   ctx.fillStyle = '#0a0e1c';
   ctx.fillRect(bx, by, bw, 34);
-  ctx.strokeStyle = '#ffd94a'; ctx.lineWidth = 2;
+  ctx.strokeStyle = '#ffd94a';
+  ctx.lineWidth = 2;
   ctx.strokeRect(bx, by, bw, 34);
   if (state) {
     text(state.clockLabel || '', bx + 12, by + 17, 15, '#ffd94a', 'left', true);
@@ -249,9 +250,56 @@ function drawMangaBar(a) {
   text(isTouch ? '触摸任意处 跳过' : 'Enter / 空格 / 点击  跳过', W / 2, by + 82, 13, '#8fa3cc', 'center');
 }
 
-// 入口：drawCutin 里对 dribble-win 改走漫画分镜
 function drawMangaCutin(a, t) {
-  if (!MANGA.ready) return false;
-  if (a.cut === 'dribble-win') { drawMangaDribbleWin(a, t); return true; }
-  return false;
+  var cfg = a && MANGA_CUTS[a.cut];
+  if (!cfg || !MANGA.ready) return false;
+  var src = MANGA.srcs[cfg.pose];
+  if (!src || !src.complete || !src.naturalWidth) return false;
+  var id = cutActionId(a);
+  if (MANGA.lastId !== id) { MANGA.lastId = id; MANGA.startT = t; }
+  var el = (t - MANGA.startT) / 1000;
+  var looks = mangaLooks(a, cfg);
+  var painted = mangaPaint(src, looks.a, looks.b);
+
+  ctx.fillStyle = 'rgba(4,6,14,0.92)';
+  ctx.fillRect(0, 0, W, H);
+
+  var shake = el < 0.22 ? (cfg.shake || 0) : 0;
+  ctx.save();
+  ctx.translate(shake ? (Math.random() - 0.5) * shake : 0, shake ? (Math.random() - 0.5) * shake : 0);
+
+  var cx = W / 2, pw = Math.min(680, W - 40), ph = pw * 0.75;
+  var py = Math.max(40, (H - ph) / 2 - 60);
+  var pop = Math.min(1, el / 0.25);
+  var sc = 0.7 + 0.3 * easeOutBack(pop);
+
+  ctx.save();
+  ctx.translate(cx, py + ph / 2);
+  ctx.scale(sc, sc);
+  ctx.translate(-cx, -(py + ph / 2));
+  ctx.strokeStyle = '#111';
+  ctx.lineWidth = 6;
+  ctx.strokeRect(cx - pw / 2 + 3, py + 3, pw - 6, ph - 6);
+  ctx.lineWidth = 2;
+  ctx.strokeRect(cx - pw / 2 + 10, py + 10, pw - 20, ph - 20);
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(cx - pw / 2 + 12, py + 12, pw - 24, ph - 24);
+  ctx.clip();
+  var innerW = pw - 24, innerH = ph - 24;
+  var iw = innerW, ih = iw * src.naturalHeight / src.naturalWidth;
+  if (ih > innerH) { ih = innerH; iw = ih * src.naturalWidth / src.naturalHeight; }
+  var ix = cx - iw / 2, iy = py + 12 + (innerH - ih) / 2;
+  if (painted.complete && painted.naturalWidth) ctx.drawImage(painted, ix, iy, iw, ih);
+  else ctx.drawImage(src, ix, iy, iw, ih);
+  // 风线大约 0.42 秒画完，然后画面停住。原路线细，变向后的路线粗。
+  mangaDrawTrails(cfg.trail, { x: ix, y: iy, w: iw, h: ih }, Math.min(1, el / 0.42));
+  ctx.restore();
+  ctx.restore();
+
+  if (el > 0.35) mangaSFX(cfg.sfx, cx, py + 58, 54, -0.08, (el - 0.35) / 0.3);
+  mangaFlash(Math.max(0, 0.55 - el * 2));
+  ctx.restore();
+  drawMangaBar(a, py, ph);
+  return true;
 }

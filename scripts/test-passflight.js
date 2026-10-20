@@ -1,7 +1,7 @@
 // scripts/test-passflight.js
 // 传球飞行阶段测试（2026-09-28 实时拦截制）：
 //   开球瞬间不再掷骰定结果。球按高度抛物线飞向落点，途中实时拦截判定，
-//   落地按落点归属结算。完成/拦截都不播全屏演出（开放比赛的一部分）。
+//   落地按落点归属结算。完成传球不播全屏；干净断球才播拦截切入。
 'use strict';
 
 var E = require('../server/game/engine');
@@ -146,7 +146,11 @@ console.log('== applyCommand 传球走飞行（非瞬移） ==');
   ok(m.phase === 'passflight', '进入 passflight 阶段', 'phase=' + m.phase);
   ok(m.ball.ownerId === null, '球未瞬移给任何人');
   runFlight(m);
-  ok(!m.lastAction || !m.lastAction.cut, '飞行后不出全屏演出（常规传球）');
+  if (m.lastAction && m.lastAction.kind === 'intercept') {
+    ok(m.lastAction.cut === 'intercept', '传球被断时播出拦截切入', m.lastAction.cut);
+  } else {
+    ok(!m.lastAction || !m.lastAction.cut, '飞行后不出全屏演出（常规传球）');
+  }
 })();
 
 console.log('== 飞行时长来自传球高度 ==');

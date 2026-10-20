@@ -359,11 +359,15 @@ function setPad(dx, dy, sprint, slow) {
 // ---------------- 精灵 ----------------
 var frameCache = {};
 function framesFor(p) {
-  var hairColors = ['#23232e', '#3a2a1a', '#101016', '#5a3a1a', '#6b6b7a'];
+  var hairHex = '#1a1a1a';
+  if (typeof SharedKits !== 'undefined' && SharedKits.HAIR_PRESETS) {
+    var hp = SharedKits.HAIR_PRESETS[p.hair] || SharedKits.HAIR_PRESETS.black;
+    if (hp) hairHex = hp.color;
+  }
   var skinHex = (typeof SharedKits !== 'undefined' && SharedKits.SKIN_PRESETS && SharedKits.SKIN_PRESETS[p.skin])
     ? SharedKits.SKIN_PRESETS[p.skin].color : '#f2c89b';
   var spec = (typeof SharedKits !== 'undefined' && SharedKits.resolveKit) ? SharedKits.resolveKit(p.team, p.kit) : null;
-  var key = p.team + '_' + p.pos + '_' + (p.idx % hairColors.length) + '_' + (p.skin || 'fair') + '_' +
+  var key = p.team + '_' + p.pos + '_' + (p.hair || 'black') + '_' + (p.skin || 'fair') + '_' +
     (spec ? spec.pattern + spec.primary + spec.shorts + spec.socks + spec.shoes : '');
   if (!frameCache[key]) {
     var shirt = p.pos === 'GK'
@@ -373,7 +377,7 @@ function framesFor(p) {
     frameCache[key] = S.playerFrames({
       shirt: shirt, shorts: shorts, socks: spec ? spec.socks : '#ffffff',
       shoes: spec ? spec.shoes : '#22222a',
-      hair: hairColors[p.idx % hairColors.length], skin: skinHex,
+      hair: hairHex, skin: skinHex,
     });
   }
   return frameCache[key];
@@ -1742,9 +1746,11 @@ function cutActionId(a) { return a.kind + '|' + (a.playerName || '') + '|' + (a.
 function showingCutscene() {
   if (!state || !state.lastAction) return null;
   var a = state.lastAction;
-  var im = a.cut && CUT_IMGS[a.cut];
-  if (!(im && im.complete && im.naturalWidth)) return null;
   if (ui.cutSkipId && ui.cutSkipId === cutActionId(a)) return null;
+  var manga = typeof mangaCutAvailable === 'function' && mangaCutAvailable(a);
+  var im = a.cut && CUT_IMGS[a.cut];
+  var webp = im && im.complete && im.naturalWidth;
+  if (!manga && !webp) return null;
   return a;
 }
 function skipCutscene() {
@@ -1755,11 +1761,11 @@ function skipCutscene() {
 function drawCutin() {
   if (!state || !state.lastAction) return;
   var a = state.lastAction;
-  // ★ 漫画分镜优先：dribble-win 走动态漫画分镜引擎
-  if (a.cut === 'dribble-win' && typeof drawMangaCutin === 'function') {
-    if (ui.cutSkipId !== cutActionId(a)) {
-      if (drawMangaCutin(a, performance.now())) return;
-    } else return;
+  // ★ 漫画分镜优先。图还没到就退回旧的 webp 演出。
+  if (a.cut && typeof drawMangaCutin === 'function') {
+    if (ui.cutSkipId === cutActionId(a)) {
+      if (typeof mangaCutAvailable === 'function' && mangaCutAvailable(a)) return;
+    } else if (drawMangaCutin(a, performance.now())) return;
   }
   // ★ 有演出图键 → 全屏像素风结算演出（仿《天使之翼》指令结算画面）
   var im = a.cut && CUT_IMGS[a.cut];
@@ -1945,7 +1951,7 @@ function frameInner(t) {
     }
   }
   drawToast();
-  if (DEBUG) { // 左上角诊断行：按键 / 菜单栈 / 异常
+  if (DEBUG && !/[?&]hud=0/.test(location.search)) { // 左上角诊断行：按键 / 菜单栈 / 异常
     var _dlt = hmTop();
     ctx.font = '14px monospace'; ctx.textAlign = 'left'; ctx.textBaseline = 'top';
     ctx.fillStyle = 'rgba(0,0,0,0.7)'; ctx.fillRect(8, 8, 460, 88);
@@ -1969,6 +1975,15 @@ function frameInner(t) {
 if (DEBUG && /[?&]autostart=1/.test(location.search)) {
   setTimeout(function () { if (screen === 'title') startMatch(); }, 600);
 }
+
+// 漫画分镜在另一个脚本里，读的是页面上的画布和字幕函数。
+Object.defineProperty(window, 'ctx', { get: function () { return ctx; } });
+Object.defineProperty(window, 'W', { get: function () { return W; } });
+Object.defineProperty(window, 'H', { get: function () { return H; } });
+Object.defineProperty(window, 'state', { get: function () { return state; } });
+Object.defineProperty(window, 'isTouch', { get: function () { return isTouch; } });
+window.text = text;
+window.cutActionId = cutActionId;
 
 requestAnimationFrame(frame);
 })();
