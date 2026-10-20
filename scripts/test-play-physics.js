@@ -321,5 +321,118 @@ console.log('== 门将：角平分线、深度、出击、传中、回线 ==');
   ok(gkLive.y < 33.2 && gkLive.y > 30, '模拟中门将横向收到球的一侧', 'y=' + gkLive.y.toFixed(2));
 })();
 
+console.log('== 门将习惯：近门柱、站定、单刀、传中、高位、扑救、出球 ==');
+(function () {
+  function stat(p, o) { Object.keys(o).forEach(function (k) { p.stats[k] = o[k]; }); }
+  var m = newMatch(41);
+  m.players.forEach(function (p) { if (p.team === 'away' && p.pos !== 'GK') set(m, p.id, 40, 34); });
+  m.players.forEach(function (p) { if (p.team === 'home' && p.id !== 'h10') set(m, p.id, 20, 34); });
+  set(m, 'h10', 99, 6);
+  m.ball.ownerId = 'h10'; m.ball.x = 99; m.ball.y = 6; m.ball.z = 0; m.ball.vx = 0; m.ball.vy = 0;
+  var good = P(m, 'a1');
+  stat(good, { positioning: 18, command: 16, reflexes: 17, rushing: 14, oneOnOne: 16, aerial: 14 });
+  set(m, 'a1', 102, 34);
+  var tight = GK.position(m, good);
+  var nearY = GK.nearPostY(6);
+  var farY = GK.farPostY(6);
+  ok(Math.abs(tight.y - nearY) + 0.2 < Math.abs(tight.y - farY), '小角度时更靠近近门柱而不是远门柱',
+    'y=' + tight.y.toFixed(2) + ' near=' + nearY.toFixed(2));
+  ok(Math.abs(tight.y - nearY) < 1.8, '近门柱没有被让开', 'gap=' + Math.abs(tight.y - nearY).toFixed(2));
+  stat(good, { positioning: 5, command: 5, reflexes: 6 });
+  var loose = GK.position(m, good);
+  ok(Math.abs(tight.y - nearY) + 0.4 < Math.abs(loose.y - nearY), '站位好的人比站位差的人更死守近门柱',
+    'good=' + Math.abs(tight.y - nearY).toFixed(2) + ' poor=' + Math.abs(loose.y - nearY).toFixed(2));
+
+  stat(good, { positioning: 18, reflexes: 18, command: 16 });
+  set(m, 'a2', 90, 30);
+  set(m, 'h10', 92, 28);
+  m.ball.x = 92; m.ball.y = 28; m.ball.ownerId = 'h10';
+  var spot = GK.position(m, good);
+  set(m, 'a1', spot.x, spot.y);
+  var planted = GK.position(m, good);
+  ok(planted.set === true && planted.crouch === true && planted.speedMul < 0.08, '好门将在射门前站定', planted.speedMul);
+  stat(good, { positioning: 4, reflexes: 4, command: 4 });
+  var fidget = GK.position(m, good);
+  ok(fidget.set !== true && fidget.speedMul > 0.3, '差门将射门前还在移动', fidget.speedMul);
+
+  stat(good, { positioning: 14, reflexes: 14, oneOnOne: 17, rushing: 16, command: 14 });
+  m.players.forEach(function (p) { if (p.team === 'away' && p.pos !== 'GK') set(m, p.id, 30, 10); });
+  set(m, 'h10', 90, 34);
+  m.ball.ownerId = 'h10'; m.ball.x = 90; m.ball.y = 34;
+  set(m, 'a1', 101, 34);
+  var rush = GK.oneOnOneTarget(m, good);
+  ok(rush && rush.mode === 'onevone' && rush.x < 99 && rush.x > 92 && rush.sprint, '单刀能先到就封角度迎上去',
+    rush && (rush.mode + ' x=' + rush.x.toFixed(1)));
+  set(m, 'a1', rush.x, rush.y);
+  var held = GK.oneOnOneTarget(m, good);
+  ok(held && held.hold && held.spread && held.speedMul < 0.25, '贴近之后站住张开，不继续冲', held && held.speedMul);
+  set(m, 'a1', 104, 8);
+  var late = GK.oneOnOneTarget(m, good);
+  ok(late == null, '来不及封到角度就留在线上', late && late.mode);
+
+  stat(good, { command: 12, aerial: 14, positioning: 14 });
+  set(m, 'h7', 96, 8);
+  m.ball.ownerId = 'h7'; m.ball.x = 96; m.ball.y = 8; m.ball.z = 2.6; m.ball.vy = 0;
+  set(m, 'a1', 102, 34);
+  var cross = GK.position(m, good);
+  ok(cross.mode === 'cross' && cross.y > 34 && cross.y < 38, '传中先略站向远门柱', cross.mode + ' y=' + cross.y.toFixed(2));
+  stat(good, { command: 18, aerial: 16 });
+  m.players.forEach(function (p) { if (p.team === 'home') set(m, p.id, 40, 50); });
+  set(m, 'h7', 96, 8);
+  m.ball.x = 96; m.ball.y = 8; m.ball.z = 2.6; m.ball.ownerId = 'h7';
+  var claim = GK.position(m, good);
+  ok(claim.crossAct === 'claim' && claim.x < cross.x - 1, '指挥好、禁区没人就出来摘', claim.crossAct + ' x=' + claim.x.toFixed(1));
+  set(m, 'h8', 100, 32); set(m, 'h9', 99, 36);
+  m.ball.vy = 4;
+  m.ball.z = 0.2; m.ball.y = 14; m.ball.x = 98; set(m, 'h7', 98, 14);
+  var back = GK.position(m, good);
+  ok(back.mode === 'cutback' && Math.abs(back.y - GK.nearPostY(14)) < Math.abs(back.y - GK.farPostY(14)),
+    '低平回敲时收回近门柱', back.mode + ' y=' + back.y.toFixed(2));
+
+  m.ball.ownerId = 'h10'; m.ball.x = 30; m.ball.y = 34; m.ball.z = 0; m.ball.vy = 0;
+  set(m, 'h10', 30, 34);
+  ['a2', 'a3', 'a4'].forEach(function (id) { set(m, id, 58, P(m, id).y); });
+  stat(good, { rushing: 18, positioning: 14, command: 14 });
+  set(m, 'a1', 102, 34);
+  var high = GK.position(m, good);
+  stat(good, { rushing: 5 });
+  var timid = GK.position(m, good);
+  ok(high.x < 100 && high.x + 1.2 < timid.x, '防线压上时出击好的门将站得更靠前',
+    'high=' + high.x.toFixed(2) + ' timid=' + timid.x.toFixed(2));
+  set(m, 'a1', 102, 34);
+  m.ball.x = 70; m.ball.y = 14; m.ball.vy = -8; m.ball.ownerId = 'h7';
+  set(m, 'h7', 70, 14);
+  var rec = GK.position(m, good);
+  ok(rec.recover === true && rec.sprint === true && rec.speedMul > 0.85, '球转移到另一侧时尽快回到新站位',
+    rec.recover + ' v=' + rec.speedMul);
+
+  stat(good, { reflexes: 16, positioning: 17, command: 14, rushing: 12 });
+  set(m, 'h10', 96, 12);
+  m.ball.ownerId = 'h10'; m.ball.x = 96; m.ball.y = 12; m.ball.z = 0; m.ball.vy = 0;
+  m.players.forEach(function (p) { if (p.team === 'away' && p.pos !== 'GK') set(m, p.id, 70, 34); });
+  var ideal = GK.position(m, good);
+  set(m, 'a1', ideal.x, ideal.y);
+  var covered = GK.shotStop(m, good, P(m, 'h10'));
+  set(m, 'a1', ideal.x, GK.farPostY(12));
+  var open = GK.shotStop(m, good, P(m, 'h10'));
+  ok(covered.covered && covered.pSave > 0.8, '站在近门柱时近角射门很难进', covered.pSave.toFixed(2));
+  ok(!open.covered && open.pSave + 0.25 < covered.pSave, '没覆盖到的一侧扑救概率明显更低',
+    'open=' + open.pSave.toFixed(2) + ' covered=' + covered.pSave.toFixed(2));
+
+  stat(good, { vision: 17, throwing: 16, kicking: 8 });
+  set(m, 'a1', 100, 34);
+  set(m, 'a4', 88, 30);
+  m.players.forEach(function (p) { if (p.team === 'home') set(m, p.id, 40, 60); });
+  m.ball.ownerId = 'a1'; m.ball.x = 100; m.ball.y = 34;
+  var short = GK.distribution(m, good);
+  ok(short.kind === 'throw' && short.targetId === 'a4', '视野好就短抛给空当后卫', short.kind + ' ' + short.targetId);
+  stat(good, { vision: 6, throwing: 6, kicking: 18 });
+  var long = GK.distribution(m, good);
+  ok(long.kind === 'kick', '脚法好、视野差就开大脚', long.kind + ' ' + long.targetId);
+  m.paused = false;
+  m.tick();
+  ok(m.lastGkDistribution && m.lastGkDistribution.kind === 'kick', '门将得球时引擎记下出球选择', m.lastGkDistribution && m.lastGkDistribution.kind);
+})();
+
 console.log(failures === 0 ? 'ALL PLAY-PHYSICS TESTS PASSED' : failures + ' PLAY-PHYSICS FAILURES');
 process.exit(failures === 0 ? 0 : 1);

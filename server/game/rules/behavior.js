@@ -337,7 +337,7 @@ function carrierAdjust(match, carrier) {
   return { tx: tx, ty: ty, spMul: spMul };
 }
 
-// 门将：角平分线 + 深度 + 出击/传中（rules/gk.js）。这里只做转发，保持行为层入口。
+// 门将：站位、近门柱、单刀、传中、扫荡都在 rules/gk.js。这里只做转发。
 function keeperTarget(match, p) {
   return GKPos.position(match, p);
 }

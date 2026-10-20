@@ -32,6 +32,7 @@ var Ball = require('./rules/ballPhysics');
 var Receive = require('./rules/receive');
 var Shield = require('./rules/shield');
 var Switch = require('./rules/switch');
+var GK = require('./rules/gk');
 
 var FIELD = C.FIELD;
 
@@ -274,6 +275,7 @@ Match.prototype.startShotFlight = function (p, keeper, o) {
   var dist = Math.sqrt((x1 - x0) * (x1 - x0) + (y1 - y0) * (y1 - y0));
   var ballSpd = o.isSpecial ? 34 : 27;
   var durMs = clamp(Math.round(dist / ballSpd * 1000), 450, 1500);
+  var diveAt = GK.diveDelay(keeper, p);
   // 门将扑救目标：
   //   goal → 大概率判断错方向（扑反角 / 扑近角但够不着），演出"门将尽力但鞭长莫及"；
   //   saved/miss → 扑向来球线路
@@ -308,6 +310,7 @@ Match.prototype.startShotFlight = function (p, keeper, o) {
     peak: 1.0, // ★ 射门弹道低平：线路上的后卫可堵枪眼（z<1.0m 地面可断）
     ballSpeed: ballSpd, // 米/秒
     kx: kx, ky: ky, kSpd: kSpd, chasers: chasers,
+    diveAt: diveAt,
   };
   this.ball.ownerId = null;
   this.ball.x = x0; this.ball.y = y0; this.ball.z = 0;
@@ -498,8 +501,7 @@ Match.prototype.moveFlightPlayers = function (pf, dt) {
     } else if (p.team !== pf.team && p.pos !== 'GK') {
       self.moveToward(p, self.ball.x, self.ball.y, self.playerSpeed(p, true) * 0.9, dt);
     } else if (p.pos === 'GK') {
-      var kt = Behavior.keeperTarget(self, p);
-      self.moveToward(p, kt.x, kt.y, self.playerSpeed(p, !!kt.sprint) * (kt.speedMul || 0.7), dt);
+      self.keeperStep(p, dt);
     } else {
       self.moveToward(p, (p.x + pf.x1) / 2, (p.y + pf.y1) / 2, self.playerSpeed(p, false) * 0.6, dt);
     }
@@ -558,7 +560,11 @@ Match.prototype.tick = function () {
           blk.player.beatenUntil = this.now + 700;
         }
         var kp = this.byId[sf.keeperId];
-        if (kp && !kp.sentOff) this.moveToward(kp, sf.kx, sf.ky, sf.kSpd, dt);
+        if (kp && !kp.sentOff) {
+          // 近距离一对一：站定之后再扑，不在出脚瞬间就飞出去
+          if (k + 1e-6 >= (sf.diveAt || 0)) this.moveToward(kp, sf.kx, sf.ky, sf.kSpd, dt);
+          else { kp._vx = 0; kp._vy = 0; kp.gkSet = true; }
+        }
         for (var ci = 0; ci < sf.chasers.length; ci++) {
           var ch = this.byId[sf.chasers[ci]];
           if (ch && !ch.sentOff && this.now >= ch.frozenUntil) {
@@ -708,6 +714,16 @@ Match.prototype.isPressured = function (carrier, near) {
   return closing > 2;
 };
 
+// 门将一步：选位模块给出目标、速度和站定/张开。speedMul 为 0 时是站定，不能当成“没填”。
+Match.prototype.keeperStep = function (p, dt) {
+  var kt = Behavior.keeperTarget(this, p);
+  var mul = kt.speedMul == null ? 0.55 : kt.speedMul;
+  this.moveToward(p, kt.x, kt.y, this.playerSpeed(p, !!kt.sprint) * mul, dt);
+  p.gkSet = !!kt.set;
+  p.gkCrouch = !!kt.crouch;
+  p.gkSpread = !!kt.spread;
+};
+
 Match.prototype.moveToward = function (p, tx, ty, speed, dt) {
   var dx = tx - p.x, dy = ty - p.y;
   var d = Math.sqrt(dx * dx + dy * dy);
@@ -845,6 +861,14 @@ Match.prototype.simulate = function (dt) {
   // ★ 球权变化 → 自动切换控制：
   //   主队得球 → 切到持球人（传球后控制跟到接球人）；
   //   对方得球 → 切到离球最近的防守人（2026-10-10 用户要求）
+  if (carrier && carrier.pos === 'GK') {
+    if (this._distOwner !== carrier.id) {
+      this._distOwner = carrier.id;
+      this.lastGkDistribution = GK.distribution(this, carrier);
+    }
+  } else {
+    this._distOwner = null;
+  }
   var carrierId = carrier ? carrier.id : null;
   if (carrierId !== this._lastCarrierId) {
     this._lastCarrierId = carrierId;
@@ -874,8 +898,7 @@ Match.prototype.simulate = function (dt) {
       if (self.controlMove(p, dt)) { self.updateEnergy(p, dt); return; }
       if (self.now < p.frozenUntil) { p._vx = 0; p._vy = 0; self.updateEnergy(p, dt); return; }
       if (p.pos === 'GK') {
-        var kt = Behavior.keeperTarget(self, p);
-        self.moveToward(p, kt.x, kt.y, self.playerSpeed(p, !!kt.sprint) * (kt.speedMul || 0.7), dt);
+        self.keeperStep(p, dt);
       } else if (chaseIds[p.id]) {
         var tx = self.ball.x, ty = self.ball.y;
         if (chaseIds[p.id] === 'recv') {
@@ -957,10 +980,10 @@ Match.prototype.simulate = function (dt) {
     var beaten = self.now < p.beatenUntil;
     var tx, ty, sp;
     if (p.pos === 'GK') {
-      // ★ 门将无论本方是否持球，都走选位（角平分线 / 传中 / 出击），不参与上抢排序
-      var ktOwn = Behavior.keeperTarget(self, p);
-      tx = ktOwn.x; ty = ktOwn.y;
-      sp = self.playerSpeed(p, !!ktOwn.sprint) * (ktOwn.speedMul || 0.55);
+      // ★ 门将不进上抢排序：角平分线 / 近门柱 / 传中 / 单刀 / 出击
+      self.keeperStep(p, dt);
+      self.updateEnergy(p, dt);
+      return;
     } else if (p.team !== carrier.team) {
       // 防守方：第 1 人上抢（看侵略性），第 2 人协防（看防守站位），其余慢跑落位
       // ★ 2026-10-09 用户：全员狂动不像足球——落位是慢跑，只有上抢才冲刺
@@ -1175,7 +1198,11 @@ Match.prototype.buildOptions = function (p) {
     // ★ 护球：菜单显示的是「护住」概率，不是必胜。身体差距大才高。
     opt('protect', Shield.preview(p, near.player).pHold * 100),
     // ★ 射门贴身如实（2026-10-12）：0.5m 内堵枪眼必碰到（intercept.js），别显示虚高成功率
-    opt('shoot', 78 + (FM.shoot(p) * ef - FM.keep(keeper) * keepEf) * 1.1 - distGoal * 0.5 - (near.dist < 3 ? 10 : 0)),
+    opt('shoot', 78 + (FM.shoot(p) * ef - FM.keep(keeper) * keepEf) * 1.1 - distGoal * 0.5 - (near.dist < 3 ? 10 : 0) - (function () {
+      if (!keeper) return 0;
+      var stop = GK.shotStop(self, keeper, p);
+      return stop.covered ? (6 + 18 * stop.posQ) : (3 * stop.posQ);
+    })()),
     // ★ 无必杀技的球员直接不列出该项（之前显示但光标跳过，易误导）
     (p.special && (p.pos === 'FW' || p.pos === 'MF'))
       ? opt('special', 84 + ((FM.shoot(p) * ef + 8) - FM.keep(keeper) * keepEf) * 1.1 - distGoal * 0.32)
@@ -1387,7 +1414,12 @@ Match.prototype.resolveAction = function (p, commandId, rate, params) {
       // ★ 掷骰只决定结果，过程走"射门飞行"阶段演出：
       //   球按瞄准点飞向球门、门将飞身扑救、防守球员回追，落地后再按既定结果结算。
       //   （解决"中圈射门直接判进球、全程没有任何动作"的问题）
-      var outcome = success ? 'goal' : (this.rng() < 0.55 ? 'saved' : 'miss');
+      var outcome;
+      if (success) outcome = 'goal';
+      else {
+        var stop = keeper ? GK.shotStop(this, keeper, p) : { pSave: 0.55 };
+        outcome = this.rng() < stop.pSave ? 'saved' : 'miss';
+      }
       this.startShotFlight(p, keeper, {
         isSpecial: isSpecial, label: label, outcome: outcome,
         snap: osShot.snap,
@@ -1984,6 +2016,7 @@ Match.prototype.serialize = function () {
         hasBall: self.ball.ownerId === p.id,
         frozen: self.now < p.frozenUntil,
         beaten: self.now < p.beatenUntil, // ★ 被晃倒：客户端画踉跄倾斜
+        gkSet: !!p.gkSet, gkSpread: !!p.gkSpread,
         cards: p.cards,
         sentOff: !!p.sentOff,
       };

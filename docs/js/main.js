@@ -1316,6 +1316,8 @@ function drawActors(t) {
     var spr = spriteFrameFor(p, t);
     // 外场图和门将旧表都不带烤进去的球，球一律另画。
     var dw = 16 * s * 1.9, dh = 24 * s * 1.9; // 2:3，与 48×72 帧同比例
+    if (p.gkSet) { dh *= 0.84; dw *= 1.12; } // 射门前站定：微蹲
+    if (p.gkSpread) dw *= 1.22; // 单刀封角度：把身体张开
     var stagger = !!p.beaten; // ★ 被晃倒：精灵倾斜踉跄，一眼看出被过了
     if (stagger) {
       ctx.save();
