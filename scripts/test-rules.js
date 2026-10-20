@@ -699,4 +699,6 @@ console.log('== 被动决策触发频率（2026-10-10 试玩调优） ==');
 })();
 
 console.log(failures === 0 ? '\nALL TESTS PASSED' : '\n' + failures + ' TEST(S) FAILED');
-process.exit(failures === 0 ? 0 : 1);
+if (failures) process.exit(1);
+// 领球 / 弹跳 / 护球 / 回防切换 / 门将站位（同一套固定种子）
+require('child_process').execSync('node ' + require('path').join(__dirname, 'test-play-physics.js'), { stdio: 'inherit' });

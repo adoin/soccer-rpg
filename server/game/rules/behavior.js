@@ -24,6 +24,7 @@
 'use strict';
 
 var Offside = require('./offside');
+var GKPos = require('./gk');
 var FM = require('../../../shared/fm');
 var FIELD_W = 105, FIELD_H = 68;
 var HALF = FIELD_W / 2;
@@ -336,11 +337,9 @@ function carrierAdjust(match, carrier) {
   return { tx: tx, ty: ty, spMul: spMul };
 }
 
-// 门将：随球横向小范围移动，不再钉死在阵型点
+// 门将：角平分线 + 深度 + 出击/传中（rules/gk.js）。这里只做转发，保持行为层入口。
 function keeperTarget(match, p) {
-  var tx = p.hx + clamp((match.ball.x - p.hx) * 0.12, -6, 6);
-  var ty = p.hy + clamp((match.ball.y - p.hy) * 0.25, -8, 8);
-  return { x: tx, y: ty };
+  return GKPos.position(match, p);
 }
 
 function nearestOpp(match, x, y, team) {
