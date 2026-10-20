@@ -7,7 +7,10 @@ var MANGA = {
   startT: 0,       // 本次分镜开始时间
   lastId: null,    // 上次播放的 action id
 };
-var MANGA_POSES = ['feint', 'frozen', 'burst'];
+// 单图方案（2026-10-15 用户拍板）：只用 Grok 截图抠图改占位色的复合图
+var MANGA_POSES = ['grok_beaten'];
+// 背景图（球场+观众席）不需要换色，单独加载
+MANGA.bgImgs = {};
 var MANGA_V = 'manga1';
 
 function mangaRecolor(src, team) {
@@ -29,21 +32,53 @@ function mangaRecolor(src, team) {
   return out;
 }
 
+// 复合图换色：主队占位色→进攻方，客队占位色→防守方（结算图只认纯色，不铺图案）
+function mangaRecolorComposite(src, atkTeam, defTeam) {
+  var cv = document.createElement('canvas');
+  cv.width = src.naturalWidth; cv.height = src.naturalHeight;
+  var cx = cv.getContext('2d');
+  cx.drawImage(src, 0, 0);
+  var id = cx.getImageData(0, 0, cv.width, cv.height);
+  if (typeof SharedKits !== 'undefined') {
+    var atkSpec = SharedKits.resolveKit(atkTeam, null);
+    var defSpec = SharedKits.resolveKit(defTeam, null);
+    // home 占位符画的是进攻者，away 占位符画的是防守者
+    SharedKits.recolorImageData(id, { home: atkSpec, away: defSpec }, 32, {});
+    if (SharedKits.recolorSkin) SharedKits.recolorSkin(id, 'fair');
+    cx.putImageData(id, 0, 0);
+  }
+  var out = new Image();
+  out.src = cv.toDataURL();
+  return out;
+}
+
 function mangaInit() {
   MANGA_POSES.forEach(function (name) {
     var src = new Image();
     src.onload = function () {
       try {
-        MANGA.imgs[name] = {
-          home: mangaRecolor(src, 'home'),
-          away: mangaRecolor(src, 'away'),
-        };
-        // 三张都就绪才算 ready
+        if (name === 'beaten' || name === 'grok_beaten') {
+          // 复合图：按攻守双方分别换色
+          MANGA.imgs[name] = {
+            home: mangaRecolorComposite(src, 'home', 'away'),
+            away: mangaRecolorComposite(src, 'away', 'home'),
+          };
+        } else {
+          MANGA.imgs[name] = {
+            home: mangaRecolor(src, 'home'),
+            away: mangaRecolor(src, 'away'),
+          };
+        }
+        // 全部就绪才算 ready
         if (MANGA_POSES.every(function (k) { return MANGA.imgs[k]; })) MANGA.ready = true;
       } catch (e) {}
     };
     src.src = 'assets/manga/' + name + '.png?v=' + MANGA_V;
   });
+  // 背景图单独加载（不换色）
+  var bgsrc = new Image();
+  bgsrc.onload = function () { MANGA.bgImgs.stadium = bgsrc; };
+  bgsrc.src = 'assets/manga/stadium_bg.jpg?v=' + MANGA_V;
 }
 
 // ---------- 漫画视觉元素 ----------
@@ -127,140 +162,71 @@ function qbez(p0, pc, p1, t) {
 }
 
 // ---------- dribble-win 分镜时间线 ----------
-// 四幕：假动作（0-0.9s）→ 呆住+扬长而去（0.9-1.8s）→ 闪身轨迹（1.8-2.7s）→ 突破（2.7s+）
+// 四幕：假动作（0-0.9s）→ 被过复合（0.9-1.8s）→ 扬长而去（1.8-2.7s）→ 突破（2.7s+）
 function drawMangaDribbleWin(a, t) {
   var id = cutActionId(a);
   if (MANGA.lastId !== id) { MANGA.lastId = id; MANGA.startT = t; }
   var el = (t - MANGA.startT) / 1000; // 秒
 
   var atkTeam = a.team === 'away' ? 'away' : 'home';
-  var defTeam = atkTeam === 'home' ? 'away' : 'home';
-  var feintIm = MANGA.imgs.feint && MANGA.imgs.feint[atkTeam];
-  var frozenIm = MANGA.imgs.frozen && MANGA.imgs.frozen[defTeam];
-  var burstIm = MANGA.imgs.burst && MANGA.imgs.burst[atkTeam];
+  var grokIm = MANGA.imgs.grok_beaten && MANGA.imgs.grok_beaten[atkTeam];
+  var stadiumIm = MANGA.bgImgs.stadium;
 
   // 暗场
   ctx.fillStyle = 'rgba(4,6,14,0.92)';
   ctx.fillRect(0, 0, W, H);
 
-  var ACT = 0.9; // 每幕秒数
-  var act = el < ACT ? 0 : el < ACT * 2 ? 1 : el < ACT * 3 ? 2 : 3;
-  var ae = el - act * ACT; // 本幕内经过秒数
-
-  // 震屏（每幕切换时）
-  var shake = ae < 0.22 ? 8 : 0;
+  // 开场震屏
+  var shake = el < 0.22 ? 8 : 0;
   ctx.save();
   ctx.translate(shake ? (Math.random() - 0.5) * shake : 0, shake ? (Math.random() - 0.5) * shake : 0);
 
-  var cx = W / 2, pw = Math.min(620, W - 60), ph = pw * 0.72;
+  var cx = W / 2, pw = Math.min(680, W - 40), ph = pw * 0.72;
   var py = Math.max(40, (H - ph) / 2 - 60);
-  var gy = py + ph - 8; // 地面线
-  var p = Math.min(1, ae / 0.25); // 砸入进度
+  var p = Math.min(1, el / 0.25); // 砸入进度
   var sc = 0.7 + 0.3 * easeOutBack(p);
 
-  function beginPanel(rot) {
-    ctx.save();
-    ctx.translate(cx, py + ph / 2); ctx.scale(sc, sc); ctx.translate(-cx, -(py + ph / 2));
-    mangaPanel(cx - pw / 2, py, pw, ph, rot);
-  }
   function imOk(im) { return im && im.complete && im.naturalWidth; }
 
-  if (act === 0) {
-    // ===== 第一幕：假动作 =====
-    beginPanel(-0.02);
-    if (imOk(feintIm)) {
-      var ih = ph * 0.92;
-      ctx.drawImage(feintIm, cx - ih / 2, gy - ih, ih, ih);
-    }
-    ctx.restore();
-    mangaSpeedLines(cx, py + ph / 2, 60, pw * 0.7, 24, '#111', 2.5);
-    if (ae > 0.3) mangaSFX('假动作！', cx, py + 70, 54, -0.1, (ae - 0.3) / 0.3);
-    mangaFlash(Math.max(0, 0.7 - ae * 2));
-  } else if (act === 1) {
-    // ===== 第二幕：呆住（前景）+ 控球者扬长而去（背景）=====
-    beginPanel(0.015);
-    // 背景：控球者小号在右后方离去
-    if (imOk(burstIm)) {
-      var bh = ph * 0.52, bx = cx + pw * 0.22, bgy = gy - ph * 0.10;
-      ctx.globalAlpha = 0.92;
-      ctx.drawImage(burstIm, bx - bh / 2, bgy - bh, bh, bh);
-      ctx.globalAlpha = 1;
-      // 离去的横向速度线
-      ctx.save();
-      ctx.strokeStyle = '#111'; ctx.lineWidth = 3;
-      ctx.beginPath();
-      for (var li = 0; li < 4; li++) {
-        var ly = bgy - bh * 0.25 - li * bh * 0.18;
-        ctx.moveTo(bx - bh / 2 - 70, ly);
-        ctx.lineTo(bx - bh / 2 - 14, ly);
-      }
-      ctx.stroke();
-      ctx.restore();
-    }
-    // 前景：防守人呆住，僵直颤抖
-    if (imOk(frozenIm)) {
-      var ih2 = ph * 0.88;
-      var tremble = Math.sin(el * 40) * 3;
-      ctx.drawImage(frozenIm, cx - pw * 0.12 - ih2 / 2 + tremble, gy - ih2, ih2, ih2);
-    }
-    ctx.restore();
-    if (ae > 0.35) mangaSFX('！', cx - pw * 0.12, py + 84, 88, 0.12, (ae - 0.35) / 0.3);
-    mangaFlash(Math.max(0, 0.5 - ae * 2));
-  } else if (act === 2) {
-    // ===== 第三幕：闪身而过 — 带球轨迹 + 残影 =====
-    beginPanel(-0.01);
-    // 防守人被留在左侧
-    if (imOk(frozenIm)) {
-      var dh = ph * 0.62, dx = cx - pw * 0.30;
-      ctx.globalAlpha = 0.85;
-      ctx.drawImage(frozenIm, dx - dh / 2, gy - dh, dh, dh);
-      ctx.globalAlpha = 1;
-    }
-    // 闪身弧线：从防守人身侧绕过
-    var p0 = { x: cx - pw * 0.22, y: gy };
-    var pc = { x: cx + pw * 0.02, y: gy - ph * 0.42 };
-    var p1 = { x: cx + pw * 0.30, y: gy };
-    ctx.save();
-    ctx.strokeStyle = '#111'; ctx.lineWidth = 4; ctx.setLineDash([14, 9]);
-    ctx.beginPath();
-    for (var si = 0; si <= 24; si++) {
-      var spt = qbez(p0, pc, p1, si / 24);
-      if (si === 0) ctx.moveTo(spt.x, spt.y); else ctx.lineTo(spt.x, spt.y);
-    }
-    ctx.stroke();
-    ctx.setLineDash([]);
-    ctx.restore();
-    // 三重残影沿轨迹
-    if (imOk(burstIm)) {
-      var ghosts = [
-        { t: 0.38, alpha: 0.22, s: 0.62 },
-        { t: 0.68, alpha: 0.45, s: 0.80 },
-        { t: 1.00, alpha: 1.00, s: 0.95 },
-      ];
-      for (var gi = 0; gi < ghosts.length; gi++) {
-        var g = ghosts[gi], gp = qbez(p0, pc, p1, g.t);
-        var gh = ph * 0.80 * g.s;
-        ctx.globalAlpha = g.alpha;
-        ctx.drawImage(burstIm, gp.x - gh / 2, gp.y - gh, gh, gh);
-      }
-      ctx.globalAlpha = 1;
-    }
-    ctx.restore();
-    mangaSpeedLines(cx + pw * 0.18, py + ph * 0.45, 40, pw * 0.5, 20, '#111', 3);
-    if (ae > 0.3) mangaSFX('唰！', cx + pw * 0.08, py + 64, 60, -0.06, (ae - 0.3) / 0.3);
-    mangaFlash(Math.max(0, 0.55 - ae * 2));
+  // 单图：面板砸入 + 球场背景 + 复合图
+  ctx.save();
+  ctx.translate(cx, py + ph / 2); ctx.scale(sc, sc); ctx.translate(-cx, -(py + ph / 2));
+  // 先画边框（不填充底色，背景图当底）
+  ctx.save();
+  ctx.translate(cx, py + ph / 2); ctx.rotate(-0.01); ctx.translate(-cx, -(py + ph / 2));
+  ctx.strokeStyle = '#111'; ctx.lineWidth = 6;
+  ctx.strokeRect(cx - pw / 2 + 3, py + 3, pw - 6, ph - 6);
+  ctx.lineWidth = 2;
+  ctx.strokeRect(cx - pw / 2 + 10, py + 10, pw - 20, ph - 20);
+  ctx.restore();
+  // 面板内区域裁剪画背景和人物
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(cx - pw / 2 + 12, py + 12, pw - 24, ph - 24);
+  ctx.clip();
+  if (stadiumIm && stadiumIm.complete && stadiumIm.naturalWidth) {
+    var bw = pw, bh = bw * stadiumIm.naturalHeight / stadiumIm.naturalWidth;
+    if (bh < ph) { bh = ph; bw = bh * stadiumIm.naturalWidth / stadiumIm.naturalHeight; }
+    ctx.drawImage(stadiumIm, cx - bw / 2, py + ph - bh, bw, bh);
   } else {
-    // ===== 第四幕：突破 =====
-    beginPanel(-0.01);
-    if (imOk(burstIm)) {
-      var ih3 = ph * 0.95;
-      ctx.drawImage(burstIm, cx - ih3 / 2, gy - ih3, ih3, ih3);
-    }
-    ctx.restore();
-    mangaSpeedLines(cx, py + ph / 2, 40, pw * 0.75, 36, '#111', 3.5);
-    if (ae > 0.3) mangaSFX('突破！', cx, py + 70, 64, -0.06, (ae - 0.3) / 0.3);
-    mangaFlash(Math.max(0, 0.6 - ae * 2));
+    // 背景没加载时用网点纸兜底
+    ctx.fillStyle = '#f4f1e8';
+    ctx.fillRect(cx - pw / 2 + 12, py + 12, pw - 24, ph - 24);
   }
+  if (imOk(grokIm)) {
+    // 远景构图：人物缩小，多露球场
+    var iw = pw * 0.72, ih = iw * grokIm.naturalHeight / grokIm.naturalWidth;
+    if (ih > ph * 0.72) { ih = ph * 0.72; iw = ih * grokIm.naturalWidth / grokIm.naturalHeight; }
+    // 人物放下面，脚踩草地
+    ctx.drawImage(grokIm, cx - iw / 2, py + ph - ih - 14, iw, ih);
+  }
+  ctx.restore(); // clip
+  ctx.restore(); // panel transform
+
+  // 拟声词
+  if (el > 0.35) mangaSFX('突破！', cx, py + 66, 58, -0.08, (el - 0.35) / 0.3);
+  mangaFlash(Math.max(0, 0.6 - el * 2));
+
   ctx.restore(); // 震屏
 
   // 底部信息条（比分/标题/跳过提示，复用现有风格）
