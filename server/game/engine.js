@@ -287,7 +287,7 @@ Match.prototype.startShotFlight = function (p, keeper, o) {
     x1 = goalX;
     y1 = gy + shotSide * 1.1;
   } else {
-    // 偏出 / 托出底线：飞出门框范围
+    // 偏出 / 扑出底线：飞出门框范围
     x1 = goalX + dir * 2.5;
     y1 = gy + shotSide * (goalHalf + 1.4 + this.rng() * 2.6);
   }
@@ -399,7 +399,7 @@ Match.prototype.finishShotFlight = function () {
     shotAct(sf.outcome === 'tip' ? 'gk-tip' : 'gk-parry',
       sf.outcome === 'tip'
         ? keeper.name + ' 把球托出横梁，球出了底线！'
-        : keeper.name + ' 把球托出底线！');
+        : keeper.name + ' 把球扑出底线！');
     return;
   } else if (sf.outcome === 'post') {
     var postIn = sf.team === 'home' ? -1 : 1;
@@ -1536,7 +1536,7 @@ Match.prototype.resolveAction = function (p, commandId, rate, params) {
         this.setAction({
           kind: 'pass', label: passLabel, playerName: p.name, team: p.team,
           success: false, cut: null,
-          text: '⚠ ' + target.name + '识破越位陷阱，急停收步！' + p.name + '的传球滚向无人地带。',
+          text: '⚠ ' + target.name + ' 识破越位陷阱，急停收步！' + p.name + ' 的传球滚向无人地带。',
           until: Date.now() + 1800,
         });
         return { kind: commandId, label: passLabel, playerName: p.name, success: false, pending: true, text: '' };
@@ -1831,7 +1831,7 @@ Match.prototype.whistleOffside = function (os, passer) {
     playerName: os.player.name,
     team: defendingTeam,
     success: false,
-    text: Offside.reasonText(os.reason, os.player) + ' ' + teamName + '获得间接任意球。',
+    text: Offside.reasonText(os.reason, os.player) + ' ' + teamName + ' 获得间接任意球。',
     cut: null,
     until: Date.now() + 2200,
   });
@@ -1904,7 +1904,7 @@ Match.prototype.whistleThrowIn = function (team, bx, by) {
   var teamName = team === 'home' ? T.HOME_NAME : T.AWAY_NAME;
   this.setAction({
     kind: 'throwin', label: '界外球', playerName: taker.name, team: team, success: true,
-    text: '球出边线，' + teamName + '获得界外球（' + taker.name + '掷）。',
+    text: '球出边线，' + teamName + ' 获得界外球（' + taker.name + ' 掷）。',
     cut: null, until: Date.now() + 1400,
   });
 };
@@ -1936,7 +1936,7 @@ Match.prototype.whistleGoalKick = function (team) {
   var teamName = team === 'home' ? T.HOME_NAME : T.AWAY_NAME;
   this.setAction({
     kind: 'goalkick', label: '球门球', playerName: keeper.name, team: team, success: true,
-    text: teamName + '获得球门球（' + keeper.name + '开）。',
+    text: teamName + ' 获得球门球（' + keeper.name + ' 开）。',
     cut: null, until: Date.now() + 1600,
   });
 };
@@ -1973,7 +1973,7 @@ Match.prototype.whistleCorner = function (team) {
   var teamName = team === 'home' ? T.HOME_NAME : T.AWAY_NAME;
   this.setAction({
     kind: 'corner', label: '角球', playerName: taker.name, team: team, success: true,
-    text: teamName + '获得角球（' + taker.name + '主罚）。',
+    text: teamName + ' 获得角球（' + taker.name + ' 主罚）。',
     cut: null, until: Date.now() + 1800,
   });
 };
@@ -2040,20 +2040,17 @@ Match.prototype.applyFoulResult = function (foul) {
       playerName: vName,
       team: foul.team,
       success: true,
-      text: '🟢 ' + foul.defender.name + '犯规，但裁判示意进攻有利，比赛继续！',
+      text: '🟢 ' + foul.defender.name + ' 犯规，但裁判示意进攻有利，比赛继续！',
       until: Date.now() + 2200,
     });
     return this.lastAction;
   }
 
   var text = Foul.cardText(foul);
-  var teamName = foul.team === 'home' ? T.HOME_NAME : T.AWAY_NAME;
 
   if (foul.penalty) {
     return this.setupPenalty(foul, text);
   }
-
-  text += teamName + '获得直接任意球。';
   var fbx = clamp(foul.spot.x, 2, FIELD.W - 2);
   var fby = clamp(foul.spot.y, 2, FIELD.H - 2);
   var taker = foul.victim;
@@ -2134,13 +2131,15 @@ Match.prototype.setupPenalty = function (foul, prefixText) {
     kind: 'penalty', team: team, x: spotX, y: spotY, taker: taker, label: '犯规 → 点球',
   });
   var teamName = team === 'home' ? T.HOME_NAME : T.AWAY_NAME;
+  var sentence = prefixText || '';
+  if (sentence.indexOf('获得点球') < 0) sentence += teamName + ' 获得点球。';
   this.setAction({
     kind: 'penalty',
     label: '点球',
     playerName: (foul.defender && foul.defender.name) || '',
     team: team,
     success: false,
-    text: (prefixText || '') + teamName + '获得点球。',
+    text: sentence,
     cut: null,
     until: Date.now() + 1800,
   });
@@ -2167,12 +2166,12 @@ Match.prototype.resolvePenalty = function (foul, prefixText) {
     0.4, 0.95
   );
   var roll = this.rng();
-  var call = prefixText + ' ' + shooter.name + '主罚点球……';
+  var call = prefixText + ' ' + shooter.name + ' 主罚点球……';
   if (roll < pGoal) {
     var ga2 = this.goal(shooter, shooter.team);
     ga2.kind = 'penalty';
     ga2.label = '点球命中';
-    ga2.text = call + '球进了！' + shooter.name + '顶住压力罚入点球！';
+    ga2.text = call + '球进了！' + shooter.name + ' 顶住压力罚入点球！';
     ga2.cut = 'shoot-goal';
     return ga2;
   }
@@ -2185,7 +2184,7 @@ Match.prototype.resolvePenalty = function (foul, prefixText) {
     playerName: shooter.name,
     team: shooter.team,
     success: false,
-    text: call + (pSaved ? '被门将' + keeper.name + '神勇扑出！' : '偏出了球门！'),
+    text: call + (pSaved ? '被门将 ' + keeper.name + ' 神勇扑出！' : '偏出了球门！'),
     cut: pSaved ? 'shoot-save' : 'shoot-miss',
     until: Date.now() + 2000,
   });

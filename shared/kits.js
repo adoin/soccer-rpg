@@ -341,6 +341,7 @@
   // 漫画色键分类。JPG 会把品红 #FF00FF 压成低 G 的粉，和球鞋 #FF0088 叠在一起，
   // 那种像素先标成 ambiguous，再按连通块大小分开（大块是球衣，孤立小块是鞋）。
   // 返回 null 表示草地、白线、球、手套、门框、墨线，不换色。
+  // JPG 在色键和墨线交界留下的窄光晕分类不到，换色时由 snapOutlineHalos 补上。
   function mangaPixelClass(r, g, b, a) {
     if (a != null && a < 128) return null;
     // 已经吸附过的精确色键直接认，避免大块球鞋在「有品红」的图里被并回球衣。
@@ -363,6 +364,93 @@
     if (h >= 195 && h <= 255 && b > 70 && r < 95 && b > g + 32 && g < b * 0.7 && r < b * 0.6) return 'hair';
     if (h >= 165 && h <= 220 && r < 100 && g > 70 && b > 90 && g > b * 0.62) return 'atkShorts';
     return null;
+  }
+
+  // 贴着球衣/短裤/鞋、又没落进色键窗口的像素：包在色块里的涂成该部位，
+  // 贴着墨线的暗色溢色涂成墨线。草地、白线、皮球和皮肤不进来。
+  function haloMatches(kind, r, g, b, c, loose) {
+    if (kind === 'atkJersey' || kind === 'boot') {
+      // 品红/玫红光晕：蓝不低于绿。纯红皮球蓝更低，进不来。
+      if (!(b + 6 >= g && g <= 70 && r > g + 10 && r >= 22)) return false;
+      if (loose) return b > 4 || r > g + 16;
+      return r >= 40 && g <= 58 && (b > 12 || (g <= 16 && r >= 48));
+    }
+    if (kind === 'atkShorts') {
+      if (!(r < 80 && b > 24 && b + 8 >= g && r < b && (g + b) > r * 2)) return false;
+      return loose ? (g < 150 || b > g) : (g < 130 && b > 28);
+    }
+    if (kind === 'defJersey') {
+      if (!(r > 48 && r > g + 12 && b < 80 && g < r * 0.72 && c.h < 50)) return false;
+      return loose ? r >= 28 : (g <= 22 || r > 70);
+    }
+    if (kind === 'defShorts') {
+      if (!(b > 28 && b > r && b > g + 8 && g < 55 && r < 100)) return false;
+      return true;
+    }
+    return false;
+  }
+
+  function snapOutlineHalos(cls, d, w, h) {
+    var keys = ['atkJersey', 'atkShorts', 'defJersey', 'defShorts', 'boot'];
+    var canon = {
+      atkJersey: [255, 0, 255],
+      atkShorts: [0, 255, 255],
+      defJersey: [255, 136, 0],
+      defShorts: [136, 0, 255],
+      boot: [255, 0, 136],
+    };
+    var n = w * h;
+    var extra = new Array(n);
+    var p, i, r, g, b, a, c, max, min, x, y, dx, dy, nx, ny, nk, ni, nr, ng, nb, nv, nmin;
+    for (p = 0; p < n; p++) {
+      if (cls[p]) continue;
+      i = p * 4;
+      r = d[i]; g = d[i + 1]; b = d[i + 2]; a = d[i + 3];
+      if (a < 128) continue;
+      c = pixelHsv(r, g, b);
+      max = c.v;
+      min = r < g ? r : g; if (b < min) min = b;
+      if (max - min < 12) continue;
+      if (c.s < 0.16 && max > 185) continue;
+      if (c.h >= 70 && c.h <= 160 && g > r + 8 && g + 8 >= b && b < g * 0.55 && c.s > 0.22 && g > 55) continue;
+      x = p % w; y = (p / w) | 0;
+      var votes = { atkJersey: 0, atkShorts: 0, defJersey: 0, defShorts: 0, boot: 0 };
+      var darkInk = 0;
+      for (dy = -1; dy <= 1; dy++) {
+        for (dx = -1; dx <= 1; dx++) {
+          if (!dx && !dy) continue;
+          nx = x + dx; ny = y + dy;
+          if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue;
+          nk = cls[ny * w + nx];
+          if (votes[nk] != null) votes[nk]++;
+          else if (!nk) {
+            ni = (ny * w + nx) * 4;
+            nr = d[ni]; ng = d[ni + 1]; nb = d[ni + 2];
+            nv = nr > ng ? nr : ng; if (nb > nv) nv = nb;
+            nmin = nr < ng ? nr : ng; if (nb < nmin) nmin = nb;
+            if (nv < 36 && nv - nmin < 28) darkInk++;
+          }
+        }
+      }
+      var loose = max < 48;
+      var skinish = c.s >= 0.14 && c.s <= 0.7 && r > 150 && g > 100 && b > 70 && r > g && g + 12 > b && (r - b) > 22 && c.h < 50;
+      var best = null, bestN = 0, bestD = 1e9;
+      for (var ki = 0; ki < keys.length; ki++) {
+        var kind = keys[ki];
+        var cnt = votes[kind];
+        if (cnt < 1 || !haloMatches(kind, r, g, b, c, loose)) continue;
+        var canonRgb = canon[kind];
+        var dist = Math.abs(r - canonRgb[0]) + Math.abs(g - canonRgb[1]) + Math.abs(b - canonRgb[2]);
+        if (cnt > bestN || (cnt === bestN && dist < bestD)) {
+          best = kind; bestN = cnt; bestD = dist;
+        }
+      }
+      if (!best) continue;
+      if (skinish && bestN < 3) continue;
+      if (bestN < 3 && max < 96 && (darkInk > 0 || max < 48)) extra[p] = 'ink';
+      else extra[p] = best;
+    }
+    for (var e = 0; e < n; e++) if (extra[e]) cls[e] = extra[e];
   }
 
   function jerseyHexOf(look, kit) {
@@ -460,6 +548,7 @@
         for (var cz = 0; cz < comps[ck].ids.length; cz++) cls[comps[ck].ids[cz]] = lab;
       }
     }
+    snapOutlineHalos(cls, d, w, h);
     var INF = 1e9;
     var da = new Float64Array(n);
     var dd = new Float64Array(n);
@@ -501,6 +590,7 @@
     for (var k = 0; k < n; k++) {
       var kind = cls[k];
       if (!kind) continue;
+      if (kind === 'ink') { fill(k * 4, [0, 0, 0]); continue; }
       var side = da[k] <= dd[k] ? 'atk' : 'def';
       var rgb = null;
       if (kind === 'atkJersey' || kind === 'atkShorts') rgb = paintOf.atk[kind];

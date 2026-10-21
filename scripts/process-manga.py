@@ -66,7 +66,9 @@ def hsv(r, g, b):
 
 
 def manga_class(r, g, b, a=255):
-    """与 shared/kits.js mangaPixelClass 同一套阈值。"""
+    """与 shared/kits.js mangaPixelClass 同一套阈值。
+    色键和墨线之间的窄光晕不在这里改，运行时 recolorManga 会收成部位色或墨线。
+    """
     if a < 128:
         return None
     boot_d = abs(r - 255) + abs(g) + abs(b - 136)

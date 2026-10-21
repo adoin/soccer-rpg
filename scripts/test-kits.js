@@ -133,6 +133,56 @@ eq('深肤没有把鞋涂掉', px(cell, 22, 58)[0] > 160);
   eq('近品红也被换掉', px(shot, 18, 12)[0] !== 248 || px(shot, 18, 12)[2] !== 250);
 })();
 
+// 黑球衣：色键描边外的 JPG 光晕要收成部位色或墨线，不能留一圈红/品红。
+(function () {
+  var halo = img(22, 16, function (set) {
+    var x, y;
+    for (y = 0; y < 16; y++) for (x = 0; x < 22; x++) set(x, y, 40, 140, 40);
+    set(1, 1, 250, 250, 250);
+    set(1, 2, 0, 0, 0);
+    set(20, 2, 210, 40, 30);
+    set(18, 8, 120, 20, 40);
+    for (y = 5; y <= 11; y++) for (x = 5; x <= 13; x++) set(x, y, 0, 0, 0);
+    for (y = 6; y <= 10; y++) for (x = 6; x <= 12; x++) set(x, y, 255, 0, 255);
+    set(9, 8, 119, 0, 56);
+    set(8, 8, 67, 0, 9);
+    set(6, 7, 180, 40, 80);
+    set(6, 8, 120, 20, 40);
+    set(6, 9, 120, 20, 40);
+    set(5, 8, 33, 0, 11);
+    for (y = 13; y <= 15; y++) for (x = 6; x <= 12; x++) set(x, y, 0, 255, 255);
+    set(6, 13, 0, 70, 90);
+    set(5, 14, 8, 18, 26);
+  });
+  var black = { pattern: 'solid', primary: '#111111', secondary: '#111111', shorts: '#111111', shoes: '#111111' };
+  kits.recolorManga(halo, { team: 'home', kit: black }, { team: 'away', kit: black });
+  function flatDark(p) { return p[0] < 40 && p[1] < 40 && p[2] < 40; }
+  eq('球衣内部品红孔收成黑', flatDark(px(halo, 9, 8)) && flatDark(px(halo, 8, 8)));
+  eq('球衣左侧红边收成黑或墨线', flatDark(px(halo, 6, 7)) && flatDark(px(halo, 6, 8)) && flatDark(px(halo, 6, 9)));
+  eq('描边溢色收成墨线', flatDark(px(halo, 5, 8)));
+  eq('短裤青边收成黑或墨线', flatDark(px(halo, 6, 13)) && flatDark(px(halo, 5, 14)));
+  eq('草地没被黑球衣吃掉', px(halo, 0, 0)[0] === 40 && px(halo, 0, 0)[1] === 140 && px(halo, 14, 14)[1] === 140);
+  eq('白线还在', px(halo, 1, 1)[0] === 250);
+  eq('原有墨线还是黑的', px(halo, 1, 2)[0] === 0 && px(halo, 1, 2)[1] === 0);
+  eq('没挨着色块的红球还是红的', px(halo, 20, 2)[0] === 210 && px(halo, 20, 2)[1] === 40);
+  eq('孤立的红边不会自己变色', px(halo, 18, 8)[0] === 120 && px(halo, 18, 8)[1] === 20);
+
+  var blue = img(16, 12, function (set) {
+    var x, y;
+    for (y = 0; y < 12; y++) for (x = 0; x < 16; x++) set(x, y, 40, 140, 40);
+    for (y = 3; y <= 8; y++) for (x = 3; x <= 10; x++) set(x, y, 0, 0, 0);
+    for (y = 4; y <= 7; y++) for (x = 4; x <= 9; x++) set(x, y, 255, 0, 255);
+    set(4, 5, 120, 20, 40);
+    set(3, 5, 30, 0, 12);
+  });
+  kits.recolorManga(blue, {
+    team: 'home', kit: { primary: '#2244cc', shorts: '#2244cc', shoes: '#222222' },
+  }, { team: 'away' });
+  var fringe = px(blue, 4, 5), cast = px(blue, 3, 5);
+  eq('蓝球衣把红边收成球衣色', fringe[2] > fringe[0] + 20 && fringe[0] < 80);
+  eq('蓝球衣的描边溢色收成墨线', cast[0] < 20 && cast[1] < 20 && cast[2] < 20);
+})();
+
 var made = teams.makeTeams();
 eq('10 号是斜带金鞋', made.home[9] && made.home.filter(function (p) { return p.num === 10; })[0].kit.pattern === 'sash');
 eq('没有单独配置的球员 kit 为空', made.home.filter(function (p) { return p.num === 3; })[0].kit === null);

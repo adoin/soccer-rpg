@@ -22,6 +22,7 @@
 'use strict';
 
 var FM = require('../../../shared/fm');
+var Teams = require('../../../shared/teams');
 
 var FIELD_W = 105;
 var FIELD_H = 68;
@@ -170,17 +171,21 @@ function applyCards(foul) {
 
 function cardText(foul) {
   var d = foul.defender, v = foul.victim;
-  var t = '';
+  var name = d.name;
+  var team = foul.team === 'home' ? Teams.HOME_NAME : Teams.AWAY_NAME;
+  var restart = foul.penalty
+    ? (team + ' 获得点球。')
+    : (team + ' 获得直接任意球。');
   if (foul.card === 'red') {
-    t = '🟥 红牌！' + d.name + foul.severityLabel + '，被罚下场！';
-  } else if (foul.card === 'yellow') {
-    t = '🟨 黄牌！' + d.name + foul.severityLabel + '放倒了' + v.name + '。';
-  } else {
-    t = '哨响，' + d.name + '犯规。';
+    var why = foul.severityLabel ? (' ' + foul.severityLabel) : '';
+    return '🟥 红牌！' + name + why + '，被罚下场。' + restart;
   }
-  if (foul.penalty) t += '禁区内犯规——点球！';
-  else if (!foul.advantage) t += v.team === 'home' ? '青鹰高校' : '烈风学院';
-  return t;
+  if (foul.card === 'yellow') {
+    var whyY = foul.severityLabel ? (' ' + foul.severityLabel) : '';
+    var down = (v && v.name) ? ('，放倒了 ' + v.name) : '';
+    return '🟨 黄牌！' + name + whyY + down + '。' + restart;
+  }
+  return '哨响！' + name + ' 犯规，' + restart;
 }
 
 module.exports = {

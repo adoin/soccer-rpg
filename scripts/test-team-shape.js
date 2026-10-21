@@ -2,6 +2,7 @@
 // 控球人必须永远是主队；犯规/越位摆出任意球或点球；4-2-3-1 整体站位；临时补位后换回。
 'use strict';
 
+var fs = require('fs');
 var E = require('../server/game/engine');
 var Behavior = require('../server/game/rules/behavior');
 var Teams = require('../shared/teams');
@@ -99,6 +100,8 @@ console.log('== 任意球 / 点球 / 界外球 ==');
   });
   ok(close.length === 0, '对方退出 9.15 米', close.length + '人太近');
   ok(controlledTeam(m) === 'home' && m.control.playerId === 'h10', '主队任意球由主队主罚者控制', m.control.playerId);
+  ok(act.text === '哨响！爆裂 直 犯规，青鹰高校 获得直接任意球。', '直接任意球文案', act.text);
+  ok(act.text.split('青鹰高校').length === 2, '队名只出现一次', act.text);
 })();
 
 (function () {
@@ -114,6 +117,8 @@ console.log('== 任意球 / 点球 / 界外球 ==');
   ok(m.ball.ownerId && m.byId[m.ball.ownerId].team === 'away', '客队任意球由客队主罚', m.ball.ownerId);
   ok(Math.abs(m.byId[m.ball.ownerId].x - 40) < 0.05, '客队主罚者站在犯规点');
   ok(controlledTeam(m) === 'home', '客队定位球时人仍控制主队', m.control.playerId);
+  ok(m.lastAction.text === '哨响！松本 勇 犯规，烈风学院 获得直接任意球。', '客队直接任意球文案', m.lastAction.text);
+  ok(m.lastAction.text.split('烈风学院').length === 2, '客队队名只出现一次', m.lastAction.text);
 })();
 
 (function () {
@@ -133,6 +138,8 @@ console.log('== 任意球 / 点球 / 界外球 ==');
   });
   ok(close.length === 0, '越位方退出 9.15 米', close.length + '人太近');
   ok(controlledTeam(m) === 'home', '越位任意球给对方时仍控制主队', m.control.playerId);
+  ok(act.text === '🚩 越位！木村 雷 处于越位位置接球，裁判鸣哨。 烈风学院 获得间接任意球。', '越位文案队名和名字分开', act.text);
+  ok(act.text.split('烈风学院').length === 2, '越位队名只出现一次', act.text);
 })();
 
 (function () {
@@ -146,6 +153,8 @@ console.log('== 任意球 / 点球 / 界外球 ==');
   };
   var act = m.applyFoulResult(f);
   ok(m.phase === 'penalty' && act.kind === 'penalty', '禁区内犯规进入点球', m.phase + '/' + act.kind);
+  ok(act.text === '🟨 黄牌！爆裂 直 禁区内犯规，放倒了 风间 隼。青鹰高校 获得点球。', '点球文案', act.text);
+  ok(act.text.split('青鹰高校').length === 2 && act.text.indexOf('获得直接任意球') < 0, '点球队名只写一次', act.text);
   ok(m.restart && m.restart.label === '犯规 → 点球', '点球横幅', m.restart && m.restart.label);
   ok(Math.abs(m.ball.x - 94) < 0.05 && Math.abs(m.ball.y - 34) < 0.05, '球在点球点', m.ball.x + ',' + m.ball.y);
   ok(m.ball.ownerId === 'h10' && Math.abs(P(m, 'h10').x - 94) < 0.05, '主罚者站在点球点');
@@ -176,6 +185,32 @@ console.log('== 任意球 / 点球 / 界外球 ==');
   m3.ball.x = 106; m3.ball.y = 20; m3.ball.lastTouchTeam = 'home';
   m3.whistleOutOfBounds();
   ok(m3.lastAction.kind === 'goalkick', '球门球判罚还在', m3.lastAction.kind);
+  ok(m.lastAction.text.indexOf(' 获得界外球（') >= 0 && m.lastAction.text.indexOf(' 掷）。') >= 0, '界外球文案留出空格', m.lastAction.text);
+  ok(m2.lastAction.text.indexOf(' 获得角球（') >= 0 && m2.lastAction.text.indexOf(' 主罚）。') >= 0, '角球文案留出空格', m2.lastAction.text);
+  ok(m3.lastAction.text.indexOf(' 获得球门球（') >= 0 && m3.lastAction.text.indexOf(' 开）。') >= 0, '球门球文案留出空格', m3.lastAction.text);
+  var red = newMatch(47);
+  var rf = {
+    defender: P(red, 'a4'), victim: P(red, 'h9'), team: 'home',
+    spot: { x: 70, y: 34 }, card: 'red', penalty: false, advantage: false,
+    severity: 90, severityLabel: '严重犯规',
+  };
+  var ra = red.applyFoulResult(rf);
+  ok(ra.text === '🟥 红牌！爆裂 直 严重犯规，被罚下场。青鹰高校 获得直接任意球。', '红牌文案', ra.text);
+  ok(ra.text.split('青鹰高校').length === 2, '红牌队名只出现一次', ra.text);
+  var adv = newMatch(48);
+  adv.applyFoulResult({
+    defender: P(adv, 'a4'), victim: P(adv, 'h10'), team: 'home',
+    spot: { x: 50, y: 34 }, card: 'none', penalty: false, advantage: true, severity: 20,
+  });
+  ok(adv.lastAction.text === '🟢 爆裂 直 犯规，但裁判示意进攻有利，比赛继续！', '有利文案', adv.lastAction.text);
+  var cut = fs.readFileSync(require('path').join(__dirname, '../client/js/manga-cutin.js'), 'utf8');
+  var parry = (cut.match(/'gk-parry':[^\n]+/) || [''])[0];
+  var tip = (cut.match(/'gk-tip':[^\n]+/) || [''])[0];
+  ok(parry.indexOf("sfx: '扑出底线！'") >= 0, '底线扑救横幅是扑出底线', parry);
+  ok(tip.indexOf("sfx: '托出！'") >= 0, '托出横幅只留给高出', tip);
+  ok(cut.split('托出！').length === 2, '托出！只出现在 gk-tip', cut.split('托出！').length - 1);
+  var eng = fs.readFileSync(require('path').join(__dirname, '../server/game/engine.js'), 'utf8');
+  ok(eng.indexOf('把球扑出底线！') >= 0 && eng.indexOf('把球托出横梁，球出了底线！') >= 0, '解说区分扑出底线和托出横梁');
 })();
 
 console.log('== 4-2-3-1 整体站位 ==');

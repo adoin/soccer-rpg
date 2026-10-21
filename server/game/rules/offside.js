@@ -117,7 +117,7 @@ var REASON_LABEL = {
 };
 
 function reasonText(reason, player) {
-  return '🚩 越位！' + player.name + REASON_LABEL[reason] + '，裁判鸣哨。';
+  return '🚩 越位！' + player.name + ' ' + REASON_LABEL[reason] + '，裁判鸣哨。';
 }
 
 // ---------- 传球瞬间的越位判定 ----------
