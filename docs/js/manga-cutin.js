@@ -8,7 +8,7 @@ var MANGA = {
   lastId: null,
   cache: {},
 };
-var MANGA_V = 'manga3';
+var MANGA_V = 'manga4';
 
 // a / b：这张图里品红/青（A）和橙/紫（B）分别对应 action.roles 的哪个角色。
 // trail.split 为真时，start→impact 是被改变前的淡线，impact→end 是加粗的新路线。
@@ -94,6 +94,11 @@ function mangaPoseImage(name) {
   src.onload = function () { src._ok = true; };
   src.onerror = function () { src._bad = true; };
   src.src = 'assets/manga/' + name + '.png?v=' + MANGA_V;
+  var labels = new Image();
+  labels.onload = function () { labels._ok = true; };
+  labels.onerror = function () { labels._bad = true; };
+  labels.src = 'assets/manga/labels/' + name + '.png?v=' + MANGA_V;
+  src._labels = labels;
   return src;
 }
 
@@ -104,34 +109,46 @@ function mangaLookKey(look) {
     k.pattern || '', k.primary || '', k.secondary || '', k.shorts || '', k.shoes || ''].join('|');
 }
 
+function mangaDecodeLabels(src) {
+  if (src._map) return src._map;
+  var labels = src._labels;
+  if (!labels || !labels._ok || !labels.naturalWidth) return null;
+  var cv = document.createElement('canvas');
+  cv.width = labels.naturalWidth;
+  cv.height = labels.naturalHeight;
+  var cx = cv.getContext('2d');
+  cx.drawImage(labels, 0, 0);
+  var raw = cx.getImageData(0, 0, cv.width, cv.height).data;
+  var n = cv.width * cv.height;
+  var label = new Uint8Array(n);
+  var figure = new Uint8Array(n);
+  for (var i = 0; i < n; i++) {
+    label[i] = raw[i * 4];
+    figure[i] = raw[i * 4 + 1];
+  }
+  src._map = { label: label, figure: figure, w: cv.width, h: cv.height };
+  return src._map;
+}
+
 function mangaPaint(src, aLook, bLook) {
   var key = src.src + '>' + mangaLookKey(aLook) + '>' + mangaLookKey(bLook);
   if (MANGA.cache[key]) return MANGA.cache[key];
+  var map = mangaDecodeLabels(src);
+  if (!map || typeof SharedKits === 'undefined' || !SharedKits.paintMangaLabels) return null;
   var cv = document.createElement('canvas');
   cv.width = src.naturalWidth;
   cv.height = src.naturalHeight;
   var cx = cv.getContext('2d');
-  if (typeof SharedKits !== 'undefined' && SharedKits.prepareMangaMask && !src._mask) {
-    cx.drawImage(src, 0, 0);
-    var base = cx.getImageData(0, 0, cv.width, cv.height);
-    src._pixels = base.data;
-    src._mask = SharedKits.prepareMangaMask({ width: cv.width, height: cv.height, data: base.data });
+  cx.drawImage(src, 0, 0);
+  if (!src._pixels) {
+    src._pixels = cx.getImageData(0, 0, cv.width, cv.height).data;
   }
-  if (src._mask && typeof SharedKits !== 'undefined' && SharedKits.paintManga) {
-    var copy = new Uint8ClampedArray(src._pixels);
-    var id = { width: cv.width, height: cv.height, data: copy };
-    SharedKits.paintManga(id, src._mask, aLook || { team: 'home' }, bLook || { team: 'away' });
-    var paintedData = cx.createImageData(cv.width, cv.height);
-    paintedData.data.set(copy);
-    cx.putImageData(paintedData, 0, 0);
-  } else {
-    cx.drawImage(src, 0, 0);
-    if (typeof SharedKits !== 'undefined' && SharedKits.recolorManga) {
-      var raw = cx.getImageData(0, 0, cv.width, cv.height);
-      SharedKits.recolorManga(raw, aLook || { team: 'home' }, bLook || { team: 'away' });
-      cx.putImageData(raw, 0, 0);
-    }
-  }
+  var copy = new Uint8ClampedArray(src._pixels);
+  var id = { width: cv.width, height: cv.height, data: copy };
+  SharedKits.paintMangaLabels(id, map, aLook || { team: 'home' }, bLook || { team: 'away' });
+  var paintedData = cx.createImageData(cv.width, cv.height);
+  paintedData.data.set(copy);
+  cx.putImageData(paintedData, 0, 0);
   // 直接缓存画布。toDataURL 再解码一次会把第一次播出卡住一两秒。
   MANGA.cache[key] = cv;
   return cv;
@@ -163,7 +180,9 @@ function mangaCutAvailable(a) {
   var cfg = MANGA_CUTS[a.cut];
   if (!cfg) return false;
   var src = mangaPoseImage(cfg.pose);
-  return !!(src && src._ok && src.complete && src.naturalWidth);
+  var labels = src && src._labels;
+  return !!(src && src._ok && src.complete && src.naturalWidth
+    && labels && labels._ok && labels.complete && labels.naturalWidth);
 }
 
 function easeOutBack(x) {
@@ -346,6 +365,7 @@ function drawMangaCutin(a, t) {
   var el = (t - MANGA.startT) / 1000;
   var looks = mangaLooks(a, cfg);
   var painted = mangaPaint(src, looks.a, looks.b);
+  if (!painted) return false;
 
   ctx.fillStyle = 'rgba(4,6,14,0.92)';
   ctx.fillRect(0, 0, W, H);

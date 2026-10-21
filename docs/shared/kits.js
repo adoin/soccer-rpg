@@ -2637,6 +2637,229 @@
     return paintManga(imgData, mask, atkLook, defLook);
   }
 
+  // Offline label map. R = label id, G = figure (1 magenta side, 2 orange side).
+  var MLAB = {
+    INK: 1, SKY: 2, GRASS: 3, LINE: 4, NET: 5, BALL: 6,
+    SHIRT: 10, SHORTS: 12, SOCKS: 13, BOOTS: 14,
+    SKIN: 15, SKIN_LINE: 16, HAIR: 17, HAIR_LINE: 18,
+    EYE: 19, IRIS: 20, MOUTH: 21, TEETH: 22, TONGUE: 23,
+  };
+
+  function maskFromLabels(label, figure, w, h) {
+    var n = w * h;
+    var claim = new Uint8Array(n);
+    var part = new Uint8Array(n);
+    var ball = new Uint8Array(n);
+    var sky = new Uint8Array(n);
+    var keep = new Uint8Array(n);
+    var partOf = {};
+    partOf[MLAB.SHIRT] = 1;
+    partOf[MLAB.SHORTS] = 2;
+    partOf[MLAB.SOCKS] = 2;
+    partOf[MLAB.BOOTS] = 3;
+    partOf[MLAB.HAIR] = 4;
+    partOf[MLAB.HAIR_LINE] = 4;
+    partOf[MLAB.SKIN] = 5;
+    partOf[MLAB.SKIN_LINE] = 5;
+    partOf[MLAB.INK] = 6;
+    var grassY = 0;
+    var i, lab, fig, p;
+    for (i = 0; i < n; i++) {
+      lab = label[i];
+      fig = figure[i];
+      p = partOf[lab] || 0;
+      if (p && fig) { part[i] = p; claim[i] = fig; }
+      if (lab === MLAB.BALL) ball[i] = 1;
+      if (lab === MLAB.SKY) sky[i] = 1;
+      if (lab === MLAB.LINE || lab === MLAB.NET) keep[i] = 1;
+      if (!grassY && lab === MLAB.GRASS) grassY = (i / w) | 0;
+    }
+    return { w: w, h: h, claim: claim, part: part, ball: ball, sky: sky, keep: keep, grassY: grassY };
+  }
+
+  // Palette per label. Cloth is the kit colour times a luminance factor.
+  // Faces are flat: a hatched source must not come back as speckles.
+  // Irises and ink keep the source pixel. They are never recolored.
+  function paintMangaLabels(imgData, map, aLook, bLook) {
+    aLook = aLook || {};
+    bLook = bLook || {};
+    var w = imgData.width, h = imgData.height, n = w * h;
+    var d = imgData.data;
+    var label = map.label, figure = map.figure;
+    var looks = [null, aLook, bLook];
+    var kits = [null, resolveKit(aLook.team || 'home', aLook.kit), resolveKit(bLook.team || 'away', bLook.kit)];
+    var skins = [null,
+      hexRgb((SKIN_PRESETS[aLook.skin] || SKIN_PRESETS.fair).color),
+      hexRgb((SKIN_PRESETS[bLook.skin] || SKIN_PRESETS.fair).color)];
+    var hairs = [null,
+      hexRgb((HAIR_PRESETS[aLook.hair] || HAIR_PRESETS.black).color),
+      hexRgb((HAIR_PRESETS[bLook.hair] || HAIR_PRESETS.black).color)];
+    var skinLine = [null, darkerSame(skins[1], 0.5), darkerSame(skins[2], 0.5)];
+    var hairLine = [null, darkerSame(hairs[1], 0.55), darkerSame(hairs[2], 0.55)];
+    function jerseyBox(side) {
+      var seen = new Uint8Array(n);
+      var best = null;
+      var p0, q, qi, id, x, y, nx, ny, nid, comp, minX, maxX, minY, maxY;
+      for (p0 = 0; p0 < n; p0++) {
+        if (seen[p0] || label[p0] !== MLAB.SHIRT || figure[p0] !== side) continue;
+        q = [p0]; seen[p0] = 1; qi = 0;
+        comp = 0; minX = w; maxX = 0; minY = h; maxY = 0;
+        var sx = 0, sy = 0;
+        while (qi < q.length) {
+          id = q[qi++];
+          x = id % w; y = (id / w) | 0;
+          comp++; sx += x; sy += y;
+          if (x < minX) minX = x; if (x > maxX) maxX = x;
+          if (y < minY) minY = y; if (y > maxY) maxY = y;
+          var dy, dx;
+          for (dy = -1; dy <= 1; dy++) {
+            ny = y + dy; if (ny < 0 || ny >= h) continue;
+            for (dx = -1; dx <= 1; dx++) {
+              if (!dx && !dy) continue;
+              nx = x + dx; if (nx < 0 || nx >= w) continue;
+              nid = ny * w + nx;
+              if (seen[nid] || label[nid] !== MLAB.SHIRT || figure[nid] !== side) continue;
+              seen[nid] = 1; q.push(nid);
+            }
+          }
+        }
+        if (!best || comp > best.n) best = { n: comp, cx: sx / comp, cy: sy / comp, minX: minX, maxX: maxX, minY: minY, maxY: maxY };
+      }
+      if (!best) return null;
+      best.band = Math.max(3, Math.round((best.maxY - best.minY) / 12));
+      return best;
+    }
+    var boxes = [null, jerseyBox(1), jerseyBox(2)];
+    function jerseyRgb(side, x, y) {
+      var look = looks[side];
+      var kit = kits[side];
+      if (look && look.pos === 'GK') return hexRgb(look.team === 'home' ? '#e8b923' : '#7a7f8a');
+      var box = boxes[side];
+      var hex = kit.primary;
+      if (!box) return hexRgb(hex);
+      var on = false;
+      if (kit.pattern === 'sash') {
+        var uw = Math.max(1, box.maxX - box.minX);
+        var uh = Math.max(1, box.maxY - box.minY);
+        on = Math.abs((x - box.minX) / uw - (y - box.minY) / uh) <= 0.16;
+      } else on = patternSecondary(kit.pattern, x, y, box.cx, box.cy, box.band);
+      if (on) hex = kit.secondary || kit.primary;
+      return hexRgb(hex);
+    }
+    // Median source luminance per cloth label, so flat key pixels stay exact.
+    var hist = {};
+    var p, o, lab, fig, key, lumByte;
+    for (p = 0; p < n; p++) {
+      lab = label[p];
+      if (lab !== MLAB.SHIRT && lab !== MLAB.SHORTS && lab !== MLAB.SOCKS && lab !== MLAB.BOOTS) continue;
+      fig = figure[p];
+      if (!fig) continue;
+      o = p * 4;
+      if (d[o + 3] < 128) continue;
+      key = lab * 4 + fig;
+      lumByte = Math.round(relLum(d[o], d[o + 1], d[o + 2]) * 255);
+      if (!hist[key]) hist[key] = new Uint32Array(256);
+      hist[key][lumByte]++;
+    }
+    var median = {};
+    Object.keys(hist).forEach(function (k) {
+      var bins = hist[k];
+      var total = 0, b;
+      for (b = 0; b < 256; b++) total += bins[b];
+      var half = total / 2, acc = 0, found = 128;
+      for (b = 0; b < 256; b++) {
+        acc += bins[b];
+        if (acc >= half) { found = b; break; }
+      }
+      median[k] = found / 255;
+    });
+    function factor(srcLum, med) {
+      if (!med || med < 0.02) return 1;
+      if (Math.abs(srcLum - med) <= med * 0.08) return 1;
+      var f = srcLum / med;
+      if (f < 0.78) return 0.78;
+      if (f > 1.1) return 1.1;
+      return f;
+    }
+    function scale(rgb, f) {
+      return [
+        Math.max(0, Math.min(255, Math.round(rgb[0] * f))),
+        Math.max(0, Math.min(255, Math.round(rgb[1] * f))),
+        Math.max(0, Math.min(255, Math.round(rgb[2] * f))),
+      ];
+    }
+    // Exact colour keys that the labeler left on ink, sky or the ball would
+    // survive, because those labels keep the source pixel. Put them back on
+    // the part the key actually names.
+    var keyPart = {};
+    keyPart['255,0,255'] = [MLAB.SHIRT, 1];
+    keyPart['255,136,0'] = [MLAB.SHIRT, 2];
+    keyPart['0,255,255'] = [MLAB.SHORTS, 1];
+    keyPart['136,0,255'] = [MLAB.SHORTS, 2];
+    keyPart['0,0,255'] = [MLAB.HAIR, 0];
+    keyPart['255,0,136'] = [MLAB.BOOTS, 0];
+    var kept = {};
+    kept[MLAB.INK] = 1; kept[MLAB.SKY] = 1; kept[MLAB.BALL] = 1; kept[MLAB.NET] = 1;
+    kept[MLAB.LINE] = 1; kept[MLAB.GRASS] = 1; kept[MLAB.IRIS] = 1; kept[0] = 1;
+    function nearFig(p0) {
+      var x0 = p0 % w, y0 = (p0 / w) | 0;
+      var rad, dy, dx, nx, ny, fg;
+      for (rad = 1; rad <= 8; rad++) {
+        for (dy = -rad; dy <= rad; dy++) {
+          ny = y0 + dy; if (ny < 0 || ny >= h) continue;
+          for (dx = -rad; dx <= rad; dx++) {
+            if (Math.max(Math.abs(dx), Math.abs(dy)) !== rad) continue;
+            nx = x0 + dx; if (nx < 0 || nx >= w) continue;
+            fg = figure[ny * w + nx];
+            if (fg) return fg;
+          }
+        }
+      }
+      return 1;
+    }
+    for (p = 0; p < n; p++) {
+      o = p * 4;
+      lab = label[p];
+      fig = figure[p];
+      if (lab === MLAB.SKY) { d[o] = 0; d[o + 1] = 0; d[o + 2] = 0; d[o + 3] = 0; continue; }
+      if (kept[lab] || !fig) {
+        var named = keyPart[d[o] + ',' + d[o + 1] + ',' + d[o + 2]];
+        if (named && d[o + 3] > 200) {
+          lab = named[0];
+          fig = named[1] || nearFig(p);
+        }
+      }
+      if (lab === MLAB.INK || lab === MLAB.IRIS || lab === MLAB.BALL || lab === MLAB.GRASS || lab === MLAB.LINE) continue;
+      if (lab === MLAB.NET) {
+        if (d[o + 3] < 40) { d[o] = 255; d[o + 1] = 255; d[o + 2] = 255; d[o + 3] = 255; }
+        continue;
+      }
+      if (!fig) continue;
+      var rgb = null;
+      if (lab === MLAB.SHIRT) {
+        var base = jerseyRgb(fig, p % w, (p / w) | 0);
+        var srcLum = relLum(d[o], d[o + 1], d[o + 2]);
+        rgb = scale(base, factor(srcLum, median[lab * 4 + fig]));
+      } else if (lab === MLAB.SHORTS || lab === MLAB.SOCKS) {
+        rgb = scale(hexRgb(kits[fig].socks && lab === MLAB.SOCKS ? kits[fig].socks : kits[fig].shorts),
+          factor(relLum(d[o], d[o + 1], d[o + 2]), median[lab * 4 + fig]));
+      } else if (lab === MLAB.BOOTS) {
+        rgb = scale(hexRgb(kits[fig].shoes || '#222222'),
+          factor(relLum(d[o], d[o + 1], d[o + 2]), median[lab * 4 + fig]));
+      } else if (lab === MLAB.SKIN) rgb = skins[fig];
+      else if (lab === MLAB.SKIN_LINE) rgb = skinLine[fig];
+      else if (lab === MLAB.HAIR) rgb = hairs[fig];
+      else if (lab === MLAB.HAIR_LINE) rgb = hairLine[fig];
+      else if (lab === MLAB.EYE) rgb = [255, 255, 255];
+      else if (lab === MLAB.TEETH) rgb = [248, 248, 248];
+      else if (lab === MLAB.MOUTH) rgb = [122, 31, 36];
+      else if (lab === MLAB.TONGUE) rgb = [216, 106, 120];
+      if (!rgb) continue;
+      d[o] = rgb[0]; d[o + 1] = rgb[1]; d[o + 2] = rgb[2]; d[o + 3] = 255;
+    }
+    return imgData;
+  }
+
   function recolorSkin(imgData, presetId) {
     var preset = SKIN_PRESETS[presetId] || SKIN_PRESETS.fair;
     var dst = hexToHsl(preset.color);
@@ -2673,6 +2896,8 @@
     mangaPixelClass: mangaPixelClass,
     prepareMangaMask: prepareMangaMask,
     paintManga: paintManga,
+    paintMangaLabels: paintMangaLabels,
+    maskFromLabels: maskFromLabels,
     recolorManga: recolorManga,
   };
 });

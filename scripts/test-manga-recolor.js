@@ -122,7 +122,19 @@ poses.forEach(function (pose) {
   ok(fs.existsSync(file), pose + ' 有图');
   if (!fs.existsSync(file)) return;
   var base = loadPng(file);
-  var mask = kits.prepareMangaMask(base);
+  var labelFile = path.join(MANGA, 'labels', pose + '.png');
+  ok(fs.existsSync(labelFile), pose + ' 有标签图');
+  if (!fs.existsSync(labelFile)) return;
+  var decoded = loadPng(labelFile);
+  var nPix = base.width * base.height;
+  var label = new Uint8Array(nPix);
+  var figure = new Uint8Array(nPix);
+  for (var li = 0; li < nPix; li++) {
+    label[li] = decoded.data[li * 4];
+    figure[li] = decoded.data[li * 4 + 1];
+  }
+  var map = { label: label, figure: figure, w: base.width, h: base.height };
+  var mask = kits.maskFromLabels(label, figure, base.width, base.height);
   var aN = 0, bN = 0, aj = 0, bj = 0;
   for (var i = 0; i < mask.claim.length; i++) {
     if (mask.claim[i] === 1) aN++;
@@ -135,7 +147,7 @@ poses.forEach(function (pose) {
   combos.forEach(function (combo, ci) {
     var data = new Uint8ClampedArray(base.data);
     var img = { width: base.width, height: base.height, data: data };
-    kits.paintManga(img, mask, combo.a, combo.b);
+    kits.paintMangaLabels(img, map, combo.a, combo.b);
     var aColors = [rgbOf(combo.aKit.primary), rgbOf(combo.aKit.secondary)];
     var bColors = [rgbOf(combo.bKit.primary), rgbOf(combo.bKit.secondary)];
     var aShort = rgbOf(combo.aKit.shorts);
@@ -594,12 +606,12 @@ poses.forEach(function (pose) {
         }
         ok(mismatch === 0, tag + ' 两只鞋跟球袜短裤一边', mismatch + '/' + boots);
       })();
-      if (pose === 'gk_tip_over') {
+      if (pose === 'gk_tip_over' && ci === 0) {
         var holes = 0;
         var hw = base.width;
         for (var hy = 180; hy < 640; hy++) {
           for (var hx = 120; hx < 520; hx++) {
-            if (base.data[(hy * hw + hx) * 4 + 3] < 40) holes++;
+            if (data[(hy * hw + hx) * 4 + 3] < 40) holes++;
           }
         }
         ok(holes < 800, tag + ' 倒地球门左侧网格不再透天', String(holes));
@@ -713,7 +725,7 @@ poses.forEach(function (pose) {
   });
   if (pose === 'dribble_win') {
     var data0 = new Uint8ClampedArray(base.data);
-    kits.paintManga({ width: base.width, height: base.height, data: data0 }, mask, combos[0].a, combos[0].b);
+    kits.paintMangaLabels({ width: base.width, height: base.height, data: data0 }, map, combos[0].a, combos[0].b);
     var crotch = (526 * base.width + 750) * 4;
     ok(data0[crotch + 3] === 0, '突破图腿间的白天空被抠掉', String(data0[crotch + 3]));
     ok(mask.ball && mask.ball.some(function (v) { return v; }), '突破图认出了皮球');
@@ -722,7 +734,7 @@ poses.forEach(function (pose) {
     var net = (400 * base.width + 300) * 4;
     ok(base.data[net + 3] > 200 && nearWhite(base.data[net], base.data[net + 1], base.data[net + 2]), '进球图的网本来是白的');
     var paintedNet = new Uint8ClampedArray(base.data);
-    kits.paintManga({ width: base.width, height: base.height, data: paintedNet }, mask, combos[0].a, combos[0].b);
+    kits.paintMangaLabels({ width: base.width, height: base.height, data: paintedNet }, map, combos[0].a, combos[0].b);
     var keptNet = paintedNet[net + 3] > 200 && nearWhite(paintedNet[net], paintedNet[net + 1], paintedNet[net + 2]);
     ok(keptNet, '进球图的球网没有被抠掉');
   }
