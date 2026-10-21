@@ -137,10 +137,12 @@
           skin: ({ 10: 'deep', 9: 'tan', 7: 'east', 11: 'fair', 2: 'deep', 4: 'tan', 6: 'east' })[p.num] || ['fair', 'east', 'tan', 'deep'][i % 4],
           hair: ({ 1: 'gray', 2: 'black', 3: 'brown', 4: 'auburn', 5: 'blonde', 6: 'black', 7: 'brown', 8: 'gray', 9: 'black', 10: 'blonde', 11: 'auburn' })[p.num] || 'black',
           // 没写的球衣字段用球队默认（shared/kits.js 的 TEAM_COLORS）。null 表示整套跟球队走。
+          // 个人球衣把上衣和短裤写在一起。球袜跟着短裤。
+          // 只写上衣时，客队会套上这件上衣、却留下客队红裤。
           kit: ({
-            10: { pattern: 'sash', primary: '#f2f2f2', secondary: '#1d3f8f', shoes: '#e6c34a' },
-            9:  { pattern: 'hoops', primary: '#ffffff', secondary: '#c62828', shoes: '#222222' },
-            11: { pattern: 'halves', primary: '#2a5db0', secondary: '#f4f4f4', shoes: '#111111' },
+            10: { pattern: 'sash', primary: '#f2f2f2', secondary: '#1d3f8f', shorts: '#1e3f7a', shoes: '#e6c34a' },
+            9:  { pattern: 'hoops', primary: '#ffffff', secondary: '#c62828', shorts: '#8f1f1f', shoes: '#222222' },
+            11: { pattern: 'halves', primary: '#2a5db0', secondary: '#f4f4f4', shorts: '#1e3f7a', shoes: '#111111' },
             7:  { pattern: 'stripes', primary: '#1a1a1a', secondary: '#f4f4f4', shorts: '#1a1a1a', socks: '#f4f4f4', shoes: '#c62828' },
           })[p.num] || null,
           // 站位：主队按阵型，客队镜像

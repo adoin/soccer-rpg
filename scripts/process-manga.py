@@ -83,7 +83,7 @@ def manga_class(r, g, b, a=255):
         return None
     if (h < 16 or h > 350) and s > 0.5 and b < 75 and g < 110 and v > 90:
         return None
-    if 0.14 <= s <= 0.58 and r > 165 and g > 120 and b > 75 and r > g and g + 8 > b and (r - b) > 22 and h < 55:
+    if h < 50 and 0.12 <= s <= 0.78 and r > 140 and g > 80 and b > 40 and r > g and g + 4 > b and (r - b) > 18:
         return 'skin'
     if 12 <= h <= 44 and s > 0.62 and v > 85 and g > 40 and b < g * 0.55 and r > g:
         return 'defJersey'
@@ -99,7 +99,7 @@ def manga_class(r, g, b, a=255):
         return 'atkShorts'
     if 140 <= h <= 162 and s > 0.55 and v > 120 and r < 40 and g > 180 and b > 90 and b < g * 0.8:
         return 'defShorts'
-    if 195 <= h <= 255 and b > 70 and r < 95 and b > g + 32 and g < b * 0.7 and r < b * 0.6:
+    if 190 <= h <= 265 and b >= 18 and r < 110 and b > r + 10 and b > g + 8 and g < b * 0.7 and r < b * 0.6 and s > 0.35:
         return 'hair'
     if 165 <= h <= 220 and r < 100 and g > 70 and b > 90 and g > b * 0.62:
         return 'atkShorts'

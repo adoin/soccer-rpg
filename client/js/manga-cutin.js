@@ -67,7 +67,7 @@ var MANGA_CUTS = {
   'def-skill-shoulder': { pose: 'def_shoulder', sfx: '铁山靠！', shake: 7, a: 'defender', b: 'attacker',
     trail: { impact: [0.52, 0.48], burst: true } },
   'def-skill-elbow': { pose: 'def_elbow', sfx: '铁索拦江！', shake: 8, a: 'defender', b: 'attacker',
-    trail: { impact: [0.56, 0.46], burst: true } },
+    trail: { impact: [0.51, 0.32], burst: true } },
 };
 
 function mangaPoseList() {
@@ -355,7 +355,8 @@ function drawMangaCutin(a, t) {
   ctx.translate(shake ? (Math.random() - 0.5) * shake : 0, shake ? (Math.random() - 0.5) * shake : 0);
 
   var cx = W / 2, pw = Math.min(680, W - 40), ph = pw * 0.75;
-  var py = Math.max(40, (H - ph) / 2 - 60);
+  // 顶上留给技能名底板，画面从牌子下面开始，字不再压到脸上。
+  var py = Math.max(84, (H - ph) / 2 - 20);
   var pop = Math.min(1, el / 0.25);
   var sc = 0.7 + 0.3 * easeOutBack(pop);
 
@@ -376,6 +377,13 @@ function drawMangaCutin(a, t) {
   var iw = innerW, ih = iw * src.naturalHeight / src.naturalWidth;
   if (ih > innerH) { ih = innerH; iw = ih * src.naturalWidth / src.naturalHeight; }
   var ix = cx - iw / 2, iy = py + 12 + (innerH - ih) / 2;
+  // 抠掉的天空透出同一块渐变，腿间的白不再像破洞。
+  var sky = ctx.createLinearGradient(0, iy, 0, iy + ih);
+  sky.addColorStop(0, '#7eb7e6');
+  sky.addColorStop(0.72, '#d7ecf8');
+  sky.addColorStop(1, '#e7f3e0');
+  ctx.fillStyle = sky;
+  ctx.fillRect(ix, iy, iw, ih);
   if (painted && (painted.naturalWidth || painted.width)) ctx.drawImage(painted, ix, iy, iw, ih);
   else ctx.drawImage(src, ix, iy, iw, ih);
   // 风线大约 0.42 秒画完，然后画面停住。原路线细，变向后的路线粗。
@@ -383,9 +391,23 @@ function drawMangaCutin(a, t) {
   ctx.restore();
   ctx.restore();
 
-  if (el > 0.35) mangaSFX(cfg.sfx, cx, py + 58, 54, -0.08, (el - 0.35) / 0.3);
   mangaFlash(Math.max(0, 0.55 - el * 2));
   ctx.restore();
+  if (el > 0.2 && cfg.sfx) {
+    var plateY = 14;
+    ctx.save();
+    ctx.font = '900 40px "Noto Sans SC", sans-serif';
+    var tw = ctx.measureText(cfg.sfx).width;
+    var plateW = Math.max(220, tw + 56);
+    var plateX = cx - plateW / 2;
+    ctx.fillStyle = 'rgba(8,12,22,0.94)';
+    ctx.fillRect(plateX, plateY, plateW, 54);
+    ctx.strokeStyle = '#ffd94a';
+    ctx.lineWidth = 3;
+    ctx.strokeRect(plateX + 1.5, plateY + 1.5, plateW - 3, 51);
+    ctx.restore();
+    mangaSFX(cfg.sfx, cx, plateY + 27, 36, 0, (el - 0.2) / 0.25);
+  }
   drawMangaBar(a, py, ph);
   return true;
 }

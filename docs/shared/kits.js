@@ -420,7 +420,8 @@
     if (s < 0.12 && v > 200) return null;
     if (h >= 70 && h <= 160 && g > r + 8 && g + 8 >= b && b < g * 0.48 && s > 0.22 && g > 55) return null;
     if ((h < 16 || h > 350) && s > 0.5 && b < 75 && g < 110 && v > 90) return null;
-    if (s >= 0.14 && s <= 0.58 && r > 165 && g > 120 && b > 75 && r > g && g + 8 > b && (r - b) > 22 && h < 55) return 'skin';
+    // 皮肤的暗部饱和度更高、更偏橙。仍要求有蓝色分量，免得把橙球衣收成皮肤。
+    if (h < 50 && s >= 0.12 && s <= 0.78 && r > 140 && g > 80 && b > 40 && r > g && g + 4 > b && (r - b) > 18) return 'skin';
     if (h >= 12 && h <= 44 && s > 0.62 && v > 85 && g > 40 && b < g * 0.55 && r > g) return 'defJersey';
     if (h >= 282 && h <= 318 && s > 0.4 && v >= 40 && g < v * 0.4 && Math.abs(r - b) <= Math.max(28, v * 0.32) && b > r * 0.72) return 'atkJersey';
     // 品红被 JPG 压成低到中等 G 的粉，和球鞋 #FF0088 叠在同一色相。先标成待定，再按块拆开。
@@ -428,7 +429,8 @@
     if (h >= 250 && h <= 292 && s > 0.35 && v > 48 && b > r && r > 32 && g < b * 0.72) return 'defShorts';
     if (h >= 48 && h <= 72 && s > 0.7 && v > 140 && b < 80 && r > 160 && g > 160) return 'atkShorts';
     if (h >= 140 && h <= 162 && s > 0.55 && v > 120 && r < 40 && g > 180 && b > 90 && b < g * 0.8) return 'defShorts';
-    if (h >= 195 && h <= 255 && b > 70 && r < 95 && b > g + 32 && g < b * 0.7 && r < b * 0.6) return 'hair';
+    // 头发色键是纯蓝，暗部蓝会掉到 70 以下。青色短裤 G 接近 B，进不来。
+    if (h >= 190 && h <= 265 && b >= 18 && r < 110 && b > r + 10 && b > g + 8 && g < b * 0.7 && r < b * 0.6 && s > 0.35) return 'hair';
     if (h >= 165 && h <= 220 && r < 100 && g > 70 && b > 90 && g > b * 0.62) return 'atkShorts';
     return null;
   }
@@ -613,6 +615,267 @@
     return (c.h < 16 || c.h > 350) && c.s > 0.5 && b < 75 && g < 110 && c.v > 90;
   }
 
+  function isNeutralDark(r, g, b) {
+    var max = r > g ? r : g; if (b > max) max = b;
+    var min = r < g ? r : g; if (b < min) min = b;
+    return max < 70 && (max - min) < 28;
+  }
+
+  function relLum(r, g, b) {
+    return (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+  }
+
+  // 同一色相按原图明度变深，不把暗部收成另一种头发或肤色。
+  function toneRgb(rgb, r, g, b, refLum) {
+    var t = refLum > 0.04 ? relLum(r, g, b) / refLum : 1;
+    if (t < 0.62) t = 0.62;
+    if (t > 1.06) t = 1.06;
+    return [
+      Math.max(0, Math.min(255, Math.round(rgb[0] * t))),
+      Math.max(0, Math.min(255, Math.round(rgb[1] * t))),
+      Math.max(0, Math.min(255, Math.round(rgb[2] * t))),
+    ];
+  }
+
+  function grassLineY(d, w, h) {
+    var y, x, i, g, k, s;
+    for (y = 0; y < h - 8; y++) {
+      s = 0;
+      for (k = 0; k < 8; k++) {
+        g = 0;
+        for (x = 0; x < w; x += 4) {
+          i = ((y + k) * w + x) * 4;
+          if (d[i + 3] >= 128 && isGrassPixel(d[i], d[i + 1], d[i + 2])) g++;
+        }
+        s += g / Math.max(1, (w / 4));
+      }
+      if (s / 8 > 0.18) return y;
+    }
+    return Math.round(h * 0.55);
+  }
+
+  // 皮球是一圈白块贴着黑缝。标出圆内的白、黑、灰，换色时整颗球不动。
+  function detectBall(d, w, h) {
+    var n = w * h;
+    var ball = new Uint8Array(n);
+    var seen = new Uint8Array(n);
+    var panels = [];
+    var p, i, r, g, b, a, x, y, q, qi, id, nx, ny, nid, area, peri, minX, maxX, minY, maxY, blackN;
+    for (p = 0; p < n; p++) {
+      if (seen[p]) continue;
+      i = p * 4;
+      r = d[i]; g = d[i + 1]; b = d[i + 2]; a = d[i + 3];
+      if (a < 128 || !isNearWhitePixel(r, g, b)) { seen[p] = 1; continue; }
+      q = [p]; seen[p] = 1; qi = 0;
+      area = 0; peri = 0; blackN = 0;
+      minX = w; maxX = 0; minY = h; maxY = 0;
+      var sx = 0, sy = 0;
+      while (qi < q.length) {
+        id = q[qi++];
+        area++;
+        x = id % w; y = (id / w) | 0;
+        sx += x; sy += y;
+        if (x < minX) minX = x; if (x > maxX) maxX = x;
+        if (y < minY) minY = y; if (y > maxY) maxY = y;
+        var edge = false;
+        var dy, dx;
+        for (dy = -1; dy <= 1; dy++) {
+          ny = y + dy; if (ny < 0 || ny >= h) { edge = true; continue; }
+          for (dx = -1; dx <= 1; dx++) {
+            if (!dx && !dy) continue;
+            nx = x + dx; if (nx < 0 || nx >= w) { edge = true; continue; }
+            nid = ny * w + nx;
+            var ni = nid * 4;
+            var nr = d[ni], ng = d[ni + 1], nb = d[ni + 2], na = d[ni + 3];
+            if (na >= 128 && isNearWhitePixel(nr, ng, nb)) {
+              if (!seen[nid]) { seen[nid] = 1; q.push(nid); }
+            } else {
+              edge = true;
+              if (na >= 128 && isNeutralDark(nr, ng, nb)) blackN++;
+            }
+          }
+        }
+        if (edge) peri++;
+      }
+      var bw = maxX - minX + 1, bh = maxY - minY + 1;
+      var aspect = bw / Math.max(1, bh);
+      if (area < 120 || area > 3200) continue;
+      if (aspect < 0.45 || aspect > 2.3) continue;
+      if (Math.min(bw, bh) < 16) continue;
+      if (blackN < area * 0.015) continue;
+      panels.push({ cx: sx / area, cy: sy / area, minX: minX, maxX: maxX, minY: minY, maxY: maxY });
+    }
+    var used = new Uint8Array(panels.length);
+    var c, j, k, dx, dy, dist, group, cx, cy, rad, yy, xx;
+    for (c = 0; c < panels.length; c++) {
+      if (used[c]) continue;
+      group = [c]; used[c] = 1;
+      for (j = 0; j < group.length; j++) {
+        for (k = 0; k < panels.length; k++) {
+          if (used[k]) continue;
+          dx = panels[group[j]].cx - panels[k].cx;
+          dy = panels[group[j]].cy - panels[k].cy;
+          if (dx * dx + dy * dy < 110 * 110) { used[k] = 1; group.push(k); }
+        }
+      }
+      if (group.length < 3) continue;
+      var gMinX = w, gMaxX = 0, gMinY = h, gMaxY = 0;
+      for (j = 0; j < group.length; j++) {
+        var gp = panels[group[j]];
+        if (gp.minX < gMinX) gMinX = gp.minX;
+        if (gp.maxX > gMaxX) gMaxX = gp.maxX;
+        if (gp.minY < gMinY) gMinY = gp.minY;
+        if (gp.maxY > gMaxY) gMaxY = gp.maxY;
+      }
+      // 球网的白格会连成一大片，不是一颗球。
+      if (gMaxX - gMinX > 220 || gMaxY - gMinY > 220) continue;
+      cx = 0; cy = 0;
+      for (j = 0; j < group.length; j++) { cx += panels[group[j]].cx; cy += panels[group[j]].cy; }
+      cx /= group.length; cy /= group.length;
+      rad = 0;
+      for (j = 0; j < group.length; j++) {
+        var pan = panels[group[j]];
+        var corners = [[pan.minX, pan.minY], [pan.maxX, pan.minY], [pan.minX, pan.maxY], [pan.maxX, pan.maxY]];
+        for (k = 0; k < 4; k++) {
+          dist = Math.sqrt((corners[k][0] - cx) * (corners[k][0] - cx) + (corners[k][1] - cy) * (corners[k][1] - cy));
+          if (dist > rad) rad = dist;
+        }
+      }
+      rad += 10;
+      var r2 = rad * rad;
+      for (yy = Math.max(0, Math.floor(cy - rad)); yy <= Math.min(h - 1, Math.ceil(cy + rad)); yy++) {
+        for (xx = Math.max(0, Math.floor(cx - rad)); xx <= Math.min(w - 1, Math.ceil(cx + rad)); xx++) {
+          dx = xx - cx; dy = yy - cy;
+          if (dx * dx + dy * dy > r2) continue;
+          i = (yy * w + xx) * 4;
+          if (d[i + 3] < 128) continue;
+          r = d[i]; g = d[i + 1]; b = d[i + 2];
+          if (isNearWhitePixel(r, g, b) || isNeutralDark(r, g, b)) ball[yy * w + xx] = 1;
+        }
+      }
+    }
+    return ball;
+  }
+
+  // 草皮线以上、不在人物轮廓里的成片白天空。网和细白线周长很大，留着。
+  function detectSky(d, w, h, ball, grassY, cls) {
+    var n = w * h;
+    var sky = new Uint8Array(n);
+    var seen = new Uint8Array(n);
+    var p, i, r, g, b, a;
+    for (p = 0; p < n; p++) {
+      if (seen[p] || ball[p]) { seen[p] = 1; continue; }
+      i = p * 4;
+      r = d[i]; g = d[i + 1]; b = d[i + 2]; a = d[i + 3];
+      if (a < 128 || !isNearWhitePixel(r, g, b)) { seen[p] = 1; continue; }
+      var q = [p]; seen[p] = 1;
+      var comp = [p];
+      var qi = 0, peri = 0, above = 0;
+      var minX = w, maxX = 0, minY = h, maxY = 0;
+      while (qi < q.length) {
+        var id = q[qi++];
+        var x = id % w, y = (id / w) | 0;
+        if (y < grassY) above++;
+        if (x < minX) minX = x; if (x > maxX) maxX = x;
+        if (y < minY) minY = y; if (y > maxY) maxY = y;
+        var edge = false;
+        var dy, dx, nx, ny, nid;
+        for (dy = -1; dy <= 1; dy++) {
+          ny = y + dy; if (ny < 0 || ny >= h) { edge = true; continue; }
+          for (dx = -1; dx <= 1; dx++) {
+            if (!dx && !dy) continue;
+            nx = x + dx; if (nx < 0 || nx >= w) { edge = true; continue; }
+            nid = ny * w + nx;
+            if (ball[nid]) { edge = true; continue; }
+            var ni = nid * 4;
+            if (d[ni + 3] >= 128 && isNearWhitePixel(d[ni], d[ni + 1], d[ni + 2])) {
+              if (!seen[nid]) { seen[nid] = 1; q.push(nid); comp.push(nid); }
+            } else edge = true;
+          }
+        }
+        if (edge) peri++;
+      }
+      var area = comp.length;
+      var bw = maxX - minX + 1, bh = maxY - minY + 1;
+      if (above < area * 0.65) continue;
+      if (Math.min(bw, bh) <= 18) continue;
+      var solidity = area / (bw * bh);
+      var pr = peri / area;
+      var aspect = bw / Math.max(1, bh);
+      if (aspect > 3.2 || bh / Math.max(1, bw) > 3.2) continue;
+      // 腿和手臂之间的白洞两侧都是身体。球网的白格周长更大，草地上的月牙旁边不是身体。
+      var midX = (minX + maxX) >> 1, midY = (minY + maxY) >> 1;
+      function bodyAt(dir) {
+        var t, nx, kind;
+        for (t = 1; t <= 110; t++) {
+          nx = midX + dir * t;
+          if (nx < 0 || nx >= w) return false;
+          kind = cls[midY * w + nx];
+          if (kind === 'atkJersey' || kind === 'defJersey' || kind === 'atkShorts' || kind === 'defShorts' || kind === 'skin' || kind === 'boot' || kind === 'hair') return true;
+        }
+        return false;
+      }
+      var between = bodyAt(-1) && bodyAt(1);
+      if (between && area > 800 && area < 12000 && pr < 0.2 && solidity > 0.4) {
+        for (var ci = 0; ci < comp.length; ci++) sky[comp[ci]] = 1;
+      }
+    }
+    return sky;
+  }
+
+  // 贴着鞋色键的小块白是鞋面高光，收到同一只鞋上。大片天空和皮球不收。
+  function absorbBootWhites(cls, d, w, h, ball, sky) {
+    var n = w * h;
+    var seen = new Uint8Array(n);
+    var p, i;
+    function touchesBoot(x, y) {
+      var dy, dx, nx, ny;
+      for (dy = -2; dy <= 2; dy++) {
+        ny = y + dy; if (ny < 0 || ny >= h) continue;
+        for (dx = -2; dx <= 2; dx++) {
+          nx = x + dx; if (nx < 0 || nx >= w) continue;
+          if (cls[ny * w + nx] === 'boot') return true;
+        }
+      }
+      return false;
+    }
+    for (p = 0; p < n; p++) {
+      if (seen[p] || ball[p] || sky[p]) { seen[p] = 1; continue; }
+      i = p * 4;
+      if (d[i + 3] < 128 || !isNearWhitePixel(d[i], d[i + 1], d[i + 2])) { seen[p] = 1; continue; }
+      var q = [p]; seen[p] = 1;
+      var comp = [p];
+      var qi = 0, touch = touchesBoot(p % w, (p / w) | 0);
+      var minX = w, maxX = 0, minY = h, maxY = 0;
+      while (qi < q.length) {
+        var id = q[qi++];
+        var x = id % w, y = (id / w) | 0;
+        if (x < minX) minX = x; if (x > maxX) maxX = x;
+        if (y < minY) minY = y; if (y > maxY) maxY = y;
+        if (!touch && touchesBoot(x, y)) touch = true;
+        var dy, dx, nx, ny;
+        for (dy = -1; dy <= 1; dy++) {
+          ny = y + dy; if (ny < 0 || ny >= h) continue;
+          for (dx = -1; dx <= 1; dx++) {
+            if (!dx && !dy) continue;
+            nx = x + dx; if (nx < 0 || nx >= w) continue;
+            var nid = ny * w + nx;
+            if (seen[nid] || ball[nid] || sky[nid]) continue;
+            var ni = nid * 4;
+            if (d[ni + 3] < 128 || !isNearWhitePixel(d[ni], d[ni + 1], d[ni + 2])) continue;
+            seen[nid] = 1; q.push(nid); comp.push(nid);
+          }
+        }
+      }
+      var area = comp.length;
+      var bw = maxX - minX + 1, bh = maxY - minY + 1;
+      if (!touch || area < 24 || area > 1600) continue;
+      if (Math.min(bw, bh) < 8) continue;
+      if (bw / Math.max(1, bh) > 3.5 || bh / Math.max(1, bw) > 3.5) continue;
+      for (var ci = 0; ci < comp.length; ci++) cls[comp[ci]] = 'boot';
+    }
+  }
+
   // 条纹宽度跟球衣高度走。跑动图格子很小，band 用 2；漫画人物用身高的 1/16。
   function patternSecondary(pattern, x, y, cx, cy, band) {
     band = band || 2;
@@ -636,6 +899,10 @@
     }
     resolveAmbiguous(cls, d, w, h);
     snapOutlineHalos(cls, d, w, h);
+    var ball = detectBall(d, w, h);
+    var grassY = grassLineY(d, w, h);
+    var sky = detectSky(d, w, h, ball, grassY, cls);
+    absorbBootWhites(cls, d, w, h, ball, sky);
 
     var claim = new Uint8Array(n);
     var part = new Uint8Array(n);
@@ -644,6 +911,7 @@
     var q = [];
     var qside = [];
     for (p = 0; p < n; p++) {
+      if (ball[p] || sky[p]) continue;
       var side0 = clothSide(cls[p]);
       if (!side0) continue;
       claim[p] = side0;
@@ -668,6 +936,7 @@
           var xx = x + dx;
           if (xx < 0 || xx >= w) continue;
           var nid = yy * w + xx;
+          if (ball[nid] || sky[nid]) continue;
           var nd = cd + 1;
           if (dist[nid] !== -1 && dist[nid] <= nd) continue;
           var other = clothSide(cls[nid]);
@@ -747,9 +1016,12 @@
       i = p * 4;
       if (d[i + 3] < 128) continue;
       var r = d[i], g = d[i + 1], b = d[i + 2];
+      if (ball[p] || sky[p]) continue;
       if (isGrassPixel(r, g, b) || isRedBallPixel(r, g, b)) continue;
       var xh = p % w, yh = (p / w) | 0;
       var white = isNearWhitePixel(r, g, b);
+      // 草皮线以上的白是天空或手套，不涂成短裤。鞋面高光已经在前面收成鞋。
+      if (white && yh < grassY) continue;
       // 离身体远的杂色（孤立红边、场上墨点）不动。白只补包在身体里的小块。
       var limit = white ? 8 : 2;
       if (r < 36 && g < 36 && b < 36) continue;
@@ -806,13 +1078,13 @@
 
     // 离身体稍远的鞋、头发、皮肤色键，归到最近的那个人，不留品红/玫红。
     for (p = 0; p < n; p++) {
-      if (claim[p]) continue;
+      if (claim[p] || ball[p] || sky[p]) continue;
       var stray = partCode(cls[p]);
       if (stray !== 3 && stray !== 4 && stray !== 5) continue;
       var sx = p % w, sy = (p / w) | 0;
       var found = 0, bestD = 1e9;
       var rad2, dy4, dx4, qx, qy, qp;
-      for (rad2 = 1; rad2 <= 36 && !found; rad2++) {
+        for (rad2 = 1; rad2 <= 14 && !found; rad2++) {
         for (dy4 = -rad2; dy4 <= rad2; dy4++) {
           qy = sy + dy4;
           if (qy < 0 || qy >= h) continue;
@@ -833,7 +1105,57 @@
       }
     }
 
-    return { w: w, h: h, claim: claim, part: part };
+    // 身体蒙版出来之后，再收一次夹在两人中间、草皮线以上的白洞。
+    var seenSky = new Uint8Array(n);
+    for (p = 0; p < n; p++) {
+      if (seenSky[p] || ball[p] || sky[p] || claim[p]) continue;
+      i = p * 4;
+      if (d[i + 3] < 128 || !isNearWhitePixel(d[i], d[i + 1], d[i + 2])) { seenSky[p] = 1; continue; }
+      var sq = [p]; seenSky[p] = 1;
+      var scomp = [p];
+      var sqi = 0, speri = 0, sabove = 0;
+      var sminX = w, smaxX = 0, sminY = h, smaxY = 0;
+      while (sqi < sq.length) {
+        var sid = sq[sqi++];
+        var sx = sid % w, sy = (sid / w) | 0;
+        if (sy < grassY) sabove++;
+        if (sx < sminX) sminX = sx; if (sx > smaxX) smaxX = sx;
+        if (sy < sminY) sminY = sy; if (sy > smaxY) smaxY = sy;
+        var sedge = false;
+        var sdirs = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+        for (var sdi = 0; sdi < 4; sdi++) {
+          var snx = sx + sdirs[sdi][0], sny = sy + sdirs[sdi][1];
+          if (sny < 0 || sny >= h || snx < 0 || snx >= w) { sedge = true; continue; }
+          var snid = sny * w + snx;
+          if (ball[snid] || claim[snid]) { sedge = true; continue; }
+          var sni = snid * 4;
+          if (d[sni + 3] >= 128 && isNearWhitePixel(d[sni], d[sni + 1], d[sni + 2]) && !sky[snid]) {
+            if (!seenSky[snid]) { seenSky[snid] = 1; sq.push(snid); scomp.push(snid); }
+          } else sedge = true;
+        }
+        if (sedge) speri++;
+      }
+      var sarea = scomp.length;
+      var sbw = smaxX - sminX + 1, sbh = smaxY - sminY + 1;
+      if (sabove < sarea * 0.65 || sarea < 800 || sarea > 12000) continue;
+      if (sbw / sbh > 3.2 || sbh / sbw > 3.2 || Math.min(sbw, sbh) <= 20) continue;
+      if (speri / sarea >= 0.16 || sarea / (sbw * sbh) < 0.35) continue;
+      var smx = (sminX + smaxX) >> 1, smy = (sminY + smaxY) >> 1;
+      function sideBody(dir) {
+        var t, nx;
+        for (t = 1; t <= 110; t++) {
+          nx = smx + dir * t;
+          if (nx < 0 || nx >= w) return false;
+          if (claim[smy * w + nx]) return true;
+        }
+        return false;
+      }
+      if (sideBody(-1) && sideBody(1)) {
+        for (var sci = 0; sci < scomp.length; sci++) sky[scomp[sci]] = 1;
+      }
+    }
+
+    return { w: w, h: h, claim: claim, part: part, ball: ball, sky: sky, grassY: grassY };
   }
 
   // 漫画复合图换色。aLook 是品红/青那个人，bLook 是橙/紫那个人。
@@ -889,6 +1211,8 @@
     var box1 = jerseyBox(1);
     var box2 = jerseyBox(2);
     var boxes = [null, box1, box2];
+    var hairRef = relLum(0, 0, 255);
+    var skinRef = relLum(240, 200, 160);
     function jerseyRgb(side, x, y) {
       var look = looks[side];
       var kit = kits[side];
@@ -911,6 +1235,9 @@
     }
     var p, pr, side;
     for (p = 0; p < n; p++) {
+      var o = p * 4;
+      if (mask.sky && mask.sky[p]) { d[o + 3] = 0; continue; }
+      if (mask.ball && mask.ball[p]) continue;
       pr = part[p];
       side = claim[p];
       if (!pr || !side) continue;
@@ -919,10 +1246,9 @@
       else if (pr === 1) rgb = jerseyRgb(side, p % w, (p / w) | 0);
       else if (pr === 2) rgb = hexRgb(kits[side].shorts);
       else if (pr === 3) rgb = hexRgb(kits[side].shoes || '#222222');
-      else if (pr === 4) rgb = hairs[side];
-      else if (pr === 5) rgb = skins[side];
+      else if (pr === 4) rgb = toneRgb(hairs[side], d[o], d[o + 1], d[o + 2], hairRef);
+      else if (pr === 5) rgb = toneRgb(skins[side], d[o], d[o + 1], d[o + 2], skinRef);
       if (!rgb) continue;
-      var o = p * 4;
       d[o] = rgb[0]; d[o + 1] = rgb[1]; d[o + 2] = rgb[2]; d[o + 3] = 255;
     }
     return imgData;
