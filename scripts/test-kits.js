@@ -82,6 +82,34 @@ eq('深肤没有把鞋涂掉', px(cell, 22, 58)[0] > 160);
   eq(pat + ' 同时有主色和副色', seenDark && seenLight);
 });
 
+// 预计算的占位蒙版必须和逐像素换色得出同一张图，包括容差内的近色。
+(function () {
+  function paintCell(set) {
+    var x, y;
+    for (y = 8; y < 18; y++) for (x = 18; x < 30; x++) set(x, y, 254, 210, 172);
+    set(20, 12, 0, 0, 0);
+    for (y = 20; y < 36; y++) for (x = 16; x < 32; x++) set(x, y, x === 16 ? 250 : 255, x === 16 ? 8 : 0, 255);
+    for (y = 36; y < 46; y++) for (x = 18; x < 30; x++) set(x, y, 0, 255, 255);
+    for (y = 46; y < 54; y++) for (x = 20; x < 28; x++) set(x, y, 255, 255, 0);
+    for (y = 54; y < 62; y++) for (x = 20; x < 28; x++) set(x, y, 255, 0, 136);
+    set(4, 4, 255, 136, 0);
+  }
+  var a = img(48, 72, paintCell);
+  var b = img(48, 72, paintCell);
+  var spec2 = kits.resolveKit('home', { pattern: 'sash', primary: '#f2f2f2', secondary: '#1d3f8f', shoes: '#e6c34a' });
+  var opts = { cellW: 48, cellH: 72, pattern: 'sash' };
+  kits.recolorImageData(a, { home: spec2 }, 32, opts);
+  var mask = kits.classifyPlaceholders(b, 32);
+  var centers = kits.sheetCenters(mask, 48, 72, 48, 72);
+  kits.recolorImageData(b, { home: spec2 }, 32, {
+    cellW: 48, cellH: 72, pattern: 'sash', mask: mask, centers: centers,
+  });
+  var same = true;
+  for (var i = 0; i < a.data.length; i++) if (a.data[i] !== b.data[i]) { same = false; break; }
+  eq('蒙版换色和逐像素换色一致', same);
+  eq('容差内的近品红进了蒙版', mask[(22 * 48) + 16] === 1);
+})();
+
 // 漫画色键：换色之后画面上不能再留下占位色。鞋和头发两边各换各的。
 (function () {
   var keys = [

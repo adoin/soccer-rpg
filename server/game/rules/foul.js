@@ -99,7 +99,8 @@ function judgeFoul(match, defender, victim, ctx) {
   ctx = ctx || {};
   var strict = STRICTNESS[match.referee.strictness] || STRICTNESS.standard;
 
-  var ctxMod = (ctx.fromBehind ? 18 : 0) + (ctx.speedHigh ? 8 : 0) + (ctx.tactical ? 6 : 0);
+  var ctxMod = (ctx.fromBehind ? 18 : 0) + (ctx.speedHigh ? 8 : 0) + (ctx.tactical ? 6 : 0)
+    + (ctx.reckless ? 14 : 0) + (ctx.cardBias || 0);
   var severity = FM.aggr(defender) * 0.45 + ctxMod + match.rng() * 30;
 
   var defendingTeam = defender.team;

@@ -145,6 +145,24 @@ try {
   check('突破指令发出 (choosing=true)', T.getUi().choosing === true);
 } catch (e) { check('突破指令发出 (choosing=true)', false); console.log('  threw: ' + e.message); }
 
+// ---- 4b. 突破进二级菜单；刚打开时 E 不确认 ----
+try {
+  var decM = attackDecision();
+  decM.options[0].moves = [
+    { id: 'burst', name: '突然加速', cost: 3, rate: 100, enabled: true },
+    { id: 'feint', name: '假动作', cost: 4, rate: 70, enabled: true },
+  ];
+  T.getUi().choosing = false;
+  T.setState(baseState(decM));
+  T.openHeadMenu(decM);
+  T.headMenuKey(key('e'));
+  check('刚打开时 E 不确认', T.getUi().choosing !== true && T.hmTop().kind === 'cmds');
+  T.headMenuKey(key('Enter'));
+  check('突破进入动作层', T.hmTop().kind === 'moves');
+  T.headMenuKey(key('Enter'));
+  check('突然加速发出', T.getUi().choosing === true);
+} catch (e) { check('突破二级菜单无异常', false); console.log('  threw: ' + e.message); }
+
 // ---- 5. 防守菜单确认无异常 ----
 try {
   var dec5 = {

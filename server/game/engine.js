@@ -33,6 +33,7 @@ var Receive = require('./rules/receive');
 var Shield = require('./rules/shield');
 var Switch = require('./rules/switch');
 var GK = require('./rules/gk');
+var Moves = require('../../shared/moves');
 
 var FIELD = C.FIELD;
 
@@ -1233,6 +1234,11 @@ Match.prototype.simulate = function (dt) {
     return;
   }
 
+  // 客队防守技能：只在客队 AI 没被测试冻住时出手，避免打乱冻结对局。
+  if (this.phase === 'play' && carrier.team === 'home' && this.now >= this.aiCooldownUntil) {
+    if (this.considerDefSkill(carrier)) return;
+  }
+
   // --- 决策点判定（仅用户球队） ---
   // ★ 真压迫判定（2026-10-12 试玩驱动）：旧条件"6 米内有人"在三层 AI 上线后失效——
   //   中场按设计站在"人和球门之间"卡传球线路（常在 4~6 米），那是盯防不是上抢，
@@ -1276,6 +1282,7 @@ Match.prototype.simulate = function (dt) {
 //   ★ 2026-10-09 用户：手动触发不要冷却（"没意义"），按了就弹
 Match.prototype.tryManualDecision = function () {
   if (this.phase !== 'play') return;
+  if (this.now < (this._menuLockUntil || 0)) return;
   var carrier = this.carrier();
   if (!carrier || carrier.team !== 'home' || carrier.id !== this.control.playerId) return;
   this.enterDecision(carrier);
@@ -1305,14 +1312,42 @@ Match.prototype.enterDefDecision = function (defender, carrier) {
       enabled: defender.stamina >= def.cost,
     };
   }
+  var skills = this.defSkillOptions(defender, carrier);
+  var options = [dopt('tackle', prev.pClean * 100)];
+  if (skills.length) {
+    options.push({
+      id: 'def-skills', name: '防守技能', cost: 0, desc: '用学过的防守技能。',
+      rate: skills[0].rate, enabled: true, skills: skills,
+    });
+  }
+  options.push(dopt('jockey', 100));
   this.decision = {
     playerId: defender.id,
     def: true, // 防守决策标记：结算后走防守冷却，不影响进攻决策计时
-    options: [
-      dopt('tackle', prev.pClean * 100),
-      dopt('jockey', 100),
-    ],
+    options: options,
   };
+};
+
+Match.prototype.defSkillOptions = function (defender, carrier) {
+  var self = this;
+  var dd = dist(defender, carrier);
+  return Moves.defSkillsOf(defender).map(function (sk) {
+    var inReach = dd <= sk.reach && (self.now >= defender.beatenUntil || sk.worksWhenBeaten);
+    var rate = self.defSkillRate(defender, carrier, sk);
+    return {
+      id: sk.id, name: sk.name, cost: sk.cost,
+      desc: sk.name + '。',
+      rate: rate, enabled: inReach && defender.stamina >= sk.cost,
+    };
+  });
+};
+
+Match.prototype.defSkillRate = function (defender, carrier, sk) {
+  var dPower = sk.power + FM.defend(defender) * 0.35;
+  if (sk.strength) dPower += FM.v(defender, 'strength') * 0.35;
+  var aPower = FM.dribble(carrier) * 0.45 + FM.v(carrier, 'balance') * 0.15;
+  var pClean = clamp(0.42 + (dPower - aPower) * 0.02, 0.08, 0.9);
+  return Math.round(clamp((1 - sk.foul) * pClean * 100, 1, 99));
 };
 
 // 为持球者生成 6 个指令（含服务器计算的成功率与体能消耗）
@@ -1343,8 +1378,28 @@ Match.prototype.buildOptions = function (p) {
   var keepEf = effFactor(keeper);
   var pressure = Math.max(0, 12 - near.dist) * 1.2;
 
+  var inChallenge = near.player && near.dist <= Moves.CHALLENGE_RANGE;
+  var dribbleRate = 58 + ((FM.dribble(p) + FM.speed(p)) * ef - (FM.defend(near.player) + FM.speed(near.player)) * defEf) * 0.9;
+  var burstRate = inChallenge
+    ? (48 + (Moves.BURST.power + FM.speed(p) * ef - FM.defend(near.player) * defEf) * 0.7)
+    : 100;
+  var feintRate = inChallenge
+    ? (62 + (FM.dribble(p) * ef - FM.defend(near.player) * defEf) * 0.9)
+    : 100;
   return [
-    opt('dribble', 58 + ((FM.dribble(p) + FM.speed(p)) * ef - (FM.defend(near.player) + FM.speed(near.player)) * defEf) * 0.9),
+    (function (o) {
+      o.moves = Moves.attackMoves(p).map(function (mv) {
+        var rate = mv.id === 'feint' ? feintRate : burstRate;
+        return {
+          id: mv.id, name: mv.name, cost: mv.cost, desc: mv.id === 'feint'
+            ? (inChallenge ? '晃开贴身的人。' : '前面没人，只是加速。')
+            : (inChallenge ? '低威力加速突破。' : '前面没人，突然加速。'),
+          rate: Math.round(clamp(rate, 1, 99)),
+          enabled: p.stamina >= mv.cost,
+        };
+      });
+      return o;
+    })(opt('dribble', dribbleRate)),
     (function (o) {
       // ★ 传球多阶段菜单：该球员可用的脚法（按 technique 解锁）+ 推荐落点（AI 选的最佳接应点，光标初始位置）
       //   成功率 = 线路危险度估计（走廊内可拦截的防守队员越多越低），确定性，不掷骰
@@ -1370,7 +1425,6 @@ Match.prototype.buildOptions = function (p) {
     (p.special && (p.pos === 'FW' || p.pos === 'MF'))
       ? opt('special', 84 + ((FM.shoot(p) * ef + 8) - FM.keep(keeper) * keepEf) * 1.1 - distGoal * 0.32)
       : null,
-    opt('feint', 62 + (FM.dribble(p) * ef - FM.defend(near.player) * defEf) * 0.9),
     opt('retreat', 100),
   ].filter(Boolean);
 };
@@ -1403,10 +1457,14 @@ Match.prototype.applyCommand = function (playerId, commandId, params) {
   if (!p || p.team !== 'home') {
     return { ok: false, error: '非法球员' };
   }
-  // 3. 指令必须存在且可用
+  // 3. 指令必须存在且可用。突破和防守技能在二级菜单里。
   var option = null;
-  this.decision.options.forEach(function (o) { if (o.id === commandId) option = o; });
-  if (!option) return { ok: false, error: '未知指令' };
+  this.decision.options.forEach(function (o) {
+    if (o.id === commandId) option = o;
+    (o.moves || []).forEach(function (mv) { if (mv.id === commandId) option = mv; });
+    (o.skills || []).forEach(function (sk) { if (sk.id === commandId) option = sk; });
+  });
+  if (!option || option.skills || option.moves) return { ok: false, error: '未知指令' };
   if (!option.enabled) return { ok: false, error: '体能不足或该球员无法使用此指令' };
   if (p.stamina < option.cost) return { ok: false, error: '体能不足' };
 
@@ -1425,6 +1483,7 @@ Match.prototype.applyCommand = function (playerId, commandId, params) {
 
   // 结算后恢复比赛；若刚进了球（phase 已被 goal() 置为 'goal'），则保持进球庆祝流程
   if (wasDef) this.nextDefDecisionAt = this.now + 4000; // 防守决策冷却，避免菜单连弹
+  this._menuLockUntil = this.now + 500; // 刚选完的按键不能立刻再开一局
   if (this.phase === 'decision') {
     this.phase = 'play';
     this.nextDecisionAt = this.now + DECISION_COOLDOWN;
@@ -1448,6 +1507,21 @@ Match.prototype.resolveAction = function (p, commandId, rate, params) {
   var roles = null;
 
   switch (commandId) {
+    case 'burst': {
+      var foe = near.player;
+      var alone = !foe || near.dist > Moves.CHALLENGE_RANGE;
+      if (alone) {
+        p.x = clamp(p.x + 4.6 * dir, 2, FIELD.W - 2);
+        text = p.name + ' 突然加速，前方没有人。';
+        cut = null;
+        success = true;
+        break;
+      }
+      commandId = 'dribble';
+      rate = Math.min(rate, 72);
+      success = roll < rate;
+      // 贴身时突然加速走低威力突破，下面跟突破同一套结算。
+    }
     case 'dribble': {
       var def = near.player;
       if (success) {
@@ -1612,6 +1686,13 @@ Match.prototype.resolveAction = function (p, commandId, rate, params) {
     }
     case 'feint': {
       var d2 = near.player;
+      if (!d2 || near.dist > Moves.CHALLENGE_RANGE) {
+        p.x = clamp(p.x + 3.4 * dir, 2, FIELD.W - 2);
+        text = p.name + ' 突然加速，前方没有人。';
+        cut = null;
+        success = true;
+        break;
+      }
       if (success) {
         d2.frozenUntil = this.now + 2500;
         p.x = clamp(p.x + 3 * dir, 2, FIELD.W - 2);
@@ -1685,6 +1766,22 @@ Match.prototype.resolveAction = function (p, commandId, rate, params) {
       success = true;
       break;
     }
+    case 'def-flying':
+    case 'def-sweep':
+    case 'def-shoulder':
+    case 'def-elbow': {
+      var sk = null;
+      Object.keys(Moves.DEF_SKILLS).forEach(function (k) {
+        if (Moves.DEF_SKILLS[k].id === commandId) sk = Moves.DEF_SKILLS[k];
+      });
+      var victim = this.carrier();
+      if (!sk || !victim || victim.team === p.team) {
+        text = p.name + ' 收住动作，继续卡位。';
+        success = true;
+        break;
+      }
+      return this.resolveDefSkill(p, victim, sk, rate);
+    }
   }
 
   this.setAction({
@@ -1702,9 +1799,15 @@ Match.prototype.resolveAction = function (p, commandId, rate, params) {
 };
 
 function labelOf(commandId, p) {
+  if (commandId === 'burst') return Moves.BURST.name;
+  var skName = null;
+  Object.keys(Moves.DEF_SKILLS).forEach(function (k) {
+    if (Moves.DEF_SKILLS[k].id === commandId) skName = Moves.DEF_SKILLS[k].name;
+  });
+  if (skName) return skName;
   var def = C.COMMANDS.filter(function (c) { return c.id === commandId; })[0];
   if (commandId === 'special' && p.special) return '必杀技·' + p.special.name;
-  return def.name;
+  return def ? def.name : commandId;
 }
 
 // 选择传球目标：前插 + 空当综合最优的队友
@@ -2191,6 +2294,85 @@ Match.prototype.resolvePenalty = function (foul, prefixText) {
   return this.lastAction;
 };
 
+// 防守技能结算。菜单已经扣过体能；AI 在调用前扣。犯规走原有哨声，分镜不盖住球场。
+Match.prototype.resolveDefSkill = function (defender, attacker, sk) {
+  var dd = dist(defender, attacker);
+  var beaten = this.now < (defender.beatenUntil || 0);
+  if (dd > sk.reach || (beaten && !sk.worksWhenBeaten)) {
+    this.setAction({
+      kind: sk.id, label: sk.name, playerName: defender.name, team: defender.team,
+      success: false, cut: null,
+      text: defender.name + ' 的' + sk.name + '没有够到 ' + attacker.name + '。',
+      until: Date.now() + 1400,
+    });
+    return this.lastAction;
+  }
+  var behind = attacker.team === 'home'
+    ? defender.x < attacker.x - 1
+    : defender.x > attacker.x + 1;
+  var roll = this.rng();
+  if (roll < sk.foul) {
+    var foul = Foul.judgeFoul(this, defender, attacker, {
+      fromBehind: behind || !!sk.speedHigh,
+      speedHigh: !!sk.speedHigh,
+      reckless: !!sk.reckless,
+      cardBias: sk.cardBias || 0,
+      attackPromising: false,
+    });
+    return this.applyFoulResult(foul);
+  }
+  var dPower = sk.power + FM.defend(defender) * 0.35;
+  if (sk.strength) dPower += FM.v(defender, 'strength') * 0.35;
+  var aPower = FM.dribble(attacker) * 0.45 + FM.v(attacker, 'balance') * 0.15;
+  var pClean = clamp(0.55 + (dPower - aPower) * 0.02, 0.12, 0.92);
+  if (this.rng() < pClean) {
+    this.ball.ownerId = defender.id;
+    this.ball.x = defender.x;
+    this.ball.y = defender.y;
+    defender.beatenUntil = 0;
+    attacker.beatenUntil = this.now + 1400 + (sk.cut ? CUT_OVERLAY_MS : 0);
+    this.setAction({
+      kind: sk.id, label: sk.name, playerName: defender.name, team: defender.team,
+      success: true, cut: sk.cut,
+      roles: this.roleLooks({ defender: defender, attacker: attacker, tackler: defender, dribbler: attacker }),
+      text: defender.name + ' 使出' + sk.name + '，把 ' + attacker.name + ' 的球断了下来！',
+      until: Date.now() + CUT_OVERLAY_MS,
+    });
+    return this.lastAction;
+  }
+  defender.beatenUntil = this.now + 1600;
+  this.setAction({
+    kind: sk.id, label: sk.name, playerName: defender.name, team: defender.team,
+    success: false, cut: null,
+    text: attacker.name + ' 晃开了 ' + defender.name + ' 的' + sk.name + '。',
+    until: Date.now() + 1400,
+  });
+  return this.lastAction;
+};
+
+Match.prototype.considerDefSkill = function (carrier) {
+  if (this.now < (this._defSkillAt || 0)) return false;
+  var self = this;
+  var pick = null;
+  this.players.forEach(function (d) {
+    if (d.team === 'home' || d.sentOff || d.pos === 'GK') return;
+    var dd = dist(d, carrier);
+    Moves.defSkillsOf(d).forEach(function (sk) {
+      if (dd > sk.reach || d.stamina < sk.cost) return;
+      if (self.now < d.beatenUntil && !sk.worksWhenBeaten) return;
+      var score = sk.reach - dd;
+      if (sk.worksWhenBeaten && self.now < d.beatenUntil) score += 5;
+      if (dd < 2.3 && sk.strength) score += 2;
+      if (!pick || score > pick.score) pick = { d: d, sk: sk, score: score };
+    });
+  });
+  if (!pick || this.rng() > 0.22) return false;
+  this._defSkillAt = this.now + 4500;
+  pick.d.stamina = Math.max(0, pick.d.stamina - pick.sk.cost);
+  this.resolveDefSkill(pick.d, carrier, pick.sk);
+  return true;
+};
+
 // ---------- AI（客队） ----------
 Match.prototype.aiDecide = function (p) {
   var near = this.nearestOpponent(p);
@@ -2376,6 +2558,78 @@ Match.prototype.serialize = function () {
     } : null,
     lastAction: this.lastAction && this.lastAction.until > nowMs ? this.lastAction : null,
   };
+};
+
+// 浏览器摆拍。只给调试入口用，不参与正常比赛。
+Match.prototype.debugPose = function (name) {
+  var self = this;
+  function place(id, x, y) {
+    var p = self.byId[id];
+    if (!p) return;
+    p.x = x; p.y = y; p._vx = 0; p._vy = 0;
+  }
+  this.players.forEach(function (p) {
+    place(p.id, p.team === 'home' ? 18 : 92, 8 + (p.num % 11) * 5);
+  });
+  this.phase = 'play';
+  this.decision = null;
+  this.lastAction = null;
+  this.ball.vx = 0; this.ball.vy = 0; this.ball.vz = 0; this.ball.z = 0;
+  this.setPaused(false);
+  if (name === 'menu') {
+    place('h10', 50, 34);
+    this.ball.ownerId = 'h10'; this.ball.x = 51.2; this.ball.y = 34;
+    this.control.playerId = 'h10';
+    this.enterDecision(this.byId.h10);
+    this.setPaused(true);
+    return { scene: name, phase: this.phase };
+  }
+  if (name === 'burst') {
+    this.players.forEach(function (p) { if (p.team === 'away') place(p.id, 96, p.y); });
+    place('h10', 40, 34);
+    this.ball.ownerId = 'h10'; this.ball.x = 41.2; this.ball.y = 34;
+    this.phase = 'decision';
+    this.decision = { playerId: 'h10', options: this.buildOptions(this.byId.h10) };
+    var res = this.applyCommand('h10', 'burst');
+    this.setPaused(true);
+    return { scene: name, ok: res && res.ok, cut: this.lastAction && this.lastAction.cut, text: this.lastAction && this.lastAction.text, x: this.byId.h10.x };
+  }
+  if (name === 'yellow' || name === 'red') {
+    place('h10', 40, 34);
+    place('a4', 41.2, 34);
+    this.ball.ownerId = 'h10'; this.ball.x = 41; this.ball.y = 34;
+    var foul = Foul.judgeFoul(this, this.byId.a4, this.byId.h10, {
+      fromBehind: name === 'red', speedHigh: name === 'red', reckless: name === 'red', cardBias: 36,
+    });
+    foul.advantage = false;
+    foul.penalty = false;
+    foul.dogso = false;
+    if (name === 'yellow') { foul.card = 'yellow'; foul.severityLabel = '鲁莽犯规'; }
+    else { foul.card = 'red'; foul.severityLabel = '严重犯规'; }
+    this.applyFoulResult(foul);
+    this.setPaused(true);
+    var awayOn = this.players.filter(function (p) { return p.team === 'away' && !p.sentOff; }).length;
+    return {
+      scene: name, cut: this.lastAction && this.lastAction.cut,
+      text: this.lastAction && this.lastAction.text,
+      sentOff: !!this.byId.a4.sentOff, awayOn: awayOn,
+    };
+  }
+  var skillKey = { fly: 'flying', sweep: 'sweep', shoulder: 'shoulder', elbow: 'elbow' }[name];
+  if (skillKey) {
+    var sk = Object.assign({}, Moves.DEF_SKILLS[skillKey], { foul: 0, power: 40 });
+    place('a10', 62, 34);
+    place('h4', 62 - Math.min(sk.reach - 0.4, 2.2), 34);
+    this.byId.h4.beatenUntil = 0;
+    this.byId.a10.beatenUntil = 0;
+    this.ball.ownerId = 'a10'; this.ball.x = 62; this.ball.y = 34;
+    this.byId.h4.stamina = Math.max(0, this.byId.h4.stamina - sk.cost);
+    this.resolveDefSkill(this.byId.h4, this.byId.a10, sk);
+    this.setPaused(true);
+    return { scene: name, cut: this.lastAction && this.lastAction.cut, text: this.lastAction && this.lastAction.text, owner: this.ball.ownerId };
+  }
+  this.setPaused(true);
+  return { scene: name, error: 'unknown pose' };
 };
 
 module.exports = { Match: Match };

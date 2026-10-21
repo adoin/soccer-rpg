@@ -11,15 +11,16 @@
 //   皮肤平涂 #F0C8A0。#FFFF00 / #00FF88 是旧跑动图的球袜，仍能换色。
 //   球袜颜色跟着短裤。草地、白线、球、手套、门框不参与换色。
 //
-// 怎么配一套球衣（改 TEAM_COLORS，或给球员对象加 kit）：
+  // 怎么配一套球衣（改 TEAM_COLORS，或给球员对象加 kit）：
 //   pattern: 'solid' | 'stripes' | 'hoops' | 'sash' | 'halves'
 //     solid 纯色，stripes 竖条，hoops 横条，sash 斜带，halves 左右分色
 //   primary    球衣主色
 //   secondary  条纹/斜带/另一半的颜色。纯色时可以不写。
 //   shorts / socks / shoes  短裤、球袜、球鞋
-//   jersey  旧字段，等同 primary。结算图只认纯色，不铺图案。
+//   jersey  旧字段，等同 primary。
 // 球员 kit 里没写的字段，用所在队的 TEAM_COLORS。
-// 图案按每一帧球衣的重心铺，八个方向、每一帧用同一套规则，不用为组合另画图。
+// 跑动图和漫画分镜都按球衣重心铺同一套图案。漫画按人物连通域上色，
+// 袜子跟短裤，草地上的白月牙、皮球、手套不进人物。
 (function (root, factory) {
   var api = factory();
   if (typeof module !== 'undefined' && module.exports) {
@@ -106,20 +107,72 @@
     return [Math.round(r * 255), Math.round(g * 255), Math.round(b * 255)];
   }
 
+  // 占位色都是高饱和的纯色。先拆成数字，换色时不用每个像素再 split 字符串。
+  var PH_LIST = [];
+  var PH_PEAK = 255;
+  (function () {
+    var peak = 1e9;
+    Object.keys(PLACEHOLDERS).forEach(function (pk) {
+      var c = pk.split(',').map(Number);
+      PH_LIST.push({ r: c[0], g: c[1], b: c[2], ph: PLACEHOLDERS[pk] });
+      var mx = Math.max(c[0], c[1], c[2]), mn = Math.min(c[0], c[1], c[2]);
+      if (mx - mn < peak) peak = mx - mn;
+    });
+    PH_PEAK = peak;
+  })();
+
   function matchPlaceholder(r, g, b, a, tolerance) {
     if (a < 128) return null;
-    var key = r + ',' + g + ',' + b;
-    var ph = PLACEHOLDERS[key];
-    if (!ph && tolerance > 0) {
-      var best = null, bd = 1e9;
-      for (var pk in PLACEHOLDERS) {
-        var c = pk.split(',').map(Number);
-        var dist = Math.abs(r - c[0]) + Math.abs(g - c[1]) + Math.abs(b - c[2]);
-        if (dist < bd) { bd = dist; best = pk; }
-      }
-      if (bd <= tolerance * 3) ph = PLACEHOLDERS[best];
+    var ph = PLACEHOLDERS[r + ',' + g + ',' + b];
+    if (ph || !(tolerance > 0)) return ph || null;
+    var tol = tolerance * 3;
+    var mx = r > g ? r : g; if (b > mx) mx = b;
+    var mn = r < g ? r : g; if (b < mn) mn = b;
+    // 和任一占位色的曼哈顿距离至少是「饱和度差」。灰皮肤、墨线直接跳过。
+    if (mx - mn < PH_PEAK - tol) return null;
+    var best = null, bd = 1e9;
+    for (var i = 0; i < PH_LIST.length; i++) {
+      var c = PH_LIST[i];
+      var dist = (r > c.r ? r - c.r : c.r - r) + (g > c.g ? g - c.g : c.g - g) + (b > c.b ? b - c.b : c.b - b);
+      if (dist < bd) { bd = dist; best = c.ph; }
     }
-    return ph;
+    return bd <= tol ? best : null;
+  }
+
+  // 跑动图的占位色和球衣图案重心只跟原图像素有关。开赛时按每套球衣重扫整张图会卡一秒以上。
+  // 1=球衣 2=短裤 3=球袜 4=球鞋，客队加 8。
+  function classifyPlaceholders(imgData, tolerance) {
+    var d = imgData.data, n = (d.length / 4) | 0;
+    var mask = new Uint8Array(n);
+    for (var p = 0; p < n; p++) {
+      var i = p * 4;
+      var ph = matchPlaceholder(d[i], d[i + 1], d[i + 2], d[i + 3], tolerance);
+      if (!ph) continue;
+      var part = ph.part === 'jersey' ? 1 : ph.part === 'shorts' ? 2 : ph.part === 'socks' ? 3 : ph.part === 'shoes' ? 4 : 0;
+      if (!part) continue;
+      mask[p] = part + (ph.team === 'away' ? 8 : 0);
+    }
+    return mask;
+  }
+
+  function sheetCenters(mask, w, h, cellW, cellH) {
+    var cols = Math.floor(w / cellW), rows = Math.floor(h / cellH);
+    var centers = new Array(rows * cols);
+    var ci;
+    for (ci = 0; ci < centers.length; ci++) centers[ci] = { sx: 0, sy: 0, n: 0 };
+    for (var y = 0; y < h; y++) {
+      var row = Math.floor(y / cellH) * cols;
+      var base = y * w;
+      for (var x = 0; x < w; x++) {
+        var code = mask[base + x];
+        var part = code >= 8 ? code - 8 : code;
+        if (part !== 1) continue;
+        var box = centers[row + Math.floor(x / cellW)];
+        if (!box) continue;
+        box.sx += x; box.sy += y; box.n++;
+      }
+    }
+    return centers;
   }
 
   function isDarkNeutral(r, g, b, a) {
@@ -212,21 +265,25 @@
     var pattern = opts.pattern || 'solid';
     if (PATTERNS.indexOf(pattern) < 0) pattern = 'solid';
     var cellW = opts.cellW || 0, cellH = opts.cellH || 0;
-    var centers = null;
-    if (cellW > 0 && cellH > 0 && pattern !== 'solid') {
-      var cols = Math.floor(w / cellW), rows = Math.floor(h / cellH);
-      centers = new Array(rows * cols);
-      for (var ci = 0; ci < centers.length; ci++) centers[ci] = { sx: 0, sy: 0, n: 0 };
-      for (var y0 = 0; y0 < h; y0++) {
-        for (var x0 = 0; x0 < w; x0++) {
-          var i0 = (y0 * w + x0) * 4;
-          var ph0 = matchPlaceholder(d[i0], d[i0 + 1], d[i0 + 2], d[i0 + 3], tolerance);
-          if (!ph0 || ph0.part !== 'jersey') continue;
-          var cidx = Math.floor(y0 / cellH) * cols + Math.floor(x0 / cellW);
-          if (!centers[cidx]) continue;
-          centers[cidx].sx += x0;
-          centers[cidx].sy += y0;
-          centers[cidx].n++;
+    var mask = opts.mask || null;
+    var centers = opts.centers || null;
+    if (!centers && cellW > 0 && cellH > 0 && pattern !== 'solid') {
+      if (mask) centers = sheetCenters(mask, w, h, cellW, cellH);
+      else {
+        var cols = Math.floor(w / cellW), rows = Math.floor(h / cellH);
+        centers = new Array(rows * cols);
+        for (var ci = 0; ci < centers.length; ci++) centers[ci] = { sx: 0, sy: 0, n: 0 };
+        for (var y0 = 0; y0 < h; y0++) {
+          for (var x0 = 0; x0 < w; x0++) {
+            var i0 = (y0 * w + x0) * 4;
+            var ph0 = matchPlaceholder(d[i0], d[i0 + 1], d[i0 + 2], d[i0 + 3], tolerance);
+            if (!ph0 || ph0.part !== 'jersey') continue;
+            var cidx = Math.floor(y0 / cellH) * cols + Math.floor(x0 / cellW);
+            if (!centers[cidx]) continue;
+            centers[cidx].sx += x0;
+            centers[cidx].sy += y0;
+            centers[cidx].n++;
+          }
         }
       }
     }
@@ -239,15 +296,25 @@
     for (var y = 0; y < h; y++) {
       for (var x = 0; x < w; x++) {
         var i = (y * w + x) * 4;
-        var ph = matchPlaceholder(d[i], d[i + 1], d[i + 2], d[i + 3], tolerance);
-        if (!ph) continue;
+        var team, part;
+        if (mask) {
+          var code = mask[y * w + x];
+          if (!code) continue;
+          team = code >= 8 ? 'away' : 'home';
+          var partN = code >= 8 ? code - 8 : code;
+          part = partN === 1 ? 'jersey' : partN === 2 ? 'shorts' : partN === 3 ? 'socks' : 'shoes';
+        } else {
+          var ph = matchPlaceholder(d[i], d[i + 1], d[i + 2], d[i + 3], tolerance);
+          if (!ph) continue;
+          team = ph.team; part = ph.part;
+        }
         var secondary = false;
-        if (ph.part === 'jersey' && centers) {
+        if (part === 'jersey' && centers) {
           var cols2 = Math.floor(w / cellW);
           var box = centers[Math.floor(y / cellH) * cols2 + Math.floor(x / cellW)];
           if (box && box.n) secondary = useSecondary(pattern, x, y, box.sx / box.n, box.sy / box.n);
         }
-        var hex = kitHex(teamColors, ph.team, ph.part, secondary);
+        var hex = kitHex(teamColors, team, part, secondary);
         if (!hex) continue;
         var th = targetHsl(hex);
         var origL = (0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2]) / 255;
@@ -458,42 +525,8 @@
     return kit.primary;
   }
 
-  // 漫画复合图换色。atkLook / defLook: { team, skin, hair, kit, pos }
-  // A 色键（品红/青）给 atkLook，B 色键（橙/紫）给 defLook。
-  // 鞋、头发、皮肤两边共用色键，按离哪一件球衣更近归到那个人。
-  function recolorManga(imgData, atkLook, defLook) {
-    atkLook = atkLook || {};
-    defLook = defLook || {};
-    var atkKit = resolveKit(atkLook.team || 'home', atkLook.kit);
-    var defKit = resolveKit(defLook.team || 'away', defLook.kit);
-    var atkSkin = hexRgb((SKIN_PRESETS[atkLook.skin] || SKIN_PRESETS.fair).color);
-    var defSkin = hexRgb((SKIN_PRESETS[defLook.skin] || SKIN_PRESETS.fair).color);
-    var atkHair = hexRgb((HAIR_PRESETS[atkLook.hair] || HAIR_PRESETS.black).color);
-    var defHair = hexRgb((HAIR_PRESETS[defLook.hair] || HAIR_PRESETS.black).color);
-    var paintOf = {
-      atk: {
-        atkJersey: hexRgb(jerseyHexOf(atkLook, atkKit)),
-        atkShorts: hexRgb(atkKit.shorts),
-        boot: hexRgb(atkKit.shoes || '#222222'),
-        hair: atkHair,
-        skin: atkSkin,
-      },
-      def: {
-        defJersey: hexRgb(jerseyHexOf(defLook, defKit)),
-        defShorts: hexRgb(defKit.shorts),
-        boot: hexRgb(defKit.shoes || '#222222'),
-        hair: defHair,
-        skin: defSkin,
-      },
-    };
-    var d = imgData.data, w = imgData.width, h = imgData.height, n = w * h;
-    var cls = new Array(n);
-    for (var p = 0; p < n; p++) {
-      var i = p * 4;
-      cls[p] = mangaPixelClass(d[i], d[i + 1], d[i + 2], d[i + 3]);
-    }
-    // 待定的粉：有成片真品红时，小块孤立的是鞋；否则最大块是球衣，
-    // G 通道接近它的也是球衣（第二名进攻球员），其余是鞋。
+  function resolveAmbiguous(cls, d, w, h) {
+    var n = w * h;
     var trueMag = 0;
     for (var ti = 0; ti < n; ti++) if (cls[ti] === 'atkJersey') trueMag++;
     var seen = new Uint8Array(n);
@@ -533,8 +566,7 @@
     }
     if (trueMag > 200) {
       for (var ci = 0; ci < comps.length; ci++) {
-        var asJersey = comps[ci].ids.length >= 400;
-        var label = asJersey ? 'atkJersey' : 'boot';
+        var label = comps[ci].ids.length >= 400 ? 'atkJersey' : 'boot';
         for (var cj = 0; cj < comps[ci].ids.length; cj++) cls[comps[ci].ids[cj]] = label;
       }
     } else if (comps.length) {
@@ -548,57 +580,357 @@
         for (var cz = 0; cz < comps[ck].ids.length; cz++) cls[comps[ck].ids[cz]] = lab;
       }
     }
+  }
+
+  function clothSide(kind) {
+    if (kind === 'atkJersey' || kind === 'atkShorts') return 1;
+    if (kind === 'defJersey' || kind === 'defShorts') return 2;
+    return 0;
+  }
+
+  function partCode(kind) {
+    if (kind === 'atkJersey' || kind === 'defJersey') return 1;
+    if (kind === 'atkShorts' || kind === 'defShorts') return 2;
+    if (kind === 'boot') return 3;
+    if (kind === 'hair') return 4;
+    if (kind === 'skin') return 5;
+    if (kind === 'ink') return 6;
+    return 0;
+  }
+
+  function isGrassPixel(r, g, b) {
+    return g > r + 8 && g + 8 >= b && b < g * 0.55 && g > 55;
+  }
+
+  function isNearWhitePixel(r, g, b) {
+    var max = r > g ? r : g; if (b > max) max = b;
+    var min = r < g ? r : g; if (b < min) min = b;
+    return max > 210 && (max - min) < 28 && min > 185;
+  }
+
+  function isRedBallPixel(r, g, b) {
+    var c = pixelHsv(r, g, b);
+    return (c.h < 16 || c.h > 350) && c.s > 0.5 && b < 75 && g < 110 && c.v > 90;
+  }
+
+  // 条纹宽度跟球衣高度走。跑动图格子很小，band 用 2；漫画人物用身高的 1/16。
+  function patternSecondary(pattern, x, y, cx, cy, band) {
+    band = band || 2;
+    if (pattern === 'stripes') return (Math.floor((x - cx) / band) & 1) === 0;
+    if (pattern === 'hoops') return (Math.floor((y - cy) / band) & 1) === 0;
+    if (pattern === 'sash') return Math.abs((x - cx) - (y - cy)) <= band * 2;
+    if (pattern === 'halves') return x >= cx;
+    return false;
+  }
+
+  // 每人一块连通域。品红/青是 A，橙/紫是 B。鞋、头发、皮肤顺着身体走，
+  // 不按全图最近球衣（那会在两人交叠时把短裤和鞋换到对方身上）。
+  // 连得上画面边缘的白（草地月牙、皮球、白线）留着；包在腿和腋下里的白补上。
+  function prepareMangaMask(imgData) {
+    var d = imgData.data, w = imgData.width, h = imgData.height, n = w * h;
+    var cls = new Array(n);
+    var p, i;
+    for (p = 0; p < n; p++) {
+      i = p * 4;
+      cls[p] = mangaPixelClass(d[i], d[i + 1], d[i + 2], d[i + 3]);
+    }
+    resolveAmbiguous(cls, d, w, h);
     snapOutlineHalos(cls, d, w, h);
-    var INF = 1e9;
-    var da = new Float64Array(n);
-    var dd = new Float64Array(n);
-    for (var pi = 0; pi < n; pi++) {
-      da[pi] = cls[pi] === 'atkJersey' ? 0 : INF;
-      dd[pi] = cls[pi] === 'defJersey' ? 0 : INF;
+
+    var claim = new Uint8Array(n);
+    var part = new Uint8Array(n);
+    var dist = new Int16Array(n);
+    for (p = 0; p < n; p++) dist[p] = -1;
+    var q = [];
+    var qside = [];
+    for (p = 0; p < n; p++) {
+      var side0 = clothSide(cls[p]);
+      if (!side0) continue;
+      claim[p] = side0;
+      part[p] = partCode(cls[p]);
+      dist[p] = 0;
+      q.push(p);
+      qside.push(side0);
     }
-    function chamfer(dist) {
-      var y, x, i, best;
-      for (y = 0; y < h; y++) {
-        for (x = 0; x < w; x++) {
-          i = y * w + x; best = dist[i];
-          if (x > 0 && dist[i - 1] + 3 < best) best = dist[i - 1] + 3;
-          if (y > 0) {
-            if (dist[i - w] + 3 < best) best = dist[i - w] + 3;
-            if (x > 0 && dist[i - w - 1] + 4 < best) best = dist[i - w - 1] + 4;
-            if (x + 1 < w && dist[i - w + 1] + 4 < best) best = dist[i - w + 1] + 4;
+    var BR = 5;
+    var qi = 0;
+    while (qi < q.length) {
+      var id = q[qi];
+      var sd = qside[qi];
+      qi++;
+      var cd = dist[id];
+      var x = id % w, y = (id / w) | 0;
+      for (var dy = -1; dy <= 1; dy++) {
+        var yy = y + dy;
+        if (yy < 0 || yy >= h) continue;
+        for (var dx = -1; dx <= 1; dx++) {
+          if (!dx && !dy) continue;
+          var xx = x + dx;
+          if (xx < 0 || xx >= w) continue;
+          var nid = yy * w + xx;
+          var nd = cd + 1;
+          if (dist[nid] !== -1 && dist[nid] <= nd) continue;
+          var other = clothSide(cls[nid]);
+          if (other && other !== sd) continue;
+          var pk = partCode(cls[nid]);
+          if (!pk && !other) {
+            var bi = nid * 4;
+            var grass = isGrassPixel(d[bi], d[bi + 1], d[bi + 2]);
+            if (grass && nd > 4) continue;
+            if (!grass && nd > BR) continue;
           }
-          dist[i] = best;
+          dist[nid] = nd;
+          if (pk) {
+            if (!claim[nid]) {
+              claim[nid] = sd;
+              part[nid] = pk;
+            }
+          }
+          if (pk || nd < BR) {
+            q.push(nid);
+            qside.push(sd);
+          }
         }
       }
-      for (y = h - 1; y >= 0; y--) {
-        for (x = w - 1; x >= 0; x--) {
-          i = y * w + x; best = dist[i];
-          if (x + 1 < w && dist[i + 1] + 3 < best) best = dist[i + 1] + 3;
-          if (y + 1 < h) {
-            if (dist[i + w] + 3 < best) best = dist[i + w] + 3;
-            if (x > 0 && dist[i + w - 1] + 4 < best) best = dist[i + w - 1] + 4;
-            if (x + 1 < w && dist[i + w + 1] + 4 < best) best = dist[i + w + 1] + 4;
-          }
-          dist[i] = best;
+    }
+
+    // 腿缝：左右 3 像素内都是身体的草地/白，不让外面的洪水钻进来。
+    var pinch = new Uint8Array(n);
+    var x2, y2, t, hitL, hitR, xx2;
+    for (y2 = 0; y2 < h; y2++) {
+      for (x2 = 0; x2 < w; x2++) {
+        var id2 = y2 * w + x2;
+        if (claim[id2]) continue;
+        i = id2 * 4;
+        if (d[i + 3] < 128) continue;
+        if (!isGrassPixel(d[i], d[i + 1], d[i + 2]) && !isNearWhitePixel(d[i], d[i + 1], d[i + 2])) continue;
+        hitL = 0; hitR = 0;
+        for (t = 1; t <= 3; t++) {
+          xx2 = x2 - t;
+          if (xx2 >= 0 && claim[y2 * w + xx2]) { hitL = t; break; }
         }
+        for (t = 1; t <= 3; t++) {
+          xx2 = x2 + t;
+          if (xx2 < w && claim[y2 * w + xx2]) { hitR = t; break; }
+        }
+        if (hitL && hitR) pinch[id2] = 1;
       }
     }
-    chamfer(da); chamfer(dd);
-    function fill(i, rgb) {
-      d[i] = rgb[0]; d[i + 1] = rgb[1]; d[i + 2] = rgb[2]; d[i + 3] = 255;
+
+    var reach = new Uint8Array(n);
+    var fq = [];
+    function tryFlood(fid) {
+      if (reach[fid] || claim[fid] || pinch[fid]) return;
+      var fi = fid * 4;
+      var fa = d[fi + 3];
+      if (fa >= 128) {
+        var fr = d[fi], fg = d[fi + 1], fb = d[fi + 2];
+        if (!isGrassPixel(fr, fg, fb) && !isNearWhitePixel(fr, fg, fb)) return;
+      }
+      reach[fid] = 1;
+      fq.push(fid);
     }
-    for (var k = 0; k < n; k++) {
-      var kind = cls[k];
-      if (!kind) continue;
-      if (kind === 'ink') { fill(k * 4, [0, 0, 0]); continue; }
-      var side = da[k] <= dd[k] ? 'atk' : 'def';
+    for (x2 = 0; x2 < w; x2++) { tryFlood(x2); tryFlood((h - 1) * w + x2); }
+    for (y2 = 0; y2 < h; y2++) { tryFlood(y2 * w); tryFlood(y2 * w + (w - 1)); }
+    var fqi = 0;
+    while (fqi < fq.length) {
+      var fid = fq[fqi++];
+      var fx = fid % w, fy = (fid / w) | 0;
+      if (fx > 0) tryFlood(fid - 1);
+      if (fx + 1 < w) tryFlood(fid + 1);
+      if (fy > 0) tryFlood(fid - w);
+      if (fy + 1 < h) tryFlood(fid + w);
+    }
+
+    for (p = 0; p < n; p++) {
+      if (claim[p] || reach[p]) continue;
+      i = p * 4;
+      if (d[i + 3] < 128) continue;
+      var r = d[i], g = d[i + 1], b = d[i + 2];
+      if (isGrassPixel(r, g, b) || isRedBallPixel(r, g, b)) continue;
+      var xh = p % w, yh = (p / w) | 0;
+      var white = isNearWhitePixel(r, g, b);
+      // 离身体远的杂色（孤立红边、场上墨点）不动。白只补包在身体里的小块。
+      var limit = white ? 8 : 2;
+      if (r < 36 && g < 36 && b < 36) continue;
+      var near = false;
+      var votes = [0, 0, 0, 0, 0, 0, 0];
+      var sideVotes = [0, 0, 0];
+      var rad, dy3, dx3, nx3, ny3, np;
+      for (rad = 1; rad <= limit && !near; rad++) {
+        for (dy3 = -rad; dy3 <= rad; dy3++) {
+          ny3 = yh + dy3;
+          if (ny3 < 0 || ny3 >= h) continue;
+          for (dx3 = -rad; dx3 <= rad; dx3++) {
+            if (Math.max(Math.abs(dx3), Math.abs(dy3)) !== rad) continue;
+            nx3 = xh + dx3;
+            if (nx3 < 0 || nx3 >= w) continue;
+            np = ny3 * w + nx3;
+            if (!claim[np]) continue;
+            near = true;
+            sideVotes[claim[np]]++;
+            if (part[np] && part[np] !== 6) votes[part[np]]++;
+          }
+        }
+      }
+      if (!near) continue;
+      // 手套：贴着皮肤、不贴短裤的一小块白留下。
+      if (isNearWhitePixel(r, g, b) && votes[5] > 0 && votes[2] === 0 && votes[1] === 0) continue;
+      var bestSide = sideVotes[1] >= sideVotes[2] ? 1 : 2;
+      if (!sideVotes[1] && !sideVotes[2]) {
+        // 近处只有墨线，再往外找身体
+        bestSide = 0;
+        for (rad = 1; rad <= 6 && !bestSide; rad++) {
+          for (dy3 = -rad; dy3 <= rad && !bestSide; dy3++) {
+            ny3 = yh + dy3;
+            if (ny3 < 0 || ny3 >= h) continue;
+            for (dx3 = -rad; dx3 <= rad; dx3++) {
+              nx3 = xh + dx3;
+              if (nx3 < 0 || nx3 >= w) continue;
+              np = ny3 * w + nx3;
+              if (claim[np]) { bestSide = claim[np]; break; }
+            }
+          }
+        }
+      }
+      if (!bestSide) continue;
+      var bestPart = 2;
+      var bestN = 0;
+      for (var pi = 1; pi <= 5; pi++) {
+        if (votes[pi] > bestN) { bestN = votes[pi]; bestPart = pi; }
+      }
+      if (!bestN) bestPart = 2;
+      claim[p] = bestSide;
+      part[p] = bestPart;
+    }
+
+    // 离身体稍远的鞋、头发、皮肤色键，归到最近的那个人，不留品红/玫红。
+    for (p = 0; p < n; p++) {
+      if (claim[p]) continue;
+      var stray = partCode(cls[p]);
+      if (stray !== 3 && stray !== 4 && stray !== 5) continue;
+      var sx = p % w, sy = (p / w) | 0;
+      var found = 0, bestD = 1e9;
+      var rad2, dy4, dx4, qx, qy, qp;
+      for (rad2 = 1; rad2 <= 36 && !found; rad2++) {
+        for (dy4 = -rad2; dy4 <= rad2; dy4++) {
+          qy = sy + dy4;
+          if (qy < 0 || qy >= h) continue;
+          for (dx4 = -rad2; dx4 <= rad2; dx4++) {
+            if (Math.max(Math.abs(dx4), Math.abs(dy4)) !== rad2) continue;
+            qx = sx + dx4;
+            if (qx < 0 || qx >= w) continue;
+            qp = qy * w + qx;
+            if (!claim[qp]) continue;
+            var dd = dx4 * dx4 + dy4 * dy4;
+            if (dd < bestD) { bestD = dd; found = claim[qp]; }
+          }
+        }
+      }
+      if (found) {
+        claim[p] = found;
+        part[p] = stray;
+      }
+    }
+
+    return { w: w, h: h, claim: claim, part: part };
+  }
+
+  // 漫画复合图换色。aLook 是品红/青那个人，bLook 是橙/紫那个人。
+  // 参数名沿用 atk/def，只是 A/B，不代表进攻方和防守方。
+  function paintManga(imgData, mask, aLook, bLook) {
+    aLook = aLook || {};
+    bLook = bLook || {};
+    var looks = [null, aLook, bLook];
+    var kits = [null, resolveKit(aLook.team || 'home', aLook.kit), resolveKit(bLook.team || 'away', bLook.kit)];
+    var skins = [null,
+      hexRgb((SKIN_PRESETS[aLook.skin] || SKIN_PRESETS.fair).color),
+      hexRgb((SKIN_PRESETS[bLook.skin] || SKIN_PRESETS.fair).color)];
+    var hairs = [null,
+      hexRgb((HAIR_PRESETS[aLook.hair] || HAIR_PRESETS.black).color),
+      hexRgb((HAIR_PRESETS[bLook.hair] || HAIR_PRESETS.black).color)];
+    var d = imgData.data, w = mask.w, h = mask.h, n = w * h;
+    var claim = mask.claim, part = mask.part;
+    function jerseyBox(side) {
+      var seen = new Uint8Array(n);
+      var best = null;
+      var p0, q, qi, id, x, y, nx, ny, nid, comp, minX, maxX, minY, maxY;
+      for (p0 = 0; p0 < n; p0++) {
+        if (seen[p0] || part[p0] !== 1 || claim[p0] !== side) continue;
+        q = [p0]; seen[p0] = 1; qi = 0;
+        comp = 0; minX = w; maxX = 0; minY = h; maxY = 0;
+        var sx = 0, sy = 0;
+        while (qi < q.length) {
+          id = q[qi++];
+          x = id % w; y = (id / w) | 0;
+          comp++; sx += x; sy += y;
+          if (x < minX) minX = x; if (x > maxX) maxX = x;
+          if (y < minY) minY = y; if (y > maxY) maxY = y;
+          var dy, dx;
+          for (dy = -1; dy <= 1; dy++) {
+            ny = y + dy; if (ny < 0 || ny >= h) continue;
+            for (dx = -1; dx <= 1; dx++) {
+              if (!dx && !dy) continue;
+              nx = x + dx; if (nx < 0 || nx >= w) continue;
+              nid = ny * w + nx;
+              if (seen[nid] || part[nid] !== 1 || claim[nid] !== side) continue;
+              seen[nid] = 1; q.push(nid);
+            }
+          }
+        }
+        if (!best || comp > best.n) {
+          best = { n: comp, cx: sx / comp, cy: sy / comp, minX: minX, maxX: maxX, minY: minY, maxY: maxY };
+        }
+      }
+      if (!best) return null;
+      best.band = Math.max(3, Math.round((best.maxY - best.minY) / 12));
+      return best;
+    }
+    var box1 = jerseyBox(1);
+    var box2 = jerseyBox(2);
+    var boxes = [null, box1, box2];
+    function jerseyRgb(side, x, y) {
+      var look = looks[side];
+      var kit = kits[side];
+      if (look && look.pos === 'GK') {
+        return hexRgb(look.team === 'home' ? '#e8b923' : '#7a7f8a');
+      }
+      var b = boxes[side];
+      var hex = kit.primary;
+      if (!b) return hexRgb(hex);
+      var on = false;
+      if (kit.pattern === 'sash') {
+        var uw = Math.max(1, b.maxX - b.minX);
+        var uh = Math.max(1, b.maxY - b.minY);
+        on = Math.abs((x - b.minX) / uw - (y - b.minY) / uh) <= 0.16;
+      } else {
+        on = patternSecondary(kit.pattern, x, y, b.cx, b.cy, b.band);
+      }
+      if (on) hex = kit.secondary || kit.primary;
+      return hexRgb(hex);
+    }
+    var p, pr, side;
+    for (p = 0; p < n; p++) {
+      pr = part[p];
+      side = claim[p];
+      if (!pr || !side) continue;
       var rgb = null;
-      if (kind === 'atkJersey' || kind === 'atkShorts') rgb = paintOf.atk[kind];
-      else if (kind === 'defJersey' || kind === 'defShorts') rgb = paintOf.def[kind];
-      else rgb = paintOf[side][kind];
-      if (rgb) fill(k * 4, rgb);
+      if (pr === 6) rgb = [0, 0, 0];
+      else if (pr === 1) rgb = jerseyRgb(side, p % w, (p / w) | 0);
+      else if (pr === 2) rgb = hexRgb(kits[side].shorts);
+      else if (pr === 3) rgb = hexRgb(kits[side].shoes || '#222222');
+      else if (pr === 4) rgb = hairs[side];
+      else if (pr === 5) rgb = skins[side];
+      if (!rgb) continue;
+      var o = p * 4;
+      d[o] = rgb[0]; d[o + 1] = rgb[1]; d[o + 2] = rgb[2]; d[o + 3] = 255;
     }
     return imgData;
+  }
+
+  function recolorManga(imgData, atkLook, defLook) {
+    var mask = prepareMangaMask(imgData);
+    return paintManga(imgData, mask, atkLook, defLook);
   }
 
   function recolorSkin(imgData, presetId) {
@@ -628,11 +960,15 @@
     hexToHsl: hexToHsl,
     hslToRgb: hslToRgb,
     markShoePlaceholders: markShoePlaceholders,
+    classifyPlaceholders: classifyPlaceholders,
+    sheetCenters: sheetCenters,
     recolorImageData: recolorImageData,
     resolveKit: resolveKit,
     isSkinPixel: isSkinPixel,
     recolorSkin: recolorSkin,
     mangaPixelClass: mangaPixelClass,
+    prepareMangaMask: prepareMangaMask,
+    paintManga: paintManga,
     recolorManga: recolorManga,
   };
 });

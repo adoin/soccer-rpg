@@ -63,6 +63,7 @@ function paintRunSheet(skinId, kitSpec) {
   if (typeof SharedKits !== 'undefined') {
     SharedKits.recolorImageData(copy, { home: kitSpec }, 32, {
       cellW: SPR_CW, cellH: SPR_CH, pattern: kitSpec.pattern,
+      mask: runPack.mask, centers: runPack.centers,
     });
     if (SharedKits.recolorSkin) SharedKits.recolorSkin(copy, skinId);
   }
@@ -92,6 +93,10 @@ function loadRunSource(url) {
       runPack.anchors = prepareRunSheet(id);
       if (typeof SharedKits !== 'undefined' && SharedKits.markShoePlaceholders) {
         SharedKits.markShoePlaceholders(id, SPR_CW, SPR_CH);
+      }
+      if (typeof SharedKits !== 'undefined' && SharedKits.classifyPlaceholders) {
+        runPack.mask = SharedKits.classifyPlaceholders(id, 32);
+        runPack.centers = SharedKits.sheetCenters(runPack.mask, id.width, id.height, SPR_CW, SPR_CH);
       }
       runPack.data = id;
       runPack.w = id.width; runPack.h = id.height;
@@ -256,36 +261,17 @@ function spriteFrameFor(p, t) {
 
 // ---------------- 结算演出图（像素风拼贴特写） ----------------
 // 引擎 lastAction.cut 给出键名，这里预加载对应图片；drawCutin 播全屏演出。
-var CUT_KEYS = ['dribble-win', 'dribble-lose', 'pass-win', 'pass-lose',
-  'shoot-goal', 'shoot-save', 'shoot-miss', 'special-goal', 'special-save',
-  'feint-win', 'foul', 'offside'];
 var CUT_IMGS = {};
-CUT_KEYS.forEach(function (k) {
+// 旧像素特写按需加载。开球时整表换色会卡在 matchPlaceholder 上几秒，
+// 漫画分镜才是现在的演出，这些 webp 只在漫画还没好时兜底。
+function ensureCutImg(k) {
+  if (!k) return null;
+  if (CUT_IMGS[k]) return CUT_IMGS[k];
   var im = new Image();
   im.src = 'assets/cutscene/' + k + '.webp';
-  // ★ 球衣调色板（2026-10-10）：如果底图用了占位符纯色，按球队实际颜色换色。
-  //   现有蓝/红图无占位符，recolor 为空操作；未来新球队图按规范生成即可自动适配。
-  im.onload = function () {
-    try {
-      if (typeof SharedKits === 'undefined') return;
-      var cv = document.createElement('canvas');
-      cv.width = im.naturalWidth; cv.height = im.naturalHeight;
-      var cx = cv.getContext('2d');
-      cx.drawImage(im, 0, 0);
-      var id = cx.getImageData(0, 0, cv.width, cv.height);
-      // 快速检测：是否含有占位符色（品红 255,0,255）
-      var hasPh = false;
-      for (var i = 0; i < id.data.length; i += 400) {
-        if (id.data[i] === 255 && id.data[i + 1] === 0 && id.data[i + 2] === 255 && id.data[i + 3] > 128) { hasPh = true; break; }
-      }
-      if (!hasPh) return;
-      SharedKits.recolorImageData(id);
-      cx.putImageData(id, 0, 0);
-      im.src = cv.toDataURL();
-    } catch (e) { /* 换色失败用原图 */ }
-  };
   CUT_IMGS[k] = im;
-});
+  return im;
+}
 // ★ 漫画分镜资源预加载（动态判定动画）
 if (typeof mangaInit === 'function') mangaInit();
 
@@ -436,6 +422,8 @@ cv.addEventListener('click', function (e) {
   }
 });
 document.addEventListener('keydown', function (e) {
+  var held = (e.key || '').toLowerCase();
+  if (held) keysDown[held] = true;
   if (e.key === 'Escape' && screen === 'game') {
     if (headMenuOpen()) { headMenuBack(); return; } // 头顶菜单内：Esc = 返回上一步
     if (showingCutscene()) { skipCutscene(); return; } // ★ 全屏特写：Esc 只关闭特写
@@ -468,7 +456,10 @@ document.addEventListener('keydown', function (e) {
   keys[k] = true;
   updatePadFromKeys();
 });
-document.addEventListener('keyup', function (e) {  var k = (e.key || '').toLowerCase();
+document.addEventListener('keyup', function (e) {
+  var k = (e.key || '').toLowerCase();
+  keysDown[k] = false;
+  if (ui.menuNeedKeyUp === k) ui.menuNeedKeyUp = null;
   if (keys[k]) { keys[k] = false; updatePadFromKeys(); }
 });
 window.addEventListener('blur', function () {
@@ -477,6 +468,7 @@ window.addEventListener('blur', function () {
   setPad(0, 0, false, false);
 });
 var keys = {};
+var keysDown = {};
 function updatePadFromKeys() {
   // 场地坐标：+x 朝对方球门（右），+y 朝屏幕上方
   var dx = (keys['d'] ? 1 : 0) - (keys['a'] ? 1 : 0);
@@ -719,24 +711,60 @@ function pushHmLevel(lvl) { if (lvl.items && lvl.sel == null) lvl.sel = firstEna
 function popHmLevel() { if (ui.hmenu && ui.hmenu.stack.length > 1) ui.hmenu.stack.pop(); }
 function headMenuBack() { popHmLevel(); } // 头顶菜单内 Esc = 返回上一步（第一级无返回，必须选）
 
-function openHeadMenu(d) {
-  var items = d.options.map(function (o) {
-    return {
-      label: (CMD_ICONS[o.id] || '•') + ' ' + o.name,
-      sub: o.rate + '% · ' + o.cost + '体能',
-      enabled: o.enabled,
-      fn: function () {
-        if (o.id === 'pass') { ui.hmenu.passOpt = o; initAim(ui.hmenu); pushHmLevel({ kind: 'aim', title: '落点', sel: 0 }); requestHmPreview(); }
-        else sendCommand(o);
-      }
-    };
+function optionSub(o) {
+  if (o.moves) return '选择动作';
+  if (o.skills) return '选择技能';
+  return (o.rate != null ? o.rate + '% · ' : '') + o.cost + '体能';
+}
+function commandItem(o) {
+  return {
+    label: (CMD_ICONS[o.id] || '•') + ' ' + o.name,
+    sub: optionSub(o),
+    enabled: o.enabled !== false,
+    fn: function () {
+      if (ui.choosing) return;
+      if (o.id === 'pass') { ui.hmenu.passOpt = o; initAim(ui.hmenu); pushHmLevel({ kind: 'aim', title: '落点', sel: 0 }); requestHmPreview(); }
+      else if (o.moves && o.moves.length) pushHmLevel(moveLevel(o));
+      else if (o.skills && o.skills.length) pushHmLevel(skillLevel(o));
+      else sendCommand(o);
+    }
+  };
+}
+function moveLevel(o) {
+  var items = [backItem()];
+  o.moves.forEach(function (mv) {
+    items.push({
+      label: (CMD_ICONS[mv.id] || '💨') + ' ' + mv.name,
+      sub: (mv.rate != null ? mv.rate + '% · ' : '') + mv.cost + '体能',
+      enabled: mv.enabled !== false,
+      fn: function () { sendCommand(mv); }
+    });
   });
+  return { kind: 'moves', title: o.name, items: items, sel: 1 };
+}
+function skillLevel(o) {
+  var items = [backItem()];
+  o.skills.forEach(function (sk) {
+    items.push({
+      label: (CMD_ICONS[sk.id] || '🛡️') + ' ' + sk.name,
+      sub: (sk.enabled ? (sk.rate + '% · ' + sk.cost + '体能') : '够不着或体能不足'),
+      enabled: sk.enabled !== false,
+      fn: function () { sendCommand(sk); }
+    });
+  });
+  return { kind: 'skills', title: o.name, items: items, sel: 1 };
+}
+function openHeadMenu(d) {
+  var items = d.options.map(commandItem);
   ui.hmenu = {
     playerId: d.playerId, passOpt: null,
     pass: { aimX: 0, aimY: 0, technique: 'inside', height: 'mid' },
     preview: null, previewAt: 0,
     stack: [{ kind: 'cmds', title: null, items: items, sel: firstEnabled(items, 0) }]
   };
+  // 打开菜单的那下 E 不能同时当成确认。松开之前，以及刚打开的一小段，E 都不算。
+  ui.menuArmUntil = Date.now() + 280;
+  ui.menuNeedKeyUp = keysDown.e ? 'e' : null;
 }
 // ★ 落点自由光标（天使之翼式）：方向+力量由"传球者→落点"向量同时决定。
 //   输入是精确意图，能力只决定散布（与服务端 pass.js 一致）。
@@ -988,6 +1016,11 @@ function headMenuKey(e) {
   var hm = ui.hmenu, lvl = hmTop();
   if (!hm || !lvl) return false;
   var k = (e.key || '').toLowerCase();
+  // 打开菜单的 E，以及刚弹出的 280ms 内，不确认。回车和空格不受这道锁影响。
+  if (k === 'e' && (ui.menuNeedKeyUp === 'e' || Date.now() < (ui.menuArmUntil || 0))) {
+    e.preventDefault();
+    return true;
+  }
   // ★ Q = 取消/返回上一级（和 Esc 一样）
   if (k === 'q') { headMenuBack(); e.preventDefault(); return true; }
   // ★ 按住 E 开菜单时 repeat 不触发确认，松开重按才确认（防"一按就连开带确认"误触）
@@ -998,6 +1031,7 @@ function headMenuKey(e) {
     lvl.sel = i;
   }
   function activateList() {
+    if (ui.choosing) return;
     var it = lvl.items[lvl.sel];
     if (it && it.enabled) it.fn();
     else if (it) toast('体能不足或该球员无法使用');
@@ -1630,7 +1664,7 @@ function drawPlayerCard(x, y, w, h) {
   text('Lv.' + p.level + '  ' + skill, x + 68, y + 66, 12, '#ffd94a', 'left');
 }
 
-var CMD_ICONS = { dribble: '💨', pass: '➡️', protect: '🛡️', shoot: '⚽', special: '🔥', feint: '🌀', retreat: '↩️', tackle: '🦵', jockey: '🧱' };
+var CMD_ICONS = { dribble: '💨', burst: '💨', pass: '➡️', protect: '🛡️', shoot: '⚽', special: '🔥', feint: '🌀', retreat: '↩️', tackle: '🦵', jockey: '🧱', 'def-skills': '🛡️', 'def-flying': '🛝', 'def-sweep': '🌀', 'def-shoulder': '💪', 'def-elbow': '🚧' };
 
 function drawIdleHint(x, y, w, h) {
   panel(x, y, w, h);
@@ -1780,7 +1814,8 @@ function showingCutscene() {
   var a = state.lastAction;
   if (ui.cutSkipId && ui.cutSkipId === cutActionId(a)) return null;
   var manga = typeof mangaCutAvailable === 'function' && mangaCutAvailable(a);
-  var im = a.cut && CUT_IMGS[a.cut];
+  if (!manga && typeof mangaHasCut === 'function' && mangaHasCut(a.cut)) return null;
+  var im = a.cut && ensureCutImg(a.cut);
   var webp = im && im.complete && im.naturalWidth;
   if (!manga && !webp) return null;
   return a;
@@ -1799,8 +1834,9 @@ function drawCutin() {
       if (typeof mangaCutAvailable === 'function' && mangaCutAvailable(a)) return;
     } else if (drawMangaCutin(a, performance.now())) return;
   }
+  if (typeof mangaHasCut === 'function' && mangaHasCut(a.cut)) return;
   // ★ 有演出图键 → 全屏像素风结算演出（仿《天使之翼》指令结算画面）
-  var im = a.cut && CUT_IMGS[a.cut];
+  var im = a.cut && ensureCutImg(a.cut);
   if (im && im.complete && im.naturalWidth) {
     if (ui.cutSkipId !== cutActionId(a)) drawCutscene(a, im);
     return;

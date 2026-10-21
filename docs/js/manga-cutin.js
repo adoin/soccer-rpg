@@ -8,7 +8,7 @@ var MANGA = {
   lastId: null,
   cache: {},
 };
-var MANGA_V = 'manga2';
+var MANGA_V = 'manga3';
 
 // a / b：这张图里品红/青（A）和橙/紫（B）分别对应 action.roles 的哪个角色。
 // trail.split 为真时，start→impact 是被改变前的淡线，impact→end 是加粗的新路线。
@@ -59,6 +59,15 @@ var MANGA_CUTS = {
     trail: { start: [0.68, 0.52], end: [0.08, 0.41] } },
   'hit-post':     { pose: 'hit_post', sfx: '中柱！', shake: 10, a: 'shooter', b: 'keeper',
     trail: { start: [0.28, 0.55], impact: [0.92, 0.42], end: [0.68, 0.58], split: true } },
+  // A 色键是出技能的防守人，B 是持球的进攻者。飞铲和横扫把球从接触点敲走；肩靠和拦江只有撞击。
+  'def-skill-flying-tackle': { pose: 'def_flying_tackle', sfx: '离地飞铲！', shake: 9, a: 'defender', b: 'attacker',
+    trail: { start: [0.28, 0.72], impact: [0.46, 0.58], end: [0.84, 0.30], ball: true } },
+  'def-skill-sweep': { pose: 'def_sweep', sfx: '横扫千军！', shake: 8, a: 'defender', b: 'attacker',
+    trail: { start: [0.34, 0.70], impact: [0.50, 0.62], end: [0.86, 0.38], ball: true } },
+  'def-skill-shoulder': { pose: 'def_shoulder', sfx: '铁山靠！', shake: 7, a: 'defender', b: 'attacker',
+    trail: { impact: [0.52, 0.48], burst: true } },
+  'def-skill-elbow': { pose: 'def_elbow', sfx: '铁索拦江！', shake: 8, a: 'defender', b: 'attacker',
+    trail: { impact: [0.56, 0.46], burst: true } },
 };
 
 function mangaPoseList() {
@@ -73,18 +82,19 @@ function mangaPoseList() {
 }
 
 function mangaInit() {
-  var poses = mangaPoseList();
-  var left = poses.length;
-  function done() {
-    left--;
-    if (left <= 0) MANGA.ready = true;
-  }
-  poses.forEach(function (name) {
-    var src = new Image();
-    src.onload = function () { MANGA.srcs[name] = src; done(); };
-    src.onerror = function () { MANGA.srcs[name] = null; done(); };
-    src.src = 'assets/manga/' + name + '.png?v=' + MANGA_V;
-  });
+  // 开球不等 17 张分镜解码。用到哪张再加载，区域蒙版也只算一次。
+  MANGA.ready = true;
+}
+
+function mangaPoseImage(name) {
+  if (MANGA.srcs[name]) return MANGA.srcs[name];
+  var src = new Image();
+  src._pose = name;
+  MANGA.srcs[name] = src;
+  src.onload = function () { src._ok = true; };
+  src.onerror = function () { src._bad = true; };
+  src.src = 'assets/manga/' + name + '.png?v=' + MANGA_V;
+  return src;
 }
 
 function mangaLookKey(look) {
@@ -101,16 +111,34 @@ function mangaPaint(src, aLook, bLook) {
   cv.width = src.naturalWidth;
   cv.height = src.naturalHeight;
   var cx = cv.getContext('2d');
-  cx.drawImage(src, 0, 0);
-  if (typeof SharedKits !== 'undefined' && SharedKits.recolorManga) {
-    var id = cx.getImageData(0, 0, cv.width, cv.height);
-    SharedKits.recolorManga(id, aLook || { team: 'home' }, bLook || { team: 'away' });
-    cx.putImageData(id, 0, 0);
+  if (typeof SharedKits !== 'undefined' && SharedKits.prepareMangaMask && !src._mask) {
+    cx.drawImage(src, 0, 0);
+    var base = cx.getImageData(0, 0, cv.width, cv.height);
+    src._pixels = base.data;
+    src._mask = SharedKits.prepareMangaMask({ width: cv.width, height: cv.height, data: base.data });
   }
-  var out = new Image();
-  out.src = cv.toDataURL();
-  MANGA.cache[key] = out;
-  return out;
+  if (src._mask && typeof SharedKits !== 'undefined' && SharedKits.paintManga) {
+    var copy = new Uint8ClampedArray(src._pixels);
+    var id = { width: cv.width, height: cv.height, data: copy };
+    SharedKits.paintManga(id, src._mask, aLook || { team: 'home' }, bLook || { team: 'away' });
+    var paintedData = cx.createImageData(cv.width, cv.height);
+    paintedData.data.set(copy);
+    cx.putImageData(paintedData, 0, 0);
+  } else {
+    cx.drawImage(src, 0, 0);
+    if (typeof SharedKits !== 'undefined' && SharedKits.recolorManga) {
+      var raw = cx.getImageData(0, 0, cv.width, cv.height);
+      SharedKits.recolorManga(raw, aLook || { team: 'home' }, bLook || { team: 'away' });
+      cx.putImageData(raw, 0, 0);
+    }
+  }
+  // 直接缓存画布。toDataURL 再解码一次会把第一次播出卡住一两秒。
+  MANGA.cache[key] = cv;
+  return cv;
+}
+
+function mangaHasCut(cut) {
+  return !!(cut && MANGA_CUTS[cut]);
 }
 
 function mangaDefaultLook(team) {
@@ -134,8 +162,8 @@ function mangaCutAvailable(a) {
   if (!a || !MANGA.ready) return false;
   var cfg = MANGA_CUTS[a.cut];
   if (!cfg) return false;
-  var src = MANGA.srcs[cfg.pose];
-  return !!(src && src.complete && src.naturalWidth);
+  var src = mangaPoseImage(cfg.pose);
+  return !!(src && src._ok && src.complete && src.naturalWidth);
 }
 
 function easeOutBack(x) {
@@ -220,8 +248,66 @@ function mangaTrailPoint(pair, rect) {
   return { x: rect.x + pair[0] * rect.w, y: rect.y + pair[1] * rect.h };
 }
 
-function mangaDrawTrails(trail, rect, t) {
-  if (!trail || !trail.start || !trail.end) return;
+function mangaBall(x, y, r) {
+  ctx.save();
+  ctx.beginPath();
+  ctx.arc(x, y, r, 0, Math.PI * 2);
+  ctx.fillStyle = '#f7f7f7';
+  ctx.fill();
+  ctx.lineWidth = Math.max(1.5, r * 0.16);
+  ctx.strokeStyle = '#111';
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.arc(x - r * 0.18, y - r * 0.08, r * 0.26, 0, Math.PI * 2);
+  ctx.fillStyle = '#222';
+  ctx.fill();
+  ctx.restore();
+}
+
+function mangaBurst(pt, t) {
+  // t 是强度 0..1。调用方决定它亮多久。
+  var life = t < 0 ? 0 : t > 1 ? 1 : t;
+  var fade = life;
+  if (fade <= 0) return;
+  ctx.save();
+  ctx.translate(pt.x, pt.y);
+  ctx.lineCap = 'round';
+  for (var i = 0; i < 8; i++) {
+    var ang = i / 8 * Math.PI * 2 + 0.2;
+    var len = 8 + 26 * Math.min(1, life / 0.35);
+    ctx.beginPath();
+    ctx.moveTo(Math.cos(ang) * 3, Math.sin(ang) * 3);
+    ctx.lineTo(Math.cos(ang) * len, Math.sin(ang) * len);
+    ctx.strokeStyle = 'rgba(255,255,255,' + (fade * 0.45).toFixed(3) + ')';
+    ctx.lineWidth = 4;
+    ctx.stroke();
+    ctx.strokeStyle = 'rgba(16,16,16,' + (fade * 0.95).toFixed(3) + ')';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
+function mangaDrawTrails(trail, rect, t, el) {
+  if (!trail) return;
+  if (trail.burst && trail.impact) {
+    // 横幅出来时撞击还在，大约半秒后收掉。
+    var age = el == null ? t : el;
+    var bt = age < 0.08 ? age / 0.08 : (age < 0.55 ? 1 : Math.max(0, 1 - (age - 0.55) / 0.22));
+    mangaBurst(mangaTrailPoint(trail.impact, rect), bt);
+    return;
+  }
+  if (trail.ball && trail.impact && trail.start && trail.end) {
+    var from = mangaTrailPoint(trail.start, rect);
+    var hitB = mangaTrailPoint(trail.impact, rect);
+    var away = mangaTrailPoint(trail.end, rect);
+    mangaWind(from, hitB, Math.min(1, t / 0.35), false);
+    var u = t < 0.18 ? 0 : Math.min(1, (t - 0.18) / 0.55);
+    if (u > 0) mangaWind(hitB, away, u, true);
+    mangaBall(hitB.x + (away.x - hitB.x) * u, hitB.y + (away.y - hitB.y) * u, 8);
+    return;
+  }
+  if (!trail.start || !trail.end) return;
   var a = mangaTrailPoint(trail.start, rect);
   var b = mangaTrailPoint(trail.end, rect);
   if (trail.split && trail.impact) {
@@ -253,8 +339,8 @@ function drawMangaBar(a, py, ph) {
 function drawMangaCutin(a, t) {
   var cfg = a && MANGA_CUTS[a.cut];
   if (!cfg || !MANGA.ready) return false;
-  var src = MANGA.srcs[cfg.pose];
-  if (!src || !src.complete || !src.naturalWidth) return false;
+  var src = mangaPoseImage(cfg.pose);
+  if (!src || !src._ok || !src.complete || !src.naturalWidth) return false;
   var id = cutActionId(a);
   if (MANGA.lastId !== id) { MANGA.lastId = id; MANGA.startT = t; }
   var el = (t - MANGA.startT) / 1000;
@@ -290,10 +376,10 @@ function drawMangaCutin(a, t) {
   var iw = innerW, ih = iw * src.naturalHeight / src.naturalWidth;
   if (ih > innerH) { ih = innerH; iw = ih * src.naturalWidth / src.naturalHeight; }
   var ix = cx - iw / 2, iy = py + 12 + (innerH - ih) / 2;
-  if (painted.complete && painted.naturalWidth) ctx.drawImage(painted, ix, iy, iw, ih);
+  if (painted && (painted.naturalWidth || painted.width)) ctx.drawImage(painted, ix, iy, iw, ih);
   else ctx.drawImage(src, ix, iy, iw, ih);
   // 风线大约 0.42 秒画完，然后画面停住。原路线细，变向后的路线粗。
-  mangaDrawTrails(cfg.trail, { x: ix, y: iy, w: iw, h: ih }, Math.min(1, el / 0.42));
+  mangaDrawTrails(cfg.trail, { x: ix, y: iy, w: iw, h: ih }, Math.min(1, el / 0.42), el);
   ctx.restore();
   ctx.restore();
 

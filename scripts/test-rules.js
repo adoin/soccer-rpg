@@ -510,7 +510,7 @@ console.log('== 传球自由落点：输入即意图，能力只定散布（场�
   ok(m.phase === 'decision' && !!m.decision && m.decision.def === true && m.decision.playerId === 'h4',
     '防守球员贴近对方持球者触发防守决策', m.phase);
   var ids = (m.decision.options || []).map(function (o) { return o.id; });
-  ok(ids.join(',') === 'tackle,jockey', '防守决策选项为上抢/卡位', ids.join(','));
+  ok(ids.join(',') === 'tackle,def-skills,jockey', '防守决策选项为上抢/技能/卡位', ids.join(','));
   var tk = m.decision.options[0];
   ok(tk.rate >= 1 && tk.rate <= 99 && tk.cost === 4, '上抢显示成功率与体能消耗', tk.rate + '/' + tk.cost);
   // 2) tacklePreview 纯计算：同一局面两次调用结果一致（不掷骰）
