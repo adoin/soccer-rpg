@@ -905,6 +905,104 @@
     return false;
   }
 
+  // 草地白线和球网门柱。细长、贴着草的白是线；格子状、贴着墨线的白是网。
+  // 贴着鞋色键的小块白是鞋面高光，不在这里。
+  function markPitchAndNet(d, w, h, cls, ball, sky) {
+    var n = w * h;
+    var keep = new Uint8Array(n);
+    var seen = new Uint8Array(n);
+    function paleAt(id) {
+      var o = id * 4;
+      if (d[o + 3] < 200 || ball[id] || sky[id]) return false;
+      var r = d[o], g = d[o + 1], b = d[o + 2];
+      var mx = r > g ? r : g; if (b > mx) mx = b;
+      var mn = r < g ? r : g; if (b < mn) mn = b;
+      return mx > 198 && (mx - mn) < 36 && mn > 165;
+    }
+    var p;
+    for (p = 0; p < n; p++) {
+      if (seen[p] || cls[p] === 'boot' || !paleAt(p)) continue;
+      var q = [p]; seen[p] = 1;
+      var comp = [p];
+      var qi = 0, grassN = 0, darkN = 0, bootN = 0;
+      var minX = w, maxX = 0, minY = h, maxY = 0;
+      while (qi < q.length) {
+        var id = q[qi++];
+        var x = id % w, y = (id / w) | 0;
+        if (x < minX) minX = x; if (x > maxX) maxX = x;
+        if (y < minY) minY = y; if (y > maxY) maxY = y;
+        var dy, dx, nx, ny, nid;
+        for (dy = -1; dy <= 1; dy++) {
+          ny = y + dy; if (ny < 0 || ny >= h) continue;
+          for (dx = -1; dx <= 1; dx++) {
+            if (!dx && !dy) continue;
+            nx = x + dx; if (nx < 0 || nx >= w) continue;
+            nid = ny * w + nx;
+            if (cls[nid] === 'boot') bootN++;
+            if (paleAt(nid) && cls[nid] !== 'boot') {
+              if (!seen[nid]) { seen[nid] = 1; q.push(nid); comp.push(nid); }
+            } else {
+              var oi = nid * 4;
+              var rr = d[oi], gg = d[oi + 1], bb = d[oi + 2];
+              if (isGrassPixel(rr, gg, bb)) grassN++;
+              else if (rr < 50 && gg < 50 && bb < 50 && d[oi + 3] >= 128) darkN++;
+            }
+          }
+        }
+      }
+      var area = comp.length;
+      var bw = maxX - minX + 1, bh = maxY - minY + 1;
+      var minor = bw < bh ? bw : bh;
+      var major = bw > bh ? bw : bh;
+      var line = minor <= 24 && major >= 70 && grassN > 12;
+      var bootish = bootN > 6 && !line && area < 1600 && (major / Math.max(1, minor)) < 3.2 && grassN < 10 && bootN * 2 > darkN;
+      var net = !line && !bootish && area >= 280 && darkN > 18 && grassN < darkN;
+      if (!line && !net) continue;
+      var ci;
+      for (ci = 0; ci < comp.length; ci++) keep[comp[ci]] = 1;
+    }
+    // 网线的灰边和门柱连在受保护的白块上，跟着一起留下。
+    var kq = [];
+    for (p = 0; p < n; p++) if (keep[p]) kq.push(p);
+    var kqi = 0;
+    while (kqi < kq.length) {
+      var kid = kq[kqi++];
+      var kx = kid % w, ky = (kid / w) | 0;
+      var kdy, kdx;
+      for (kdy = -1; kdy <= 1; kdy++) {
+        var kny = ky + kdy; if (kny < 0 || kny >= h) continue;
+        for (kdx = -1; kdx <= 1; kdx++) {
+          if (!kdx && !kdy) continue;
+          var knx = kx + kdx; if (knx < 0 || knx >= w) continue;
+          var knid = kny * w + knx;
+          if (keep[knid] || ball[knid] || sky[knid] || cls[knid]) continue;
+          var knxBoot = false;
+          var bdy2, bdx2;
+          for (bdy2 = -1; bdy2 <= 1 && !knxBoot; bdy2++) {
+            var bny2 = kny + bdy2; if (bny2 < 0 || bny2 >= h) continue;
+            for (bdx2 = -1; bdx2 <= 1; bdx2++) {
+              var bnx2 = knx + bdx2; if (bnx2 < 0 || bnx2 >= w) continue;
+              if (cls[bny2 * w + bnx2] === 'boot') { knxBoot = true; break; }
+            }
+          }
+          if (knxBoot) continue;
+          var ko = knid * 4;
+          if (d[ko + 3] < 128) continue;
+          var kr = d[ko], kg = d[ko + 1], kb = d[ko + 2];
+          if (isGrassPixel(kr, kg, kb)) continue;
+          var kmx = kr > kg ? kr : kg; if (kb > kmx) kmx = kb;
+          var kmn = kr < kg ? kr : kg; if (kb < kmn) kmn = kb;
+          if (kmx - kmn > 32) continue;
+          keep[knid] = 1;
+          kq.push(knid);
+        }
+      }
+    }
+    // 鞋面高光已经收进鞋色键。保护网和白线时不能把鞋盖住，否则鞋头又变回白。
+    for (p = 0; p < n; p++) if (cls[p] === 'boot') keep[p] = 0;
+    return keep;
+  }
+
   // 每人一块连通域。品红/青是 A，橙/紫是 B。鞋、头发、皮肤顺着身体走，
   // 不按全图最近球衣（那会在两人交叠时把短裤和鞋换到对方身上）。
   // 连得上画面边缘的白（草地月牙、皮球、白线）留着；包在腿和腋下里的白补上。
@@ -922,6 +1020,8 @@
     var grassY = grassLineY(d, w, h);
     var sky = detectSky(d, w, h, ball, grassY, cls);
     absorbBootWhites(cls, d, w, h, ball, sky);
+    // 草地上的长白线、球网和门柱。换色不许长进这些像素。
+    var keep = markPitchAndNet(d, w, h, cls, ball, sky);
 
     var claim = new Uint8Array(n);
     var part = new Uint8Array(n);
@@ -1030,12 +1130,14 @@
       if (fy + 1 < h) tryFlood(fid + w);
     }
 
+    var claim0 = new Uint8Array(claim);
+    var part0 = new Uint8Array(part);
     for (p = 0; p < n; p++) {
-      if (claim[p] || reach[p]) continue;
+      if (claim0[p] || reach[p]) continue;
       i = p * 4;
       if (d[i + 3] < 128) continue;
       var r = d[i], g = d[i + 1], b = d[i + 2];
-      if (ball[p] || sky[p]) continue;
+      if (ball[p] || sky[p] || keep[p]) continue;
       if (isGrassPixel(r, g, b) || isRedBallPixel(r, g, b)) continue;
       var xh = p % w, yh = (p / w) | 0;
       var white = isNearWhitePixel(r, g, b);
@@ -1057,10 +1159,10 @@
             nx3 = xh + dx3;
             if (nx3 < 0 || nx3 >= w) continue;
             np = ny3 * w + nx3;
-            if (!claim[np]) continue;
+            if (keep[np] || !claim0[np]) continue;
             near = true;
-            sideVotes[claim[np]]++;
-            if (part[np] && part[np] !== 6) votes[part[np]]++;
+            sideVotes[claim0[np]]++;
+            if (part0[np] && part0[np] !== 6) votes[part0[np]]++;
           }
         }
       }
@@ -1079,7 +1181,7 @@
               nx3 = xh + dx3;
               if (nx3 < 0 || nx3 >= w) continue;
               np = ny3 * w + nx3;
-              if (claim[np]) { bestSide = claim[np]; break; }
+              if (claim0[np] && !keep[np]) { bestSide = claim0[np]; break; }
             }
           }
         }
@@ -1097,7 +1199,7 @@
 
     // 离身体稍远的鞋、头发、皮肤色键，归到最近的那个人，不留品红/玫红。
     for (p = 0; p < n; p++) {
-      if (claim[p] || ball[p] || sky[p]) continue;
+      if (claim[p] || ball[p] || sky[p] || keep[p]) continue;
       var stray = partCode(cls[p]);
       if (stray !== 3 && stray !== 4 && stray !== 5) continue;
       var sx = p % w, sy = (p / w) | 0;
@@ -1181,14 +1283,17 @@
       var seenB = new Uint8Array(n);
       var bp, bi, bq, bqi, bid, bx, by, bcomp, btouch, bdy, bdx, bnx, bny, bnid;
       for (bp = 0; bp < n; bp++) {
-        if (seenB[bp] || sky[bp] || cls[bp] === 'boot') continue;
+        if (seenB[bp] || sky[bp] || keep[bp] || cls[bp] === 'boot') continue;
         bi = bp * 4;
         if (d[bi + 3] < 128 || !matchFn(d[bi], d[bi + 1], d[bi + 2])) continue;
         bq = [bp]; seenB[bp] = 1; bqi = 0;
         bcomp = [bp]; btouch = false;
+        var bminX = w, bmaxX = 0, bminY = h, bmaxY = 0, bgrass = 0;
         while (bqi < bq.length) {
           bid = bq[bqi++];
           bx = bid % w; by = (bid / w) | 0;
+          if (bx < bminX) bminX = bx; if (bx > bmaxX) bmaxX = bx;
+          if (by < bminY) bminY = by; if (by > bmaxY) bmaxY = by;
           if (!btouch) {
             for (bdy = -2; bdy <= 2 && !btouch; bdy++) {
               bny = by + bdy; if (bny < 0 || bny >= h) continue;
@@ -1204,14 +1309,21 @@
               if (!bdx && !bdy) continue;
               bnx = bx + bdx; if (bnx < 0 || bnx >= w) continue;
               bnid = bny * w + bnx;
-              if (seenB[bnid] || sky[bnid] || cls[bnid] === 'boot') continue;
+              if (seenB[bnid] || sky[bnid] || keep[bnid] || cls[bnid] === 'boot') continue;
               var bni = bnid * 4;
-              if (d[bni + 3] < 128 || !matchFn(d[bni], d[bni + 1], d[bni + 2])) continue;
+              if (d[bni + 3] < 128) continue;
+              if (isGrassPixel(d[bni], d[bni + 1], d[bni + 2])) { bgrass++; continue; }
+              if (!matchFn(d[bni], d[bni + 1], d[bni + 2])) continue;
               seenB[bnid] = 1; bq.push(bnid); bcomp.push(bnid);
             }
           }
         }
         if (!btouch || bcomp.length < minArea || bcomp.length > maxArea) continue;
+        // 贴着草的细长白是球门线，不是鞋头。鞋只收回墨线包住的那一块。
+        var bbw = bmaxX - bminX + 1, bbh = bmaxY - bminY + 1;
+        var bminor = bbw < bbh ? bbw : bbh, bmajor = bbw > bbh ? bbw : bbh;
+        if (bminor <= 24 && bmajor >= 70) continue;
+        if (bmajor / Math.max(1, bminor) > 3.5 && bgrass > 8) continue;
         var bc;
         for (bc = 0; bc < bcomp.length; bc++) {
           ball[bcomp[bc]] = 0;
@@ -1397,7 +1509,7 @@
         shnx = shx + shDirs[shdi][0]; shny = shy + shDirs[shdi][1];
         if (shnx < 0 || shny < 0 || shnx >= w || shny >= h) continue;
         shnid = shny * w + shnx;
-        if (shadeSeen[shnid] || claim[shnid] || ball[shnid] || sky[shnid]) continue;
+        if (shadeSeen[shnid] || claim[shnid] || ball[shnid] || sky[shnid] || keep[shnid]) continue;
         var shi = shnid * 4;
         if (d[shi + 3] < 128) continue;
         var shr = d[shi], shg = d[shi + 1], shb = d[shi + 2];
@@ -1417,7 +1529,7 @@
     var fringeClaim = new Uint8Array(claim);
     var fringePart = new Uint8Array(part);
     for (p = 0; p < n; p++) {
-      if (claim[p] || ball[p] || sky[p]) continue;
+      if (claim[p] || ball[p] || sky[p] || keep[p]) continue;
       i = p * 4;
       if (d[i + 3] < 128) continue;
       var fr = d[i], fg = d[i + 1], fb = d[i + 2];
@@ -1475,7 +1587,7 @@
           if (!hdx && !hdy) continue;
           var hnx = hx + hdx; if (hnx < 0 || hnx >= w) continue;
           var hnid = hny * w + hnx;
-          if (haloDist[hnid] || claim[hnid] || ball[hnid]) continue;
+          if (haloDist[hnid] || claim[hnid] || ball[hnid] || keep[hnid]) continue;
           var hi = hnid * 4;
           if (d[hi + 3] < 128) continue;
           var hr = d[hi], hg = d[hi + 1], hb = d[hi + 2];
@@ -1523,7 +1635,7 @@
       }
     }
 
-    return { w: w, h: h, claim: claim, part: part, ball: ball, sky: sky, grassY: grassY };
+    return { w: w, h: h, claim: claim, part: part, ball: ball, sky: sky, grassY: grassY, keep: keep };
   }
 
   // 漫画复合图换色。aLook 是品红/青那个人，bLook 是橙/紫那个人。
@@ -1606,6 +1718,7 @@
       var o = p * 4;
       if (mask.sky && mask.sky[p]) { d[o + 3] = 0; continue; }
       if (mask.ball && mask.ball[p]) continue;
+      if (mask.keep && mask.keep[p]) continue;
       pr = part[p];
       side = claim[p];
       if (!pr || !side) continue;

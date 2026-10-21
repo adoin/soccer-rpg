@@ -336,6 +336,25 @@ poses.forEach(function (pose) {
     ok(badAS === 0 && badBS === 0, tag + ' 短裤球袜是本人的颜色', badAS + '/' + badBS);
     ok(stray === 0, tag + ' 人里面没有多余的白', String(stray));
     ok(ballN === 0 || ballChanged === 0, tag + ' 皮球像素和原图一致', ballChanged + '/' + ballN);
+    var leak = 0, netN = 0, netChanged = 0;
+    if (ci === 0 && mask.keep) {
+      for (var li = 0; li < mask.claim.length; li++) {
+        var lo = li * 4;
+        var lr = base.data[lo], lg = base.data[lo + 1], lb = base.data[lo + 2], la = base.data[lo + 3];
+        if (la < 200) continue;
+        var lchanged = data[lo] !== lr || data[lo + 1] !== lg || data[lo + 2] !== lb;
+        var lgrass = lg > lr + 8 && lg + 8 >= lb && lb < lg * 0.55 && lg > 55;
+        if ((mask.keep[li] || (mask.ball && mask.ball[li]) || lgrass) && lchanged) leak++;
+        if (mask.keep[li]) {
+          netN++;
+          if (lchanged || data[lo + 3] < 200) netChanged++;
+        }
+      }
+      console.log('LEAK ' + pose + ' ' + leak + ' keep ' + netN + ' keepChanged ' + netChanged);
+      ok(leak <= 20, tag + ' 场地球网门柱没有渗色', String(leak));
+      var keeperPose = /goal|gk_|hit_post|round_gk|shot_wide/.test(pose);
+      if (keeperPose) ok(netN > 400 && netChanged === 0, tag + ' 球网和门柱像素没变', netChanged + '/' + netN);
+    }
     ok(hairA.n < 40 || hairA.big <= 1, tag + ' A 头发只有一个色相', hairA.n + '/' + hairA.big);
     ok(hairB.n < 40 || hairB.big <= 1, tag + ' B 头发只有一个色相', hairB.n + '/' + hairB.big);
     ok(skinA.n < 40 || skinA.big <= 1, tag + ' A 皮肤只有一个色相', skinA.n + '/' + skinA.big);
