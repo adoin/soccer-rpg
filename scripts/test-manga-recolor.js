@@ -46,6 +46,27 @@ function nearWhite(r, g, b) {
   var mn = r < g ? r : g; if (b < mn) mn = b;
   return mx > 220 && (mx - mn) < 18 && mn > 200;
 }
+function scaleRgb(rgb, f) {
+  return [Math.round(rgb[0] * f), Math.round(rgb[1] * f), Math.round(rgb[2] * f)];
+}
+function matchesTone(px, rgb) {
+  return same(px, rgb) || same(px, scaleRgb(rgb, 0.8)) || same(px, scaleRgb(rgb, 0.85));
+}
+function nearScale(px, rgb) {
+  if (same(px, rgb)) return true;
+  var prev = -1;
+  for (var i = 0; i < 3; i++) {
+    if (rgb[i] < 12) {
+      if (px[i] > 24) return false;
+      continue;
+    }
+    var t = px[i] / rgb[i];
+    if (t < 0.78 || t > 1.03) return false;
+    if (prev >= 0 && Math.abs(t - prev) > 0.08) return false;
+    prev = t;
+  }
+  return true;
+}
 var KEYS = [[255, 0, 255], [0, 255, 255], [255, 136, 0], [136, 0, 255], [255, 0, 136], [0, 0, 255]];
 
 var home = kits.resolveKit('home', null);
@@ -119,18 +140,18 @@ poses.forEach(function (pose) {
       var part = mask.part[idx];
       if (part === 1 && claim === 1) {
         jerseyA++;
-        var hitA = same(px, aColors[0]) || same(px, aColors[1]);
+        var hitA = matchesTone(px, aColors[0]) || matchesTone(px, aColors[1]);
         if (!hitA) badA++;
-        else aSeen[px.join(',')] = 1;
+        else if (same(px, aColors[0]) || same(px, aColors[1])) aSeen[px.join(',')] = 1;
       } else if (part === 1 && claim === 2) {
         jerseyB++;
-        var hitB = same(px, bColors[0]) || same(px, bColors[1]);
+        var hitB = matchesTone(px, bColors[0]) || matchesTone(px, bColors[1]);
         if (!hitB) badB++;
-        else bSeen[px.join(',')] = 1;
-      } else if (part === 2 && claim === 1 && !same(px, aShort)) badAS++;
-      else if (part === 2 && claim === 2 && !same(px, bShort)) badBS++;
-      else if (part === 3 && claim === 1 && !same(px, aShoe)) badA++;
-      else if (part === 3 && claim === 2 && !same(px, bShoe)) badB++;
+        else if (same(px, bColors[0]) || same(px, bColors[1])) bSeen[px.join(',')] = 1;
+      } else if (part === 2 && claim === 1 && !matchesTone(px, aShort)) badAS++;
+      else if (part === 2 && claim === 2 && !matchesTone(px, bShort)) badBS++;
+      else if (part === 3 && claim === 1 && !nearScale(px, aShoe)) badA++;
+      else if (part === 3 && claim === 2 && !nearScale(px, bShoe)) badB++;
       if (claim && part && part !== 6 && data[p + 3] > 200 && nearWhite(px[0], px[1], px[2])) {
         var allowed = aColors.concat(bColors, [aShort, bShort, aShoe, bShoe]).some(function (c) { return same(px, c); });
         if (!allowed) stray++;
@@ -172,6 +193,84 @@ poses.forEach(function (pose) {
     }
     var hairA = hueSpread(1, 4), hairB = hueSpread(2, 4);
     var skinA = hueSpread(1, 5), skinB = hueSpread(2, 5);
+    function skinStats(side, baseRgb) {
+      var total = 0, baseN = 0, buckets = {};
+      for (var i = 0; i < mask.claim.length; i++) {
+        if (mask.claim[i] !== side || mask.part[i] !== 5) continue;
+        var o = i * 4;
+        if (data[o + 3] < 200) continue;
+        total++;
+        if (same([data[o], data[o + 1], data[o + 2]], baseRgb)) baseN++;
+        var lum = 0.299 * data[o] + 0.587 * data[o + 1] + 0.114 * data[o + 2];
+        var bk = Math.round(lum / 6);
+        buckets[bk] = (buckets[bk] || 0) + 1;
+      }
+      var levels = [];
+      Object.keys(buckets).forEach(function (k) {
+        if (buckets[k] > total * 0.04) levels.push(Number(k) * 6);
+      });
+      levels.sort(function (a, b) { return a - b; });
+      var ratio = levels.length < 2 ? 1 : levels[0] / levels[levels.length - 1];
+      return { total: total, basePct: total ? baseN / total : 1, ratio: ratio };
+    }
+    var skinRgbA = rgbOf((kits.SKIN_PRESETS[combo.a.skin] || kits.SKIN_PRESETS.fair).color);
+    var skinRgbB = rgbOf((kits.SKIN_PRESETS[combo.b.skin] || kits.SKIN_PRESETS.fair).color);
+    var skinLA = skinStats(1, skinRgbA), skinLB = skinStats(2, skinRgbB);
+    function hairComponentHues() {
+      var ww = base.width, hh = base.height, seen = new Uint8Array(ww * hh), bad = 0, nComp = 0;
+      for (var s = 0; s < ww * hh; s++) {
+        if (seen[s] || mask.part[s] !== 4) continue;
+        var q = [s]; seen[s] = 1;
+        var buckets = {}, n = 0, claim0 = mask.claim[s];
+        for (var qi = 0; qi < q.length; qi++) {
+          var id = q[qi];
+          var o = id * 4;
+          if (data[o + 3] > 200) {
+            var hs = hueSat(data[o], data[o + 1], data[o + 2]);
+            if (hs.s >= 0.22) {
+              var bkt = Math.floor(hs.h / 12);
+              buckets[bkt] = (buckets[bkt] || 0) + 1;
+              n++;
+            }
+          }
+          var x = id % ww, y = (id / ww) | 0;
+          [[1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [1, -1], [-1, 1], [-1, -1]].forEach(function (dlt) {
+            var nx = x + dlt[0], ny = y + dlt[1];
+            if (nx < 0 || ny < 0 || nx >= ww || ny >= hh) return;
+            var nid = ny * ww + nx;
+            if (seen[nid] || mask.part[nid] !== 4 || mask.claim[nid] !== claim0) return;
+            seen[nid] = 1; q.push(nid);
+          });
+        }
+        if (n < 40) continue;
+        nComp++;
+        var big = 0;
+        Object.keys(buckets).forEach(function (k) { if (buckets[k] > n * 0.08) big++; });
+        if (big > 1) bad++;
+      }
+      return { bad: bad, nComp: nComp };
+    }
+    var hairComp = ci === 0 ? hairComponentHues() : { bad: 0, nComp: 0 };
+    function bootHuePct(side, shoe) {
+      var shoeHs = hueSat(shoe[0], shoe[1], shoe[2]);
+      var n = 0, okN = 0;
+      for (var i = 0; i < mask.claim.length; i++) {
+        if (mask.claim[i] !== side || mask.part[i] !== 3) continue;
+        var o = i * 4;
+        if (data[o + 3] < 200) continue;
+        n++;
+        var hs = hueSat(data[o], data[o + 1], data[o + 2]);
+        if (shoeHs.s < 0.18) {
+          if (hs.s < 0.25) okN++;
+        } else {
+          var dh = Math.abs(hs.h - shoeHs.h);
+          if (dh > 180) dh = 360 - dh;
+          if (hs.s > 0.15 && dh < 18) okN++;
+        }
+      }
+      return { n: n, pct: n ? okN / n : 1 };
+    }
+    var bootA = bootHuePct(1, aShoe), bootB = bootHuePct(2, bShoe);
     var bootWhite = 0;
     [1, 2].forEach(function (side) {
       var shoe = side === 1 ? aShoe : bShoe;
@@ -241,7 +340,14 @@ poses.forEach(function (pose) {
     ok(hairB.n < 40 || hairB.big <= 1, tag + ' B 头发只有一个色相', hairB.n + '/' + hairB.big);
     ok(skinA.n < 40 || skinA.big <= 1, tag + ' A 皮肤只有一个色相', skinA.n + '/' + skinA.big);
     ok(skinB.n < 40 || skinB.big <= 1, tag + ' B 皮肤只有一个色相', skinB.n + '/' + skinB.big);
+    ok(skinLA.total < 80 || skinLA.basePct >= 0.6, tag + ' A 皮肤底色占六成', skinLA.basePct.toFixed(2));
+    ok(skinLB.total < 80 || skinLB.basePct >= 0.6, tag + ' B 皮肤底色占六成', skinLB.basePct.toFixed(2));
+    ok(skinLA.total < 80 || skinLA.ratio >= 0.75, tag + ' A 皮肤明暗比', skinLA.ratio.toFixed(2));
+    ok(skinLB.total < 80 || skinLB.ratio >= 0.75, tag + ' B 皮肤明暗比', skinLB.ratio.toFixed(2));
     ok(bootWhite === 0, tag + ' 球鞋没有剩半块白', String(bootWhite));
+    ok(bootA.n < 40 || bootA.pct >= 0.9, tag + ' A 球鞋九成是鞋的色相', bootA.pct.toFixed(2));
+    ok(bootB.n < 40 || bootB.pct >= 0.9, tag + ' B 球鞋九成是鞋的色相', bootB.pct.toFixed(2));
+    if (ci === 0) ok(hairComp.bad === 0, tag + ' 每块头发只有一个色相', hairComp.bad + '/' + hairComp.nComp);
     if (ci === 0) ok(skyBlob === 0, tag + ' 草皮线以上没有大块天空白', String(skyBlob));
     if (combo.aKit.pattern !== 'solid') ok(Object.keys(aSeen).length >= 2, tag + ' A 球衣铺了图案', Object.keys(aSeen).join('|'));
     if (combo.bKit.pattern !== 'solid') ok(Object.keys(bSeen).length >= 2, tag + ' B 球衣铺了图案', Object.keys(bSeen).join('|'));

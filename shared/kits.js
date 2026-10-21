@@ -625,15 +625,34 @@
     return (0.299 * r + 0.587 * g + 0.114 * b) / 255;
   }
 
-  // 同一色相按原图明度变深，不把暗部收成另一种头发或肤色。
+  // 平涂色键和靠近它的等级是底色。明显更暗的阴影收进底色亮度的 80%–85%，色相不变。
   function toneRgb(rgb, r, g, b, refLum) {
-    var t = refLum > 0.04 ? relLum(r, g, b) / refLum : 1;
-    if (t < 0.62) t = 0.62;
-    if (t > 1.06) t = 1.06;
+    var lum = relLum(r, g, b);
+    var t = refLum > 0.04 ? lum / refLum : 1;
+    if (t >= 0.64) return [rgb[0], rgb[1], rgb[2]];
+    var u = (t - 0.15) / (0.64 - 0.15);
+    if (u < 0) u = 0;
+    if (u > 1) u = 1;
+    var factor = 0.80 + 0.05 * u;
     return [
-      Math.max(0, Math.min(255, Math.round(rgb[0] * t))),
-      Math.max(0, Math.min(255, Math.round(rgb[1] * t))),
-      Math.max(0, Math.min(255, Math.round(rgb[2] * t))),
+      Math.max(0, Math.min(255, Math.round(rgb[0] * factor))),
+      Math.max(0, Math.min(255, Math.round(rgb[1] * factor))),
+      Math.max(0, Math.min(255, Math.round(rgb[2] * factor))),
+    ];
+  }
+
+  // 球衣短裤的色键保持原色。色相不对的暗部（被收成头发的蓝阴影）用同一色相压暗。
+  function clothTone(rgb, r, g, b, keyRgb) {
+    var key = pixelHsv(keyRgb[0], keyRgb[1], keyRgb[2]);
+    var src = pixelHsv(r, g, b);
+    var dh = Math.abs(src.h - key.h);
+    if (dh > 180) dh = 360 - dh;
+    if (src.s > 0.4 && src.v > 90 && dh < 36) return [rgb[0], rgb[1], rgb[2]];
+    var factor = src.v < 90 ? 0.80 : 0.85;
+    return [
+      Math.max(0, Math.min(255, Math.round(rgb[0] * factor))),
+      Math.max(0, Math.min(255, Math.round(rgb[1] * factor))),
+      Math.max(0, Math.min(255, Math.round(rgb[2] * factor))),
     ];
   }
 
@@ -1155,6 +1174,355 @@
       }
     }
 
+    // 鞋头的白和鞋里的红点整块收回鞋。只认原来的鞋色键，不把皮球吞进去。
+    var bootSeed = new Uint8Array(n);
+    for (p = 0; p < n; p++) if (cls[p] === 'boot') bootSeed[p] = 1;
+    function absorbBootBody(matchFn, minArea, maxArea) {
+      var seenB = new Uint8Array(n);
+      var bp, bi, bq, bqi, bid, bx, by, bcomp, btouch, bdy, bdx, bnx, bny, bnid;
+      for (bp = 0; bp < n; bp++) {
+        if (seenB[bp] || sky[bp] || cls[bp] === 'boot') continue;
+        bi = bp * 4;
+        if (d[bi + 3] < 128 || !matchFn(d[bi], d[bi + 1], d[bi + 2])) continue;
+        bq = [bp]; seenB[bp] = 1; bqi = 0;
+        bcomp = [bp]; btouch = false;
+        while (bqi < bq.length) {
+          bid = bq[bqi++];
+          bx = bid % w; by = (bid / w) | 0;
+          if (!btouch) {
+            for (bdy = -2; bdy <= 2 && !btouch; bdy++) {
+              bny = by + bdy; if (bny < 0 || bny >= h) continue;
+              for (bdx = -2; bdx <= 2; bdx++) {
+                bnx = bx + bdx; if (bnx < 0 || bnx >= w) continue;
+                if (bootSeed[bny * w + bnx]) { btouch = true; break; }
+              }
+            }
+          }
+          for (bdy = -1; bdy <= 1; bdy++) {
+            bny = by + bdy; if (bny < 0 || bny >= h) continue;
+            for (bdx = -1; bdx <= 1; bdx++) {
+              if (!bdx && !bdy) continue;
+              bnx = bx + bdx; if (bnx < 0 || bnx >= w) continue;
+              bnid = bny * w + bnx;
+              if (seenB[bnid] || sky[bnid] || cls[bnid] === 'boot') continue;
+              var bni = bnid * 4;
+              if (d[bni + 3] < 128 || !matchFn(d[bni], d[bni + 1], d[bni + 2])) continue;
+              seenB[bnid] = 1; bq.push(bnid); bcomp.push(bnid);
+            }
+          }
+        }
+        if (!btouch || bcomp.length < minArea || bcomp.length > maxArea) continue;
+        var bc;
+        for (bc = 0; bc < bcomp.length; bc++) {
+          ball[bcomp[bc]] = 0;
+          cls[bcomp[bc]] = 'boot';
+        }
+      }
+    }
+    absorbBootBody(isNearWhitePixel, 8, 2200);
+    absorbBootBody(function (r, g, b) {
+      return r > 36 && r > g + 18 && r > b + 18 && g < 70 && b < 70 && !isGrassPixel(r, g, b);
+    }, 1, 350);
+
+    // 饱和的皮肤暗部会被收成一小块橙球衣。小块不是球衣，并回皮肤。
+    var speckSeen = new Uint8Array(n);
+    var jerseySize = new Uint32Array(n);
+    for (p = 0; p < n; p++) {
+      if (speckSeen[p] || part[p] !== 1) continue;
+      var speckQ = [p]; speckSeen[p] = 1;
+      var speckComp = [p];
+      var speckQi = 0;
+      var speckOrange = 0;
+      while (speckQi < speckQ.length) {
+        var speckId = speckQ[speckQi++];
+        if (cls[speckId] === 'defJersey') speckOrange++;
+        var spx = speckId % w, spy = (speckId / w) | 0;
+        var sdy, sdx, snx, sny, snid;
+        for (sdy = -1; sdy <= 1; sdy++) {
+          sny = spy + sdy; if (sny < 0 || sny >= h) continue;
+          for (sdx = -1; sdx <= 1; sdx++) {
+            if (!sdx && !sdy) continue;
+            snx = spx + sdx; if (snx < 0 || snx >= w) continue;
+            snid = sny * w + snx;
+            if (speckSeen[snid] || part[snid] !== 1) continue;
+            speckSeen[snid] = 1; speckQ.push(snid); speckComp.push(snid);
+          }
+        }
+      }
+      var speckN = speckComp.length;
+      var skinTouchN = 0, clothTouchN = 0;
+      for (si = 0; si < speckN; si++) {
+        var tpx = speckComp[si] % w, tpy = (speckComp[si] / w) | 0;
+        var tdy, tdx, tnx, tny, tnid;
+        for (tdy = -1; tdy <= 1; tdy++) {
+          tny = tpy + tdy; if (tny < 0 || tny >= h) continue;
+          for (tdx = -1; tdx <= 1; tdx++) {
+            if (!tdx && !tdy) continue;
+            tnx = tpx + tdx; if (tnx < 0 || tnx >= w) continue;
+            tnid = tny * w + tnx;
+            if (part[tnid] === 1) continue;
+            if (cls[tnid] === 'skin' || part[tnid] === 5) skinTouchN++;
+            else if (part[tnid] === 2) clothTouchN++;
+          }
+        }
+      }
+      var asSkinSpeck = speckOrange > speckN * 0.6 && speckN < 800
+        && skinTouchN > clothTouchN * 2 && skinTouchN > speckN * 0.15;
+      var si;
+      for (si = 0; si < speckN; si++) {
+        if (asSkinSpeck) {
+          cls[speckComp[si]] = 'skin';
+          claim[speckComp[si]] = 0;
+          part[speckComp[si]] = 0;
+        } else jerseySize[speckComp[si]] = speckN;
+      }
+    }
+
+    // 只从成片球衣出发。头发、皮肤、鞋的每一整块跟最近的那件球衣。
+    var jerseySide = new Uint8Array(n);
+    var jerseyDist = new Uint16Array(n);
+    for (p = 0; p < n; p++) jerseyDist[p] = 65535;
+    var jqueue = [];
+    for (p = 0; p < n; p++) {
+      if (part[p] === 1 && claim[p] && jerseySize[p] >= 150) {
+        jerseySide[p] = claim[p];
+        jerseyDist[p] = 0;
+        jqueue.push(p);
+      }
+    }
+    var jqi = 0;
+    while (jqi < jqueue.length) {
+      var jid = jqueue[jqi++];
+      var jx = jid % w, jy = (jid / w) | 0, jd = jerseyDist[jid], js = jerseySide[jid];
+      var jdy, jdx, jnx, jny, jnid;
+      for (jdy = -1; jdy <= 1; jdy++) {
+        jny = jy + jdy; if (jny < 0 || jny >= h) continue;
+        for (jdx = -1; jdx <= 1; jdx++) {
+          if (!jdx && !jdy) continue;
+          jnx = jx + jdx; if (jnx < 0 || jnx >= w) continue;
+          jnid = jny * w + jnx;
+          if (jerseyDist[jnid] <= jd + 1) continue;
+          jerseyDist[jnid] = jd + 1;
+          jerseySide[jnid] = js;
+          jqueue.push(jnid);
+        }
+      }
+    }
+
+    // 头发、皮肤、鞋各成一块。包在短裤里的小块蓝是衣服阴影。
+    var regSeen = new Uint8Array(n);
+    for (p = 0; p < n; p++) {
+      var rkind = partCode(cls[p]);
+      if (regSeen[p] || ball[p] || sky[p] || (rkind !== 3 && rkind !== 4 && rkind !== 5)) continue;
+      var rq = [p]; regSeen[p] = 1;
+      var rcomp = [p];
+      var rqi = 0;
+      while (rqi < rq.length) {
+        var rid = rq[rqi++];
+        var rx = rid % w, ry = (rid / w) | 0;
+        var rdy, rdx, rnx, rny, rnid;
+        for (rdy = -1; rdy <= 1; rdy++) {
+          rny = ry + rdy; if (rny < 0 || rny >= h) continue;
+          for (rdx = -1; rdx <= 1; rdx++) {
+            if (!rdx && !rdy) continue;
+            rnx = rx + rdx; if (rnx < 0 || rnx >= w) continue;
+            rnid = rny * w + rnx;
+            if (regSeen[rnid] || ball[rnid] || sky[rnid]) continue;
+            if (partCode(cls[rnid]) !== rkind) continue;
+            regSeen[rnid] = 1; rq.push(rnid); rcomp.push(rnid);
+          }
+        }
+      }
+      var clothVote = [0, 0, 0];
+      var clothPartVote = [0, 0, 0];
+      var skinTouch = 0;
+      var rc, rpix, rpx, rpy, rdy2, rdx2, rqx, rqy, rqid, rpart, rclaim;
+      for (rc = 0; rc < rcomp.length; rc++) {
+        rpix = rcomp[rc];
+        rpx = rpix % w; rpy = (rpix / w) | 0;
+        for (rdy2 = -1; rdy2 <= 1; rdy2++) {
+          rqy = rpy + rdy2; if (rqy < 0 || rqy >= h) continue;
+          for (rdx2 = -1; rdx2 <= 1; rdx2++) {
+            if (!rdx2 && !rdy2) continue;
+            rqx = rpx + rdx2; if (rqx < 0 || rqx >= w) continue;
+            rqid = rqy * w + rqx;
+            rpart = part[rqid]; rclaim = claim[rqid];
+            if ((rpart === 1 || rpart === 2) && rclaim) {
+              clothVote[rclaim]++;
+              clothPartVote[rpart]++;
+            } else if (rpart === 5 && rkind !== 5) skinTouch++;
+          }
+        }
+      }
+      var clothSum = clothVote[1] + clothVote[2];
+      var asCloth = rkind === 4 && clothSum > skinTouch * 2 && clothSum > rcomp.length * 0.2;
+      var clothKind = clothPartVote[2] >= clothPartVote[1] ? 2 : 1;
+      var clothSideR = clothVote[1] >= clothVote[2] ? 1 : 2;
+      var sideVotes = [0, 0, 0];
+      for (rc = 0; rc < rcomp.length; rc++) {
+        var sd = jerseySide[rcomp[rc]];
+        if (sd) sideVotes[sd]++;
+      }
+      var who = 0;
+      if (sideVotes[1] > sideVotes[2]) who = 1;
+      else if (sideVotes[2] > sideVotes[1]) who = 2;
+      else who = jerseySide[rcomp[0]] || 0;
+      for (rc = 0; rc < rcomp.length; rc++) {
+        rpix = rcomp[rc];
+        if (asCloth && clothSum) {
+          claim[rpix] = clothSideR;
+          part[rpix] = clothKind;
+          continue;
+        }
+        if (!who) continue;
+        claim[rpix] = who;
+        part[rpix] = rkind;
+      }
+    }
+
+    // 皮肤色键旁边没被收成色键的暖色，是原来的阴影，跟这块皮肤走。
+    var shadeQ = [];
+    for (p = 0; p < n; p++) if (part[p] === 5 && claim[p] && !ball[p] && !sky[p]) shadeQ.push(p);
+    var shadeSeen = new Uint8Array(n);
+    var shadeQi = 0;
+    for (shadeQi = 0; shadeQi < shadeQ.length; shadeQi++) shadeSeen[shadeQ[shadeQi]] = 1;
+    shadeQi = 0;
+    while (shadeQi < shadeQ.length) {
+      var shadeId = shadeQ[shadeQi++];
+      var shadeSide = claim[shadeId];
+      var shx = shadeId % w, shy = (shadeId / w) | 0;
+      var shdy, shdx, shnx, shny, shnid;
+      var shDirs = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+      for (var shdi = 0; shdi < 4; shdi++) {
+        shnx = shx + shDirs[shdi][0]; shny = shy + shDirs[shdi][1];
+        if (shnx < 0 || shny < 0 || shnx >= w || shny >= h) continue;
+        shnid = shny * w + shnx;
+        if (shadeSeen[shnid] || claim[shnid] || ball[shnid] || sky[shnid]) continue;
+        var shi = shnid * 4;
+        if (d[shi + 3] < 128) continue;
+        var shr = d[shi], shg = d[shi + 1], shb = d[shi + 2];
+        if (isGrassPixel(shr, shg, shb) || isNearWhitePixel(shr, shg, shb)) continue;
+        if (shr < 55 || shg < 24 || shb > shr) continue;
+        var shc = pixelHsv(shr, shg, shb);
+        if (shc.v < 50 || shc.s < 0.16 || shc.s > 0.9) continue;
+        if (shc.h > 48 && shc.h < 340) continue;
+        shadeSeen[shnid] = 1;
+        claim[shnid] = shadeSide;
+        part[shnid] = 5;
+        shadeQ.push(shnid);
+      }
+    }
+
+    // 色键边上的一条白是抗锯齿。只看这一步之前的邻居，避免把球网整片吸进去。
+    var fringeClaim = new Uint8Array(claim);
+    var fringePart = new Uint8Array(part);
+    for (p = 0; p < n; p++) {
+      if (claim[p] || ball[p] || sky[p]) continue;
+      i = p * 4;
+      if (d[i + 3] < 128) continue;
+      var fr = d[i], fg = d[i + 1], fb = d[i + 2];
+      var pale = isNearWhitePixel(fr, fg, fb) || (fr > 165 && fg > 165 && fb > 165 && Math.max(fr, fg, fb) - Math.min(fr, fg, fb) < 46);
+      if (!pale) continue;
+      var fx = p % w, fy = (p / w) | 0;
+      var fVotes = [0, 0, 0, 0, 0, 0, 0];
+      var fSide = [0, 0, 0];
+      var fInk = 0, fSky = 0;
+      var fdy, fdx, fnx, fny, fnid;
+      for (fdy = -1; fdy <= 1; fdy++) {
+        fny = fy + fdy; if (fny < 0 || fny >= h) { fSky++; continue; }
+        for (fdx = -1; fdx <= 1; fdx++) {
+          if (!fdx && !fdy) continue;
+          fnx = fx + fdx; if (fnx < 0 || fnx >= w) { fSky++; continue; }
+          fnid = fny * w + fnx;
+          if (sky[fnid] || d[fnid * 4 + 3] < 128) { fSky++; continue; }
+          if (fringePart[fnid] === 6 || (d[fnid * 4] < 36 && d[fnid * 4 + 1] < 36 && d[fnid * 4 + 2] < 36)) fInk++;
+          if (fringeClaim[fnid] && fringePart[fnid] && fringePart[fnid] !== 6) {
+            fVotes[fringePart[fnid]]++;
+            fSide[fringeClaim[fnid]]++;
+          }
+        }
+      }
+      var fBest = 0, fBestN = 0, fpi;
+      for (fpi = 1; fpi <= 5; fpi++) if (fVotes[fpi] > fBestN) { fBestN = fVotes[fpi]; fBest = fpi; }
+      var fWho = fSide[1] >= fSide[2] ? 1 : 2;
+      var pureWhite = fr > 246 && fg > 246 && fb > 246;
+      if (!pureWhite && fBest && fBestN >= 1 && (fInk || fSky) && (fSide[1] || fSide[2])) {
+        claim[p] = fWho;
+        part[p] = fBest;
+      } else if (!pureWhite && pale && fSky && fInk) {
+        sky[p] = 1;
+      }
+    }
+
+    // 天空边上两像素内的灰边收掉。纯白的网和皮球不动。
+    var haloQ = [];
+    var haloDist = new Uint8Array(n);
+    for (p = 0; p < n; p++) {
+      if (sky[p] || d[p * 4 + 3] < 128) {
+        haloDist[p] = 1;
+        haloQ.push(p);
+      }
+    }
+    var haloQi = 0;
+    while (haloQi < haloQ.length) {
+      var haloId = haloQ[haloQi++];
+      if (haloDist[haloId] >= 3) continue;
+      var hx = haloId % w, hy = (haloId / w) | 0;
+      var hdy, hdx;
+      for (hdy = -1; hdy <= 1; hdy++) {
+        var hny = hy + hdy; if (hny < 0 || hny >= h) continue;
+        for (hdx = -1; hdx <= 1; hdx++) {
+          if (!hdx && !hdy) continue;
+          var hnx = hx + hdx; if (hnx < 0 || hnx >= w) continue;
+          var hnid = hny * w + hnx;
+          if (haloDist[hnid] || claim[hnid] || ball[hnid]) continue;
+          var hi = hnid * 4;
+          if (d[hi + 3] < 128) continue;
+          var hr = d[hi], hg = d[hi + 1], hb = d[hi + 2];
+          if (hr > 246 && hg > 246 && hb > 246) continue;
+          if (!(hr > 150 && hg > 150 && hb > 150 && Math.max(hr, hg, hb) - Math.min(hr, hg, hb) < 48)) continue;
+          haloDist[hnid] = haloDist[haloId] + 1;
+          sky[hnid] = 1;
+          haloQ.push(hnid);
+        }
+      }
+    }
+
+    // 同一块头发、皮肤、鞋里残留的少数像素，跟整块走。
+    var majSeen = new Uint8Array(n);
+    var majKind;
+    for (majKind = 3; majKind <= 5; majKind++) {
+      for (p = 0; p < n; p++) {
+        if (majSeen[p] || part[p] !== majKind) continue;
+        var mq = [p]; majSeen[p] = 1;
+        var mcomp = [p];
+        var mqi = 0;
+        var mv = [0, 0, 0];
+        while (mqi < mq.length) {
+          var mid = mq[mqi++];
+          mv[claim[mid]]++;
+          var mx = mid % w, my = (mid / w) | 0;
+          var mdy, mdx, mnx, mny, mnid;
+          for (mdy = -1; mdy <= 1; mdy++) {
+            mny = my + mdy; if (mny < 0 || mny >= h) continue;
+            for (mdx = -1; mdx <= 1; mdx++) {
+              if (!mdx && !mdy) continue;
+              mnx = mx + mdx; if (mnx < 0 || mnx >= w) continue;
+              mnid = mny * w + mnx;
+              if (majSeen[mnid] || part[mnid] !== majKind) continue;
+              majSeen[mnid] = 1; mq.push(mnid); mcomp.push(mnid);
+            }
+          }
+        }
+        if (mcomp.length < 12) continue;
+        var maj = mv[1] >= mv[2] ? 1 : 2;
+        if (!mv[maj]) continue;
+        if (mv[3 - maj] > mv[maj] * 0.2) continue;
+        var mi;
+        for (mi = 0; mi < mcomp.length; mi++) claim[mcomp[mi]] = maj;
+      }
+    }
+
     return { w: w, h: h, claim: claim, part: part, ball: ball, sky: sky, grassY: grassY };
   }
 
@@ -1243,9 +1611,15 @@
       if (!pr || !side) continue;
       var rgb = null;
       if (pr === 6) rgb = [0, 0, 0];
-      else if (pr === 1) rgb = jerseyRgb(side, p % w, (p / w) | 0);
-      else if (pr === 2) rgb = hexRgb(kits[side].shorts);
-      else if (pr === 3) rgb = hexRgb(kits[side].shoes || '#222222');
+      else if (pr === 1) {
+        var jerseyBase = jerseyRgb(side, p % w, (p / w) | 0);
+        var jerseyKey = side === 1 ? [255, 0, 255] : [255, 136, 0];
+        rgb = clothTone(jerseyBase, d[o], d[o + 1], d[o + 2], jerseyKey);
+      } else if (pr === 2) {
+        var shortBase = hexRgb(kits[side].shorts);
+        var shortKey = side === 1 ? [0, 255, 255] : [136, 0, 255];
+        rgb = clothTone(shortBase, d[o], d[o + 1], d[o + 2], shortKey);
+      } else if (pr === 3) rgb = toneRgb(hexRgb(kits[side].shoes || '#222222'), d[o], d[o + 1], d[o + 2], relLum(255, 0, 136));
       else if (pr === 4) rgb = toneRgb(hairs[side], d[o], d[o + 1], d[o + 2], hairRef);
       else if (pr === 5) rgb = toneRgb(skins[side], d[o], d[o + 1], d[o + 2], skinRef);
       if (!rgb) continue;
