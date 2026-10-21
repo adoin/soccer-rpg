@@ -2865,17 +2865,205 @@
     for (p = 0; p < n; p++) {
       useLab[p] = label[p];
       useFig[p] = figure[p];
+    }
+    // 张开的嘴里的 #FF0088 是舌头的占位色，不是球鞋，也不是球衣。
+    var seenT = new Uint8Array(n);
+    for (p = 0; p < n; p++) {
+      if (seenT[p]) continue;
+      o = p * 4;
+      if (d[o + 3] < 200 || d[o] !== 255 || d[o + 1] !== 0 || d[o + 2] !== 136) continue;
+      var tq = [p];
+      seenT[p] = 1;
+      var bootsN = 0, skinN = 0, mouthN = 0, tqi, tid, tx, ty, tdy, tdx, tnx, tny, tnid, tL;
+      for (tqi = 0; tqi < tq.length; tqi++) {
+        tid = tq[tqi];
+        tx = tid % w; ty = (tid / w) | 0;
+        for (tdy = -1; tdy <= 1; tdy++) {
+          tny = ty + tdy; if (tny < 0 || tny >= h) continue;
+          for (tdx = -1; tdx <= 1; tdx++) {
+            tnx = tx + tdx; if (tnx < 0 || tnx >= w) continue;
+            tnid = tny * w + tnx;
+            if (tdx || tdy) {
+              tL = label[tnid];
+              if (tL === MLAB.BOOTS) bootsN++;
+              if (tL === MLAB.SKIN || tL === MLAB.SKIN_LINE || tL === MLAB.INK) skinN++;
+              if (tL === MLAB.MOUTH || tL === MLAB.TONGUE || tL === MLAB.TEETH) mouthN++;
+            }
+            if (seenT[tnid]) continue;
+            var tno = tnid * 4;
+            if (d[tno + 3] < 200 || d[tno] !== 255 || d[tno + 1] !== 0 || d[tno + 2] !== 136) continue;
+            seenT[tnid] = 1;
+            tq.push(tnid);
+          }
+        }
+      }
+      if (tq.length > 500 || bootsN > 0) continue;
+      if (mouthN < 1 && skinN < 8) continue;
+      // 腿上的鞋色碎点不是舌头。没有嘴标签时，必须靠着这张脸的眼睛。
+      if (mouthN < 1) {
+        var face = false;
+        var fsx = tq[0] % w, fsy = (tq[0] / w) | 0;
+        for (var fdy = -96; fdy <= 96 && !face; fdy++) {
+          var fny = fsy + fdy; if (fny < 0 || fny >= h) continue;
+          for (var fdx = -96; fdx <= 96; fdx++) {
+            if (fdy * fdy + fdx * fdx > 96 * 96) continue;
+            var fnx = fsx + fdx; if (fnx < 0 || fnx >= w) continue;
+            var fl = label[fny * w + fnx];
+            if (fl === MLAB.EYE || fl === MLAB.IRIS || fl === MLAB.MOUTH || fl === MLAB.TONGUE) { face = true; break; }
+          }
+        }
+        if (!face) continue;
+      }
+      for (tqi = 0; tqi < tq.length; tqi++) {
+        useLab[tq[tqi]] = MLAB.TONGUE;
+        if (!useFig[tq[tqi]]) useFig[tq[tqi]] = nearFig(tq[tqi]);
+      }
+    }
+    // 和这块舌头隔了一个像素的同一色键，还是舌头。
+    for (p = 0; p < n; p++) {
+      o = p * 4;
+      if (d[o + 3] < 200 || d[o] !== 255 || d[o + 1] !== 0 || d[o + 2] !== 136) continue;
+      if (useLab[p] === MLAB.TONGUE || label[p] === MLAB.BOOTS) continue;
+      var tx = p % w, ty = (p / w) | 0, nearTongue = false, touchBoot = false;
+      for (var tdy = -3; tdy <= 3 && !nearTongue; tdy++) {
+        var tny = ty + tdy; if (tny < 0 || tny >= h) continue;
+        for (var tdx = -3; tdx <= 3; tdx++) {
+          if (Math.max(Math.abs(tdx), Math.abs(tdy)) > 3) continue;
+          var tnx = tx + tdx; if (tnx < 0 || tnx >= w) continue;
+          var tnid = tny * w + tnx;
+          if (label[tnid] === MLAB.BOOTS) touchBoot = true;
+          if (useLab[tnid] === MLAB.TONGUE) nearTongue = true;
+        }
+      }
+      if (nearTongue && !touchBoot) {
+        useLab[p] = MLAB.TONGUE;
+        if (!useFig[p]) useFig[p] = nearFig(p);
+      }
+    }
+    // 标成墨线、其实是浅色的汗水和肌肉线，贴着皮肤就按皮肤搬色。
+    for (p = 0; p < n; p++) {
+      if (useLab[p] !== MLAB.INK && useLab[p] !== 0) continue;
       o = p * 4;
       if (d[o + 3] < 200) continue;
+      if (sourceInk(d[o], d[o + 1], d[o + 2])) continue;
+      var sx = p % w, sy = (p / w) | 0;
+      var sv = [0, 0, 0];
+      var sdy, sdx, sny, snx, snid;
+      for (sdy = -4; sdy <= 4; sdy++) {
+        sny = sy + sdy; if (sny < 0 || sny >= h) continue;
+        for (sdx = -4; sdx <= 4; sdx++) {
+          if (!sdx && !sdy) continue;
+          snx = sx + sdx; if (snx < 0 || snx >= w) continue;
+          snid = sny * w + snx;
+          if (label[snid] !== MLAB.SKIN && label[snid] !== MLAB.SKIN_LINE) continue;
+          if (figure[snid]) sv[figure[snid]]++;
+          else sv[0]++;
+        }
+      }
+      if (!sv[1] && !sv[2] && !sv[0]) continue;
+      useLab[p] = MLAB.SKIN;
+      useFig[p] = sv[1] >= sv[2] ? (sv[1] ? 1 : nearFig(p)) : 2;
+    }
+    for (p = 0; p < n; p++) {
+      o = p * 4;
+      if (d[o + 3] < 200) continue;
+      if (useLab[p] === MLAB.MOUTH || useLab[p] === MLAB.TONGUE || useLab[p] === MLAB.TEETH || useLab[p] === MLAB.EYE || useLab[p] === MLAB.IRIS) continue;
       named = keyPart[d[o] + ',' + d[o + 1] + ',' + d[o + 2]];
       if (!named) continue;
       // 标签已经说了这块是谁，就按标签。没标到人身上的色键，按色键补回部位。
-      if (regionKind(label[p])) {
+      if (regionKind(useLab[p])) {
         if (!useFig[p]) useFig[p] = named[1] || nearFig(p);
         continue;
       }
       useLab[p] = named[0];
       useFig[p] = named[1] || nearFig(p);
+    }
+    // 头以下、落在短裤里的蓝色笔触不是头发。头发只留头顶那一块。
+    var seenH = new Uint8Array(n);
+    var hairsC = [[], [], []];
+    for (p = 0; p < n; p++) {
+      if (seenH[p]) continue;
+      if (useLab[p] !== MLAB.HAIR && useLab[p] !== MLAB.HAIR_LINE) continue;
+      var hside = useFig[p];
+      if (!hside) continue;
+      var hq = [p];
+      seenH[p] = 1;
+      var hminY = h, hmaxY = 0, harea = 0, hblue = 0, hshort = 0, hqi, hid, hx, hy, hdy, hdx, hnx, hny, hnid;
+      for (hqi = 0; hqi < hq.length; hqi++) {
+        hid = hq[hqi];
+        harea++;
+        hx = hid % w; hy = (hid / w) | 0;
+        if (hy < hminY) hminY = hy;
+        if (hy > hmaxY) hmaxY = hy;
+        var ho = hid * 4;
+        if (d[ho] === 0 && d[ho + 1] === 0 && d[ho + 2] === 255) hblue++;
+        for (hdy = -1; hdy <= 1; hdy++) {
+          hny = hy + hdy; if (hny < 0 || hny >= h) continue;
+          for (hdx = -1; hdx <= 1; hdx++) {
+            hnx = hx + hdx; if (hnx < 0 || hnx >= w) continue;
+            hnid = hny * w + hnx;
+            if (hdx || hdy) {
+              if ((label[hnid] === MLAB.SHORTS || label[hnid] === MLAB.SOCKS) && figure[hnid] === hside) hshort++;
+            }
+            if (seenH[hnid]) continue;
+            if (useFig[hnid] !== hside) continue;
+            if (useLab[hnid] !== MLAB.HAIR && useLab[hnid] !== MLAB.HAIR_LINE) continue;
+            seenH[hnid] = 1;
+            hq.push(hnid);
+          }
+        }
+      }
+      hairsC[hside].push({ minY: hminY, maxY: hmaxY, area: harea, blue: hblue, touch: hshort, pix: hq });
+    }
+    [1, 2].forEach(function (side) {
+      var list = hairsC[side];
+      var head = null;
+      list.forEach(function (c) {
+        if (c.area < 80) return;
+        if (!head || c.minY < head.minY) head = c;
+      });
+      list.forEach(function (c) {
+        if (c === head) return;
+        // 还和头顶连在一起的刘海留着。完全掉到头下面的蓝笔触是短裤暗纹。
+        if (head && c.minY <= head.maxY + 8) return;
+        if (!head && c.touch <= 0) return;
+        c.pix.forEach(function (id) {
+          useLab[id] = MLAB.SHORTS;
+          useFig[id] = side;
+        });
+      });
+    });
+    // 贴着头发的大块透明“网”其实是天空，不能铺成白矩形。
+    var clearNet = new Uint8Array(n);
+    var seenN = new Uint8Array(n);
+    for (p = 0; p < n; p++) {
+      if (seenN[p] || label[p] !== MLAB.NET || d[p * 4 + 3] >= 40) continue;
+      var nq = [p];
+      seenN[p] = 1;
+      var hairB = 0, meshB = 0, skyB = 0, nqi, nid2, nx2, ny2;
+      for (nqi = 0; nqi < nq.length; nqi++) {
+        nid2 = nq[nqi];
+        nx2 = nid2 % w; ny2 = (nid2 / w) | 0;
+        [[1, 0], [-1, 0], [0, 1], [0, -1]].forEach(function (dir) {
+          var ax = nx2 + dir[0], ay = ny2 + dir[1];
+          if (ax < 0 || ay < 0 || ax >= w || ay >= h) return;
+          var aid = ay * w + ax;
+          if (label[aid] === MLAB.NET && d[aid * 4 + 3] < 40) {
+            if (!seenN[aid]) { seenN[aid] = 1; nq.push(aid); }
+            return;
+          }
+          if (label[aid] === MLAB.HAIR || label[aid] === MLAB.HAIR_LINE) hairB++;
+          else if (label[aid] === MLAB.NET && d[aid * 4 + 3] >= 40) meshB++;
+          else if (label[aid] === MLAB.SKY) skyB++;
+        });
+      }
+      if (nq.length < 6000 && (hairB > 12 || (skyB > meshB && skyB > 20))) {
+        for (nqi = 0; nqi < nq.length; nqi++) clearNet[nq[nqi]] = 1;
+      }
+    }
+    // 标了皮肤或衣服、却没标是谁的像素，跟着旁边那个人走，不能留着原图的浅色。
+    for (p = 0; p < n; p++) {
+      if (!useFig[p] && regionKind(useLab[p])) useFig[p] = nearFig(p);
     }
     function blocked(i) {
       var lab = useLab[i];
@@ -2924,6 +3112,14 @@
       o = p * 4;
       if (d[o + 3] < 128) continue;
       if (sourceInk(d[o], d[o + 1], d[o + 2])) continue;
+      // 别的部位的色键落进来时，不能把这块的中位色带跑。
+      var sr = d[o], sg = d[o + 1], sb = d[o + 2];
+      if (sr === 0 && sg === 0 && sb === 255 && kind !== MLAB.HAIR) continue;
+      if (sr === 255 && sg === 0 && sb === 136 && kind !== MLAB.BOOTS) continue;
+      if (sr === 255 && sg === 0 && sb === 255 && kind !== MLAB.SHIRT) continue;
+      if (sr === 255 && sg === 136 && sb === 0 && kind !== MLAB.SHIRT) continue;
+      if (sr === 0 && sg === 255 && sb === 255 && kind !== MLAB.SHORTS && kind !== MLAB.SOCKS) continue;
+      if (sr === 136 && sg === 0 && sb === 255 && kind !== MLAB.SHORTS && kind !== MLAB.SOCKS) continue;
       var sk = sampleKey(kind, fig);
       if (!samples[sk]) samples[sk] = { L: [], a: [], b: [] };
       var sl = rgbToLab(d[o], d[o + 1], d[o + 2]);
@@ -3003,6 +3199,10 @@
       lab = useLab[p];
       fig = useFig[p];
       if (lab === MLAB.NET) {
+        if (clearNet[p]) {
+          d[o] = 0; d[o + 1] = 0; d[o + 2] = 0; d[o + 3] = 0;
+          continue;
+        }
         if (d[o + 3] < 40) { d[o] = 255; d[o + 1] = 255; d[o + 2] = 255; d[o + 3] = 255; }
         continue;
       }
@@ -3010,14 +3210,27 @@
         d[o] = 0; d[o + 1] = 0; d[o + 2] = 0; d[o + 3] = 0;
         continue;
       }
-      if (lab === MLAB.IRIS || lab === MLAB.EYE || lab === MLAB.TEETH || lab === MLAB.BALL || lab === MLAB.GRASS || lab === MLAB.LINE) continue;
+      if (lab === MLAB.BALL || lab === MLAB.GRASS || lab === MLAB.LINE) continue;
+      // 眼睛和牙里的一颗色键是标错的占位，按它自己的部位上色，不能留在画面上。
+      if (lab === MLAB.IRIS || lab === MLAB.EYE || lab === MLAB.TEETH) {
+        named = keyPart[d[o] + ',' + d[o + 1] + ',' + d[o + 2]];
+        if (named && d[o + 3] >= 200) {
+          var kfig = named[1] || fig || nearFig(p);
+          var ktgt = targetRgb(regionKind(named[0]) || named[0], kfig, p % w, (p / w) | 0);
+          if (ktgt) { d[o] = ktgt[0]; d[o + 1] = ktgt[1]; d[o + 2] = ktgt[2]; }
+        }
+        continue;
+      }
       // 墨线标签，以及没归进皮肤衣服的近黑像素，保持原图。皮肤里的深线要搬成目标色相。
       if (lab === MLAB.INK || (sourceInk(d[o], d[o + 1], d[o + 2]) && !regionKind(lab))) continue;
       if (lab === MLAB.MOUTH || lab === MLAB.TONGUE) {
-        named = keyPart[d[o] + ',' + d[o + 1] + ',' + d[o + 2]];
-        if (named) {
-          var cavity = lab === MLAB.TONGUE ? [216, 106, 120] : [122, 31, 36];
-          d[o] = cavity[0]; d[o + 1] = cavity[1]; d[o + 2] = cavity[2];
+        var mr = d[o], mg = d[o + 1], mb = d[o + 2];
+        var mkey = keyPart[mr + ',' + mg + ',' + mb];
+        var magenta = mr > 190 && mb > 80 && mg < 90 && mr > mg + 40;
+        if (lab === MLAB.TONGUE || mkey || magenta) {
+          var pink = lab === MLAB.TONGUE || magenta || (mr === 255 && mg === 0 && mb === 136)
+            ? [216, 106, 120] : [122, 31, 36];
+          d[o] = pink[0]; d[o + 1] = pink[1]; d[o + 2] = pink[2];
         }
         continue;
       }
