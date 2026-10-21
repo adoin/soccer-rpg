@@ -2759,6 +2759,12 @@
     var mn = r < g ? r : g; if (b < mn) mn = b;
     return (mx - mn) < 18;
   }
+  // 原图里的纯白高光留着，不跟肤色走。
+  function sourceWhite(r, g, b) {
+    var mx = r > g ? r : g; if (b > mx) mx = b;
+    var mn = r < g ? r : g; if (b < mn) mn = b;
+    return mn >= 230 && (mx - mn) < 20;
+  }
 
   // 标签只决定这块像素属于谁。颜色用 CIELAB 按原图亮度和色度搬过去，
   // 眉毛、眼线、鼻线和嘴线都留在原图像素上，不再铺成一块平涂。
@@ -2946,6 +2952,7 @@
       o = p * 4;
       if (d[o + 3] < 200) continue;
       if (sourceInk(d[o], d[o + 1], d[o + 2])) continue;
+      if (sourceWhite(d[o], d[o + 1], d[o + 2])) continue;
       var sx = p % w, sy = (p / w) | 0;
       var sv = [0, 0, 0];
       var sdy, sdx, sny, snx, snid;
@@ -3236,6 +3243,8 @@
       }
       var kind = regionKind(lab);
       if (!kind || !fig) continue;
+      // 皮肤上的纯白高光是原图留白，不压成肤色。
+      if (kind === MLAB.SKIN && sourceWhite(d[o], d[o + 1], d[o + 2])) continue;
       var tgt = targetRgb(kind, fig, p % w, (p / w) | 0);
       if (!tgt) continue;
       var rgb = transfer(d[o], d[o + 1], d[o + 2], tgt, keyLab[sampleKey(kind, fig)]);

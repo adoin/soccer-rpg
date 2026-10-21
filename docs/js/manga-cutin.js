@@ -8,7 +8,7 @@ var MANGA = {
   lastId: null,
   cache: {},
 };
-var MANGA_V = 'manga7';
+var MANGA_V = 'manga8';
 
 // a / b：这张图里品红/青（A）和橙/紫（B）分别对应 action.roles 的哪个角色。
 // trail.split 为真时，start→impact 是被改变前的淡线，impact→end 是加粗的新路线。

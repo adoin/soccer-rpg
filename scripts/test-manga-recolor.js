@@ -144,6 +144,111 @@ poses.forEach(function (pose) {
   }
   ok(aN > 500 && bN > 500, pose + ' 两个人都分出来了', aN + '/' + bN);
   ok(aj > 200 && bj > 200, pose + ' 两件球衣都在', aj + '/' + bj);
+  // 深肤：皮肤块里发亮、又不是原图纯白高光的连通块，算没搬过去。
+  function labLOf(r, g, b) {
+    function lin(c) {
+      c = c / 255;
+      return c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
+    }
+    var y = lin(r) * 0.2126729 + lin(g) * 0.7151522 + lin(b) * 0.0721750;
+    var fy = y > 0.008856 ? Math.pow(y, 1 / 3) : (7.787 * y + 16 / 116);
+    return 116 * fy - 16;
+  }
+  function sourceWhiteAt(buf, i) {
+    var o = i * 4;
+    var r = buf[o], g = buf[o + 1], b = buf[o + 2];
+    var mx = Math.max(r, g, b), mn = Math.min(r, g, b);
+    return mn >= 230 && (mx - mn) < 20;
+  }
+  function sourceInkAt(buf, i) {
+    var o = i * 4;
+    var r = buf[o], g = buf[o + 1], b = buf[o + 2];
+    var y = 0.299 * r + 0.587 * g + 0.114 * b;
+    if (y >= 60) return false;
+    var mx = Math.max(r, g, b), mn = Math.min(r, g, b);
+    return (mx - mn) < 18;
+  }
+  function lightSkinBlobs(pixels, side) {
+    var ww = base.width, hh = base.height, nn = ww * hh;
+    var seen = new Uint8Array(nn);
+    var blobs = 0;
+    var where = '';
+    var i, qi, id, x, y, dy, dx, ny, nx, nid;
+    for (i = 0; i < nn; i++) {
+      if (seen[i] || mask.part[i] !== 5 || mask.claim[i] !== side) continue;
+      var q = [i];
+      seen[i] = 1;
+      var comp = [i];
+      for (qi = 0; qi < q.length; qi++) {
+        id = q[qi];
+        x = id % ww; y = (id / ww) | 0;
+        for (dy = -1; dy <= 1; dy++) {
+          ny = y + dy; if (ny < 0 || ny >= hh) continue;
+          for (dx = -1; dx <= 1; dx++) {
+            if (!dx && !dy) continue;
+            nx = x + dx; if (nx < 0 || nx >= ww) continue;
+            nid = ny * ww + nx;
+            if (seen[nid] || mask.part[nid] !== 5 || mask.claim[nid] !== side) continue;
+            seen[nid] = 1;
+            q.push(nid);
+            comp.push(nid);
+          }
+        }
+      }
+      if (comp.length < 40) continue;
+      var ls = [];
+      var ci2, id2, o2;
+      for (ci2 = 0; ci2 < comp.length; ci2++) {
+        id2 = comp[ci2];
+        o2 = id2 * 4;
+          if (pixels[o2 + 3] < 200) continue;
+          if (sourceWhiteAt(base.data, id2)) continue;
+          if (sourceInkAt(base.data, id2)) continue;
+          var sampleL = labLOf(pixels[o2], pixels[o2 + 1], pixels[o2 + 2]);
+          // 贴着鞋边的深色笔触不是这块皮肤的色调，留在中位数里会把正常的浅调肤色判成亮块。
+          if (sampleL < 12) continue;
+          ls.push(sampleL);
+      }
+      if (ls.length < 30) continue;
+      ls.sort(function (a, b) { return a - b; });
+      var med = ls[(ls.length / 2) | 0];
+      var hot = new Uint8Array(nn);
+      for (ci2 = 0; ci2 < comp.length; ci2++) {
+        id2 = comp[ci2];
+        o2 = id2 * 4;
+        if (pixels[o2 + 3] < 200) continue;
+        if (sourceWhiteAt(base.data, id2)) continue;
+        if (labLOf(pixels[o2], pixels[o2 + 1], pixels[o2 + 2]) > med + 15) hot[id2] = 1;
+      }
+      var hseen = new Uint8Array(nn);
+      for (ci2 = 0; ci2 < comp.length; ci2++) {
+        id2 = comp[ci2];
+        if (!hot[id2] || hseen[id2]) continue;
+        var hq = [id2];
+        hseen[id2] = 1;
+        var hn = 0;
+        var anchor = id2;
+        for (var hqi = 0; hqi < hq.length; hqi++) {
+          var hid = hq[hqi];
+          hn++;
+          var xx = hid % ww, yy = (hid / ww) | 0;
+          [[1, 0], [-1, 0], [0, 1], [0, -1]].forEach(function (dlt) {
+            var ax = xx + dlt[0], ay = yy + dlt[1];
+            if (ax < 0 || ay < 0 || ax >= ww || ay >= hh) return;
+            var aid = ay * ww + ax;
+            if (!hot[aid] || hseen[aid]) return;
+            hseen[aid] = 1;
+            hq.push(aid);
+          });
+        }
+        if (hn >= 3) {
+          blobs++;
+          if (!where) where = (anchor % ww) + ',' + ((anchor / ww) | 0) + ' n=' + hn + ' Lmed=' + med.toFixed(1);
+        }
+      }
+    }
+    return { blobs: blobs, where: where };
+  }
   combos.forEach(function (combo, ci) {
     var data = new Uint8ClampedArray(base.data);
     var img = { width: base.width, height: base.height, data: data };
@@ -190,7 +295,14 @@ poses.forEach(function (pose) {
         var allowed = aColors.concat(bColors, [aShort, bShort, aShoe, bShoe]).some(function (c) { return same(px, c); });
         var piece = part === 1 ? (claim === 1 ? aColors : bColors) : part === 2 ? [claim === 1 ? aShort : bShort] : part === 3 ? [claim === 1 ? aShoe : bShoe] : [];
         var lightPiece = piece.some(function (c) { return nearWhite(c[0], c[1], c[2]); });
-        if (!allowed && !lightPiece) stray++;
+        // 皮肤上原图就是纯白的高光，不算多余的白。
+        var srcWhite = false;
+        if (part === 5) {
+          var swr = base.data[p], swg = base.data[p + 1], swb = base.data[p + 2];
+          var swx = Math.max(swr, swg, swb), swn = Math.min(swr, swg, swb);
+          srcWhite = swn >= 230 && (swx - swn) < 20;
+        }
+        if (!allowed && !lightPiece && !srcWhite) stray++;
       }
       if (mask.ball && mask.ball[idx]) {
         ballN++;
@@ -687,6 +799,14 @@ poses.forEach(function (pose) {
       }
       return { bad: bad, n: n };
     }
+    if (combo.a.skin === 'deep') {
+      var blobA = lightSkinBlobs(data, 1);
+      ok(blobA.blobs === 0, tag + ' A 深肤没有发亮的皮肤块', blobA.where || '0');
+    }
+    if (combo.b.skin === 'deep') {
+      var blobB = lightSkinBlobs(data, 2);
+      ok(blobB.blobs === 0, tag + ' B 深肤没有发亮的皮肤块', blobB.where || '0');
+    }
     var edgeA = skinInkEdge(1), edgeB = skinInkEdge(2);
     ok(edgeA.n < 30 || edgeA.bad <= 3, tag + ' A 墨线边皮肤不发白不偏色', edgeA.bad + '/' + edgeA.n);
     ok(edgeB.n < 30 || edgeB.bad <= 3, tag + ' B 墨线边皮肤不发白不偏色', edgeB.bad + '/' + edgeB.n);
@@ -723,6 +843,18 @@ poses.forEach(function (pose) {
     }
     thumbs.push({ pose: pose, combo: combo.name, w: tw, h: th, rgb: thumb.toString('base64') });
   });
+  (function () {
+    var both = new Uint8ClampedArray(base.data);
+    kits.paintMangaLabels({ width: base.width, height: base.height, data: both }, map, {
+      team: 'home', skin: 'deep', hair: 'blonde', kit: combos[1].a.kit,
+    }, {
+      team: 'away', skin: 'deep', hair: 'brown', kit: combos[1].b.kit,
+    });
+    var deepA = lightSkinBlobs(both, 1);
+    var deepB = lightSkinBlobs(both, 2);
+    ok(deepA.blobs === 0, pose + ' 深肤全身 A 没有发亮的皮肤块', deepA.where || '0');
+    ok(deepB.blobs === 0, pose + ' 深肤全身 B 没有发亮的皮肤块', deepB.where || '0');
+  })();
   if (pose === 'dribble_win') {
     var data0 = new Uint8ClampedArray(base.data);
     kits.paintMangaLabels({ width: base.width, height: base.height, data: data0 }, map, combos[0].a, combos[0].b);
