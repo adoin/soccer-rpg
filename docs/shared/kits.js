@@ -625,34 +625,59 @@
     return (0.299 * r + 0.587 * g + 0.114 * b) / 255;
   }
 
-  // 平涂色键和靠近它的等级是底色。明显更暗的阴影收进底色亮度的 80%–85%，色相不变。
-  function toneRgb(rgb, r, g, b, refLum) {
-    var lum = relLum(r, g, b);
-    var t = refLum > 0.04 ? lum / refLum : 1;
-    if (t >= 0.64) return [rgb[0], rgb[1], rgb[2]];
-    var u = (t - 0.15) / (0.64 - 0.15);
-    if (u < 0) u = 0;
-    if (u > 1) u = 1;
-    var factor = 0.80 + 0.05 * u;
-    return [
-      Math.max(0, Math.min(255, Math.round(rgb[0] * factor))),
-      Math.max(0, Math.min(255, Math.round(rgb[1] * factor))),
-      Math.max(0, Math.min(255, Math.round(rgb[2] * factor))),
-    ];
+  function rgbToHsl(r, g, b) {
+    r /= 255; g /= 255; b /= 255;
+    var max = Math.max(r, g, b), min = Math.min(r, g, b);
+    var h = 0, s = 0, l = (max + min) / 2;
+    if (max !== min) {
+      var d = max - min;
+      s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+      switch (max) {
+        case r: h = (g - b) / d + (g < b ? 6 : 0); break;
+        case g: h = (b - r) / d + 2; break;
+        case b: h = (r - g) / d + 4; break;
+      }
+      h *= 60;
+    }
+    return { h: h, s: s, l: l };
   }
 
-  // 球衣短裤的色键保持原色。色相不对的暗部（被收成头发的蓝阴影）用同一色相压暗。
-  function clothTone(rgb, r, g, b, keyRgb) {
-    var key = pixelHsv(keyRgb[0], keyRgb[1], keyRgb[2]);
-    var src = pixelHsv(r, g, b);
-    var dh = Math.abs(src.h - key.h);
-    if (dh > 180) dh = 360 - dh;
-    if (src.s > 0.4 && src.v > 90 && dh < 36) return [rgb[0], rgb[1], rgb[2]];
-    var factor = src.v < 90 ? 0.80 : 0.85;
+  // 同一色相再提亮一档。深肤往这个颜色靠，不往白色靠，否则高光会发粉。
+  function lighterSameHue(rgb) {
+    var hsl = rgbToHsl(rgb[0], rgb[1], rgb[2]);
+    var cap = hsl.l > 0.62 ? Math.min(0.92, hsl.l + 0.12) : Math.min(0.72, hsl.l + 0.28);
+    if (cap < hsl.l) cap = hsl.l;
+    return hslToRgb(hsl.h, hsl.s * (hsl.l > 0.9 ? 0.85 : 1), cap);
+  }
+
+  // 用原图亮度在「目标色」和「墨线黑」之间取值。比色键更亮的高光走向同一色相的浅一档。
+  // 色键附近的平涂仍是目标色本身。源图 82% 亮度的阴影落到目标亮度的大约 82%。
+  function shadeRgb(rgb, r, g, b, keyLum) {
+    var lum = relLum(r, g, b);
+    if (!(keyLum > 0.02)) keyLum = 0.02;
+    if (lum >= keyLum - 0.025) {
+      if (lum <= keyLum + 0.03) return [rgb[0], rgb[1], rgb[2]];
+      var u = (lum - keyLum) / Math.max(0.05, 1 - keyLum);
+      if (u < 0) u = 0;
+      if (u > 1) u = 1;
+      var light = lighterSameHue(rgb);
+      return [
+        Math.max(0, Math.min(255, Math.round(rgb[0] + (light[0] - rgb[0]) * u))),
+        Math.max(0, Math.min(255, Math.round(rgb[1] + (light[1] - rgb[1]) * u))),
+        Math.max(0, Math.min(255, Math.round(rgb[2] + (light[2] - rgb[2]) * u))),
+      ];
+    }
+    var t = (keyLum - lum) / keyLum;
+    if (t < 0) t = 0;
+    if (t > 1) t = 1;
+    var outR = Math.round(rgb[0] * (1 - t));
+    var outG = Math.round(rgb[1] * (1 - t));
+    var outB = Math.round(rgb[2] * (1 - t));
+    if (outR < 8 && outG < 8 && outB < 8) return [0, 0, 0];
     return [
-      Math.max(0, Math.min(255, Math.round(rgb[0] * factor))),
-      Math.max(0, Math.min(255, Math.round(rgb[1] * factor))),
-      Math.max(0, Math.min(255, Math.round(rgb[2] * factor))),
+      Math.max(0, Math.min(255, outR)),
+      Math.max(0, Math.min(255, outG)),
+      Math.max(0, Math.min(255, outB)),
     ];
   }
 
@@ -1644,6 +1669,72 @@
         if (clothNear[1] > clothNear[2]) who = 1;
         else if (clothNear[2] > clothNear[1]) who = 2;
       }
+      // 鞋跟着它连上的球袜，球袜跟着短裤，短裤再跟着球衣。不看最近的那件球衣。
+      if (rkind === 3) {
+        skinStampId++;
+        var bootQ = [];
+        var bootD = [];
+        for (rc = 0; rc < rcomp.length; rc++) {
+          skinStamp[rcomp[rc]] = skinStampId;
+          bootQ.push(rcomp[rc]);
+          bootD.push(0);
+        }
+        var shortDist = [0, 100000, 100000];
+        var shortHits = [0, 0, 0];
+        var jerseyDistB = [0, 100000, 100000];
+        var bqi2 = 0;
+        while (bqi2 < bootQ.length) {
+          var bid2 = bootQ[bqi2];
+          var bdist2 = bootD[bqi2];
+          bqi2++;
+          if (bdist2 >= 84) continue;
+          var bx2 = bid2 % w, by2 = (bid2 / w) | 0;
+          var bdy2, bdx2;
+          for (bdy2 = -1; bdy2 <= 1; bdy2++) {
+            var byy = by2 + bdy2; if (byy < 0 || byy >= h) continue;
+            for (bdx2 = -1; bdx2 <= 1; bdx2++) {
+              if (!bdx2 && !bdy2) continue;
+              var bxx = bx2 + bdx2; if (bxx < 0 || bxx >= w) continue;
+              var bn2 = byy * w + bxx;
+              if (skinStamp[bn2] === skinStampId || ball[bn2] || sky[bn2]) continue;
+              var bpt = part[bn2];
+              var bcl = claim[bn2];
+              if (bpt === 2 && bcl && shortSize[bn2] >= 200) {
+                var nds = bdist2 + 1;
+                if (nds < shortDist[bcl]) shortDist[bcl] = nds;
+                shortHits[bcl]++;
+                skinStamp[bn2] = skinStampId;
+                continue;
+              }
+              if (bpt === 1 && bcl && jerseySize[bn2] >= 150) {
+                var ndj = bdist2 + 1;
+                if (ndj < jerseyDistB[bcl]) jerseyDistB[bcl] = ndj;
+                skinStamp[bn2] = skinStampId;
+                continue;
+              }
+              if (bpt === 3 || bpt === 1 || keep[bn2]) continue;
+              var bo2 = bn2 * 4;
+              if (d[bo2 + 3] < 128) continue;
+              var br2 = d[bo2], bg2 = d[bo2 + 1], bb2 = d[bo2 + 2];
+              if (isGrassPixel(br2, bg2, bb2) || isNearWhitePixel(br2, bg2, bb2)) continue;
+              var bodyish = bpt === 4 || bpt === 5 || bpt === 6 || isNeutralDark(br2, bg2, bb2)
+                || (bpt === 2 && shortSize[bn2] < 200);
+              if (!bodyish) continue;
+              skinStamp[bn2] = skinStampId;
+              bootQ.push(bn2);
+              bootD.push(bdist2 + 1);
+            }
+          }
+        }
+        if (shortDist[1] < 100000 || shortDist[2] < 100000) {
+          if (shortDist[1] + 8 < shortDist[2]) who = 1;
+          else if (shortDist[2] + 8 < shortDist[1]) who = 2;
+          else if (shortHits[1] !== shortHits[2]) who = shortHits[1] > shortHits[2] ? 1 : 2;
+          else who = shortDist[1] <= shortDist[2] ? 1 : 2;
+        } else if (jerseyDistB[1] < 100000 || jerseyDistB[2] < 100000) {
+          who = jerseyDistB[1] <= jerseyDistB[2] ? 1 : 2;
+        }
+      }
       if (!who) {
         if (sideVotes[1] > sideVotes[2]) who = 1;
         else if (sideVotes[2] > sideVotes[1]) who = 2;
@@ -1808,39 +1899,291 @@
     }
 
     // 没有鞋色键、又贴着球网的整块“鞋”是门线旁边的白方块，留白。
-    var bootSeen = new Uint8Array(n);
-    for (p = 0; p < n; p++) {
-      if (bootSeen[p] || part[p] !== 3) continue;
-      var bq = [p]; bootSeen[p] = 1;
-      var bcomp = [p];
-      var bqi = 0, bkey = 0, bkeep = 0;
-      while (bqi < bq.length) {
-        var bid = bq[bqi++];
-        var bo = bid * 4;
-        var br = d[bo], bg = d[bo + 1], bb = d[bo + 2];
-        if (Math.abs(br - 255) + bg + Math.abs(bb - 136) < 28) bkey++;
-        var bx = bid % w, by = (bid / w) | 0;
-        var bdy, bdx;
-        for (bdy = -1; bdy <= 1; bdy++) {
-          var bny = by + bdy; if (bny < 0 || bny >= h) continue;
-          for (bdx = -1; bdx <= 1; bdx++) {
-            if (!bdx && !bdy) continue;
-            var bnx = bx + bdx; if (bnx < 0 || bnx >= w) continue;
-            var bnid = bny * w + bnx;
-            if (keep[bnid]) bkeep++;
-            if (bootSeen[bnid] || part[bnid] !== 3) continue;
-            bootSeen[bnid] = 1; bq.push(bnid); bcomp.push(bnid);
+    function clearStrayBoots() {
+      var bootSeen = new Uint8Array(n);
+      for (var bp0 = 0; bp0 < n; bp0++) {
+        if (bootSeen[bp0] || part[bp0] !== 3) continue;
+        var bq = [bp0]; bootSeen[bp0] = 1;
+        var bcomp = [bp0];
+        var bqi = 0, bkey = 0, bkeep = 0;
+        while (bqi < bq.length) {
+          var bid = bq[bqi++];
+          var bo = bid * 4;
+          var br = d[bo], bg = d[bo + 1], bb = d[bo + 2];
+          if (Math.abs(br - 255) + bg + Math.abs(bb - 136) < 28) bkey++;
+          var bx = bid % w, by = (bid / w) | 0;
+          var bdy, bdx;
+          for (bdy = -1; bdy <= 1; bdy++) {
+            var bny = by + bdy; if (bny < 0 || bny >= h) continue;
+            for (bdx = -1; bdx <= 1; bdx++) {
+              if (!bdx && !bdy) continue;
+              var bnx = bx + bdx; if (bnx < 0 || bnx >= w) continue;
+              var bnid = bny * w + bnx;
+              if (keep[bnid]) bkeep++;
+              if (bootSeen[bnid] || part[bnid] !== 3) continue;
+              bootSeen[bnid] = 1; bq.push(bnid); bcomp.push(bnid);
+            }
+          }
+        }
+        if (bcomp.length < 80 || bkey > bcomp.length * 0.08 || bkeep < 40) continue;
+        var bi;
+        for (bi = 0; bi < bcomp.length; bi++) {
+          claim[bcomp[bi]] = 0;
+          part[bcomp[bi]] = 0;
+          keep[bcomp[bi]] = 1;
+        }
+      }
+    }
+    clearStrayBoots();
+
+    // 脸上的小块品红或红是嘴，不是鞋。色键嘴涂成固定的舌粉和口腔暗红，牙齿留白。
+    (function sealMouths() {
+      var seenM = new Uint8Array(n);
+      function mouthish(r, g, b) {
+        var bootD = Math.abs(r - 255) + g + Math.abs(b - 136);
+        if (bootD <= 48 && b > 70 && g < 80) return true;
+        if (r > 70 && r > g + 18 && r > b + 18 && b < 110 && g < 130 && !(b < 90 && g > 160 && r > 160)) return true;
+        if (r > 16 && r < 90 && g < 36 && b < 36 && r > g + 8 && r > b + 8) return true;
+        return false;
+      }
+      function tongueKey(r, g, b) {
+        return Math.abs(r - 255) + g + Math.abs(b - 136) <= 56 && b > 70 && b > g;
+      }
+      var mp;
+      for (mp = 0; mp < n; mp++) {
+        if (seenM[mp] || ball[mp] || sky[mp]) continue;
+        var mo = mp * 4;
+        if (d[mo + 3] < 128 || !mouthish(d[mo], d[mo + 1], d[mo + 2])) { seenM[mp] = 1; continue; }
+        var mq = [mp]; seenM[mp] = 1;
+        var mids = [mp];
+        var mqi = 0, minX = w, maxX = 0, minY = h, maxY = 0;
+        while (mqi < mq.length) {
+          var mid = mq[mqi++];
+          var mx = mid % w, my = (mid / w) | 0;
+          if (mx < minX) minX = mx; if (mx > maxX) maxX = mx;
+          if (my < minY) minY = my; if (my > maxY) maxY = my;
+          var mdy, mdx;
+          for (mdy = -1; mdy <= 1; mdy++) {
+            var mny = my + mdy; if (mny < 0 || mny >= h) continue;
+            for (mdx = -1; mdx <= 1; mdx++) {
+              if (!mdx && !mdy) continue;
+              var mnx = mx + mdx; if (mnx < 0 || mnx >= w) continue;
+              var mnid = mny * w + mnx;
+              if (seenM[mnid] || ball[mnid] || sky[mnid]) continue;
+              var mno = mnid * 4;
+              if (d[mno + 3] < 128 || !mouthish(d[mno], d[mno + 1], d[mno + 2])) continue;
+              seenM[mnid] = 1; mq.push(mnid); mids.push(mnid);
+            }
+          }
+        }
+        var marea = mids.length;
+        if (marea < 8 || marea > 520) continue;
+        var bwM = maxX - minX + 1, bhM = maxY - minY + 1;
+        if (Math.max(bwM, bhM) > 48) continue;
+        var skinT = 0, clothT = 0, grassT = 0;
+        var mi;
+        for (mi = 0; mi < mids.length; mi++) {
+          var tx = mids[mi] % w, ty = (mids[mi] / w) | 0;
+          var tdy, tdx;
+          for (tdy = -2; tdy <= 2; tdy++) {
+            var tny = ty + tdy; if (tny < 0 || tny >= h) continue;
+            for (tdx = -2; tdx <= 2; tdx++) {
+              if (!tdx && !tdy) continue;
+              var tnx = tx + tdx; if (tnx < 0 || tnx >= w) continue;
+              var tn = tny * w + tnx;
+              var tp = part[tn];
+              if (tp === 5 || tp === 4 || cls[tn] === 'skin' || cls[tn] === 'hair') skinT++;
+              else if (tp === 1 || tp === 2) clothT++;
+              else {
+                var to = tn * 4;
+                if (isGrassPixel(d[to], d[to + 1], d[to + 2])) grassT++;
+              }
+            }
+          }
+        }
+        if (skinT < 12 || clothT > skinT || grassT > skinT) continue;
+        // 脚边的鞋在草皮线上。嘴在头上，不贴着大块短裤。
+        var cyM = (minY + maxY) >> 1, cxM = (minX + maxX) >> 1;
+        if (grassY && cyM > grassY - 70) continue;
+        var nearShort = false;
+        var sy, sx2;
+        for (sy = Math.max(0, cyM - 28); sy <= Math.min(h - 1, cyM + 36) && !nearShort; sy += 2) {
+          for (sx2 = Math.max(0, cxM - 28); sx2 <= Math.min(w - 1, cxM + 28); sx2 += 2) {
+            var sn = sy * w + sx2;
+            if (part[sn] === 2 && shortSize[sn] >= 200) { nearShort = true; break; }
+          }
+        }
+        if (nearShort) continue;
+        for (mi = 0; mi < mids.length; mi++) {
+          var pid = mids[mi];
+          var po = pid * 4;
+          var pr = d[po], pg = d[po + 1], pb = d[po + 2];
+          if (isNearWhitePixel(pr, pg, pb)) {
+            d[po] = d[po + 1] = d[po + 2] = 255;
+          } else if (tongueKey(pr, pg, pb)) {
+            d[po] = 224; d[po + 1] = 112; d[po + 2] = 136;
+          } else {
+            d[po] = 138; d[po + 1] = 48; d[po + 2] = 48;
+          }
+          d[po + 3] = 255;
+          claim[pid] = 0;
+          part[pid] = 0;
+          keep[pid] = 1;
+          sky[pid] = 0;
+        }
+      }
+    })();
+
+    // 球门框里、被网线围住的透明格子补回白。框外的天空不动。
+    (function restoreGoalMesh() {
+      if (!grassY || grassY < 200) return;
+      var y1 = grassY - 6;
+      var y0b = Math.max(0, grassY - 400);
+      var samples = 0;
+      var colWhite = new Uint16Array(w);
+      var colTrans = new Uint16Array(w);
+      var gx, gy;
+      for (gy = y0b; gy < y1; gy += 2) samples++;
+      if (samples < 8) return;
+      for (gx = 0; gx < w; gx++) {
+        for (gy = y0b; gy < y1; gy += 2) {
+          var go = (gy * w + gx) * 4;
+          if (d[go + 3] < 40) colTrans[gx]++;
+          else if (isNearWhitePixel(d[go], d[go + 1], d[go + 2])) colWhite[gx]++;
+        }
+      }
+      function isSkyCol(x) {
+        return colTrans[x] > samples * 0.88 && colWhite[x] < samples * 0.06;
+      }
+      function isNetCol(x) {
+        return colWhite[x] > samples * 0.40;
+      }
+      var bestL = -1, bestR = -1, runL = -1;
+      for (gx = 0; gx <= w; gx++) {
+        if (gx < w && isNetCol(gx)) {
+          if (runL < 0) runL = gx;
+        } else if (runL >= 0) {
+          if (bestL < 0 || gx - runL > bestR - bestL) { bestL = runL; bestR = gx; }
+          runL = -1;
+        }
+      }
+      if (bestL < 0 || bestR - bestL < 140) return;
+      var L = bestL, R = bestR;
+      while (L > 1 && !isSkyCol(L - 1)) L--;
+      while (R < w && !isSkyCol(R)) R++;
+      if (L > 2 && !isSkyCol(L - 1)) return;
+      if (R < w && !isSkyCol(Math.min(w - 1, R))) return;
+      var cross = y0b;
+      for (gy = grassY - 20; gy > 20; gy--) {
+        var ww = 0, tt = 0, nn = 0;
+        for (gx = L; gx < R; gx += 3) {
+          var co = (gy * w + gx) * 4;
+          nn++;
+          if (d[co + 3] < 40) tt++;
+          else if (isNearWhitePixel(d[co], d[co + 1], d[co + 2])) ww++;
+        }
+        if (nn && ww / nn > 0.35 && tt / nn < 0.45) cross = gy;
+        else if (nn && tt / nn > 0.62 && gy < grassY - 80) break;
+      }
+      function colOpen(x) {
+        var a0 = 0, n = 0, yy;
+        for (yy = cross; yy < grassY; yy += 2) {
+          n++;
+          if (d[(yy * w + x) * 4 + 3] < 40) a0++;
+        }
+        return n && a0 / n > 0.88;
+      }
+      while (R - L > 160 && colOpen(L)) L++;
+      while (R - L > 160 && colOpen(R - 1)) R--;
+      function opaqueNear(x, y, dx, dy) {
+        var dist, nx, ny;
+        for (dist = 1; dist <= 28; dist++) {
+          nx = x + dx * dist; ny = y + dy * dist;
+          if (nx < 0 || ny < 0 || nx >= w || ny >= h) return false;
+          if (d[(ny * w + nx) * 4 + 3] >= 80) return true;
+        }
+        return false;
+      }
+      var pass, filled = 1;
+      for (pass = 0; pass < 3 && filled; pass++) {
+        filled = 0;
+        for (gy = cross; gy < grassY; gy++) {
+          var row = gy * w;
+          for (gx = L; gx < R; gx++) {
+            var id = row + gx;
+            var o = id * 4;
+            if (d[o + 3] >= 40 || ball[id] || claim[id]) continue;
+            var nHit = 0;
+            if (opaqueNear(gx, gy, 1, 0)) nHit++;
+            if (opaqueNear(gx, gy, -1, 0)) nHit++;
+            if (opaqueNear(gx, gy, 0, 1)) nHit++;
+            if (opaqueNear(gx, gy, 0, -1)) nHit++;
+            if (nHit < 3) continue;
+            d[o] = 255; d[o + 1] = 255; d[o + 2] = 255; d[o + 3] = 255;
+            sky[id] = 0;
+            keep[id] = 1;
+            filled++;
           }
         }
       }
-      if (bcomp.length < 80 || bkey > bcomp.length * 0.08 || bkeep < 40) continue;
-      var bi;
-      for (bi = 0; bi < bcomp.length; bi++) {
-        claim[bcomp[bi]] = 0;
-        part[bcomp[bi]] = 0;
-        keep[bcomp[bi]] = 1;
+      for (gy = cross; gy < grassY; gy++) {
+        var row2 = gy * w;
+        for (gx = L; gx < R; gx++) {
+          var id2 = row2 + gx;
+          if (claim[id2] || ball[id2] || part[id2]) continue;
+          var o2 = id2 * 4;
+          if (d[o2 + 3] < 200 || !isNearWhitePixel(d[o2], d[o2 + 1], d[o2 + 2])) continue;
+          sky[id2] = 0;
+          keep[id2] = 1;
+        }
       }
-    }
+    })();
+
+    clearStrayBoots();
+
+    // 皮肤、头发、球衣和鞋边上、夹在色块和墨线之间的抗锯齿，收进那一块。
+    // 眼白是近白，嘴已经标了 keep，都不收。
+    (function claimInkFringe() {
+      var srcPart = new Uint8Array(part);
+      var srcClaim = new Uint8Array(claim);
+      var fp;
+      for (fp = 0; fp < n; fp++) {
+        if (claim[fp] || ball[fp] || sky[fp] || keep[fp] || cls[fp]) continue;
+        var fo = fp * 4;
+        if (d[fo + 3] < 128) continue;
+        var fr = d[fo], fg = d[fo + 1], fb = d[fo + 2];
+        if (isNearWhitePixel(fr, fg, fb) || isGrassPixel(fr, fg, fb)) continue;
+        var fx = fp % w, fy = (fp / w) | 0;
+        var skyN = 0, ink = false, bestPart = 0, bestClaim = 0, bestD = 9;
+        var fdy, fdx;
+        for (fdy = -2; fdy <= 2; fdy++) {
+          var fny = fy + fdy;
+          if (fny < 0 || fny >= h) continue;
+          for (fdx = -2; fdx <= 2; fdx++) {
+            if (!fdx && !fdy) continue;
+            var fnx = fx + fdx;
+            if (fnx < 0 || fnx >= w) continue;
+            var fn = fny * w + fnx;
+            var fdist = Math.max(Math.abs(fdx), Math.abs(fdy));
+            if (sky[fn] || d[fn * 4 + 3] < 40) {
+              if (fdist === 1) skyN++;
+              continue;
+            }
+            var np = srcPart[fn];
+            var no = fn * 4;
+            if (np === 6 || isNeutralDark(d[no], d[no + 1], d[no + 2])) ink = true;
+            if (np >= 1 && np <= 5 && srcClaim[fn] && fdist < bestD) {
+              bestD = fdist;
+              bestPart = np;
+              bestClaim = srcClaim[fn];
+            }
+          }
+        }
+        if (skyN || !ink || !bestPart) continue;
+        claim[fp] = bestClaim;
+        part[fp] = bestPart;
+      }
+    })();
 
     return { w: w, h: h, claim: claim, part: part, ball: ball, sky: sky, grassY: grassY, keep: keep };
   }
@@ -1933,15 +2276,15 @@
       if (pr === 6) rgb = [0, 0, 0];
       else if (pr === 1) {
         var jerseyBase = jerseyRgb(side, p % w, (p / w) | 0);
-        var jerseyKey = side === 1 ? [255, 0, 255] : [255, 136, 0];
-        rgb = clothTone(jerseyBase, d[o], d[o + 1], d[o + 2], jerseyKey);
+        var jerseyKeyLum = side === 1 ? relLum(255, 0, 255) : relLum(255, 136, 0);
+        rgb = shadeRgb(jerseyBase, d[o], d[o + 1], d[o + 2], jerseyKeyLum);
       } else if (pr === 2) {
         var shortBase = hexRgb(kits[side].shorts);
-        var shortKey = side === 1 ? [0, 255, 255] : [136, 0, 255];
-        rgb = clothTone(shortBase, d[o], d[o + 1], d[o + 2], shortKey);
-      } else if (pr === 3) rgb = toneRgb(hexRgb(kits[side].shoes || '#222222'), d[o], d[o + 1], d[o + 2], relLum(255, 0, 136));
-      else if (pr === 4) rgb = toneRgb(hairs[side], d[o], d[o + 1], d[o + 2], hairRef);
-      else if (pr === 5) rgb = toneRgb(skins[side], d[o], d[o + 1], d[o + 2], skinRef);
+        var shortKeyLum = side === 1 ? relLum(0, 255, 255) : relLum(136, 0, 255);
+        rgb = shadeRgb(shortBase, d[o], d[o + 1], d[o + 2], shortKeyLum);
+      } else if (pr === 3) rgb = shadeRgb(hexRgb(kits[side].shoes || '#222222'), d[o], d[o + 1], d[o + 2], relLum(255, 0, 136));
+      else if (pr === 4) rgb = shadeRgb(hairs[side], d[o], d[o + 1], d[o + 2], hairRef);
+      else if (pr === 5) rgb = shadeRgb(skins[side], d[o], d[o + 1], d[o + 2], skinRef);
       if (!rgb) continue;
       d[o] = rgb[0]; d[o + 1] = rgb[1]; d[o + 2] = rgb[2]; d[o + 3] = 255;
     }

@@ -52,6 +52,28 @@ function scaleRgb(rgb, f) {
 function matchesTone(px, rgb) {
   return same(px, rgb) || same(px, scaleRgb(rgb, 0.8)) || same(px, scaleRgb(rgb, 0.85));
 }
+function hsvOf(r, g, b) {
+  var max = Math.max(r, g, b), min = Math.min(r, g, b), d = max - min;
+  var s = max === 0 ? 0 : d / max;
+  var h = 0;
+  if (d) {
+    if (max === r) h = ((g - b) / d) % 6;
+    else if (max === g) h = (b - r) / d + 2;
+    else h = (r - g) / d + 4;
+    h *= 60; if (h < 0) h += 360;
+  }
+  return { h: h, s: s, v: max };
+}
+// 亮度映射之后色相还是这件衣服的。近白近黑的球衣只要求结果也接近中性。
+function shadeOk(px, rgb) {
+  var src = hsvOf(px[0], px[1], px[2]);
+  var dst = hsvOf(rgb[0], rgb[1], rgb[2]);
+  if (src.v < 28) return true;
+  if (dst.s < 0.18) return src.s < 0.32;
+  var dh = Math.abs(src.h - dst.h);
+  if (dh > 180) dh = 360 - dh;
+  return src.s > 0.1 && dh < 18;
+}
 function nearScale(px, rgb) {
   if (same(px, rgb)) return true;
   var prev = -1;
@@ -140,21 +162,23 @@ poses.forEach(function (pose) {
       var part = mask.part[idx];
       if (part === 1 && claim === 1) {
         jerseyA++;
-        var hitA = matchesTone(px, aColors[0]) || matchesTone(px, aColors[1]);
+        var hitA = shadeOk(px, aColors[0]) || shadeOk(px, aColors[1]);
         if (!hitA) badA++;
         else if (same(px, aColors[0]) || same(px, aColors[1])) aSeen[px.join(',')] = 1;
       } else if (part === 1 && claim === 2) {
         jerseyB++;
-        var hitB = matchesTone(px, bColors[0]) || matchesTone(px, bColors[1]);
+        var hitB = shadeOk(px, bColors[0]) || shadeOk(px, bColors[1]);
         if (!hitB) badB++;
         else if (same(px, bColors[0]) || same(px, bColors[1])) bSeen[px.join(',')] = 1;
-      } else if (part === 2 && claim === 1 && !matchesTone(px, aShort)) badAS++;
-      else if (part === 2 && claim === 2 && !matchesTone(px, bShort)) badBS++;
-      else if (part === 3 && claim === 1 && !nearScale(px, aShoe)) badA++;
-      else if (part === 3 && claim === 2 && !nearScale(px, bShoe)) badB++;
+      } else if (part === 2 && claim === 1 && !shadeOk(px, aShort)) badAS++;
+      else if (part === 2 && claim === 2 && !shadeOk(px, bShort)) badBS++;
+      else if (part === 3 && claim === 1 && !shadeOk(px, aShoe)) badA++;
+      else if (part === 3 && claim === 2 && !shadeOk(px, bShoe)) badB++;
       if (claim && part && part !== 6 && data[p + 3] > 200 && nearWhite(px[0], px[1], px[2])) {
         var allowed = aColors.concat(bColors, [aShort, bShort, aShoe, bShoe]).some(function (c) { return same(px, c); });
-        if (!allowed) stray++;
+        var piece = part === 1 ? (claim === 1 ? aColors : bColors) : part === 2 ? [claim === 1 ? aShort : bShort] : part === 3 ? [claim === 1 ? aShoe : bShoe] : [];
+        var lightPiece = piece.some(function (c) { return nearWhite(c[0], c[1], c[2]); });
+        if (!allowed && !lightPiece) stray++;
       }
       if (mask.ball && mask.ball[idx]) {
         ballN++;
@@ -469,6 +493,117 @@ poses.forEach(function (pose) {
       ok(bootBlock === 0, tag + ' 球门下没有整块鞋色', String(bootBlock));
       ok(skinClash < 250, tag + ' 同一个人皮肤只有一个底色', String(skinClash));
       if (/goal|gk_|hit_post|round_gk|shot_wide/.test(pose)) ok(netSky === 0, tag + ' 球网格子没有被抠成天空', String(netSky));
+      // 两只鞋都跟着这块人的短裤，不能一只红一只金。
+      (function () {
+        var ww = base.width, hh = base.height, nn = ww * hh;
+        var sSeen = new Uint8Array(nn);
+        var sSize = new Uint32Array(nn);
+        var sp;
+        for (sp = 0; sp < nn; sp++) {
+          if (sSeen[sp] || mask.part[sp] !== 2) continue;
+          var sq = [sp]; sSeen[sp] = 1;
+          var sc = [sp];
+          for (var sqi = 0; sqi < sq.length; sqi++) {
+            var sid = sq[sqi];
+            var sx = sid % ww, sy = (sid / ww) | 0;
+            for (var sdy = -1; sdy <= 1; sdy++) {
+              var sny = sy + sdy; if (sny < 0 || sny >= hh) continue;
+              for (var sdx = -1; sdx <= 1; sdx++) {
+                if (!sdx && !sdy) continue;
+                var snx = sx + sdx; if (snx < 0 || snx >= ww) continue;
+                var sn = sny * ww + snx;
+                if (sSeen[sn] || mask.part[sn] !== 2) continue;
+                sSeen[sn] = 1; sq.push(sn); sc.push(sn);
+              }
+            }
+          }
+          for (var sci = 0; sci < sc.length; sci++) sSize[sc[sci]] = sc.length;
+        }
+        var bSeen = new Uint8Array(nn);
+        var mismatch = 0, boots = 0;
+        for (sp = 0; sp < nn; sp++) {
+          if (bSeen[sp] || mask.part[sp] !== 3) continue;
+          var bq = [sp]; bSeen[sp] = 1;
+          var bc = [sp];
+          for (var bqi = 0; bqi < bq.length; bqi++) {
+            var bid = bq[bqi];
+            var bx = bid % ww, by = (bid / ww) | 0;
+            for (var bdy = -1; bdy <= 1; bdy++) {
+              var bny = by + bdy; if (bny < 0 || bny >= hh) continue;
+              for (var bdx = -1; bdx <= 1; bdx++) {
+                if (!bdx && !bdy) continue;
+                var bnx = bx + bdx; if (bnx < 0 || bnx >= ww) continue;
+                var bn = bny * ww + bnx;
+                if (bSeen[bn] || mask.part[bn] !== 3) continue;
+                bSeen[bn] = 1; bq.push(bn); bc.push(bn);
+              }
+            }
+          }
+          if (bc.length < 400) continue;
+          boots++;
+          var stamp = new Uint8Array(nn);
+          var fq = bc.slice();
+          var fd = [];
+          for (var fi = 0; fi < fq.length; fi++) { stamp[fq[fi]] = 1; fd.push(0); }
+          var best = [0, 1e9, 1e9];
+          var hits = [0, 0, 0];
+          for (var fqi = 0; fqi < fq.length; fqi++) {
+            var dist = fd[fqi];
+            if (dist >= 84) continue;
+            var fx = fq[fqi] % ww, fy = (fq[fqi] / ww) | 0;
+            for (var fdy = -1; fdy <= 1; fdy++) {
+              var fny = fy + fdy; if (fny < 0 || fny >= hh) continue;
+              for (var fdx = -1; fdx <= 1; fdx++) {
+                if (!fdx && !fdy) continue;
+                var fnx = fx + fdx; if (fnx < 0 || fnx >= ww) continue;
+                var fn = fny * ww + fnx;
+                if (stamp[fn]) continue;
+                var fp = mask.part[fn];
+                var fc = mask.claim[fn];
+                if (fp === 2 && fc && sSize[fn] >= 200) {
+                  if (dist + 1 < best[fc]) best[fc] = dist + 1;
+                  hits[fc]++;
+                  stamp[fn] = 1;
+                  continue;
+                }
+                if (fp === 3 || fp === 1 || (mask.keep && mask.keep[fn]) || (mask.ball && mask.ball[fn]) || (mask.sky && mask.sky[fn])) continue;
+                var fo = fn * 4;
+                var fr = base.data[fo], fg = base.data[fo + 1], fb = base.data[fo + 2], fa = base.data[fo + 3];
+                if (fa < 128) continue;
+                var ggrass = fg > fr + 8 && fg + 8 >= fb && fb < fg * 0.55 && fg > 55;
+                var mx = Math.max(fr, fg, fb), mn = Math.min(fr, fg, fb);
+                var white = mx > 210 && mx - mn < 28 && mn > 185;
+                if (ggrass || white) continue;
+                var body = fp === 4 || fp === 5 || fp === 6 || (mx < 70 && mx - mn < 28) || (fp === 2 && sSize[fn] < 200);
+                if (!body) continue;
+                stamp[fn] = 1;
+                fq.push(fn);
+                fd.push(dist + 1);
+              }
+            }
+          }
+          var side = mask.claim[sp];
+          if (best[1] < 1e8 || best[2] < 1e8) {
+            var want;
+            if (best[1] + 8 < best[2]) want = 1;
+            else if (best[2] + 8 < best[1]) want = 2;
+            else if (hits[1] !== hits[2]) want = hits[1] > hits[2] ? 1 : 2;
+            else want = best[1] <= best[2] ? 1 : 2;
+            if (side !== want) mismatch++;
+          }
+        }
+        ok(mismatch === 0, tag + ' 两只鞋跟球袜短裤一边', mismatch + '/' + boots);
+      })();
+      if (pose === 'gk_tip_over') {
+        var holes = 0;
+        var hw = base.width;
+        for (var hy = 180; hy < 640; hy++) {
+          for (var hx = 120; hx < 520; hx++) {
+            if (base.data[(hy * hw + hx) * 4 + 3] < 40) holes++;
+          }
+        }
+        ok(holes < 800, tag + ' 倒地球门左侧网格不再透天', String(holes));
+      }
       var keeperPose = /goal|gk_|hit_post|round_gk|shot_wide/.test(pose);
       if (keeperPose) ok(netN > 400 && netChanged === 0, tag + ' 球网和门柱像素没变', netChanged + '/' + netN);
     }
@@ -476,10 +611,73 @@ poses.forEach(function (pose) {
     ok(hairB.n < 40 || hairB.big <= 1, tag + ' B 头发只有一个色相', hairB.n + '/' + hairB.big);
     ok(skinA.n < 40 || skinA.big <= 1, tag + ' A 皮肤只有一个色相', skinA.n + '/' + skinA.big);
     ok(skinB.n < 40 || skinB.big <= 1, tag + ' B 皮肤只有一个色相', skinB.n + '/' + skinB.big);
-    ok(skinLA.total < 80 || skinLA.basePct >= 0.6, tag + ' A 皮肤底色占六成', skinLA.basePct.toFixed(2));
-    ok(skinLB.total < 80 || skinLB.basePct >= 0.6, tag + ' B 皮肤底色占六成', skinLB.basePct.toFixed(2));
-    ok(skinLA.total < 80 || skinLA.ratio >= 0.75, tag + ' A 皮肤明暗比', skinLA.ratio.toFixed(2));
-    ok(skinLB.total < 80 || skinLB.ratio >= 0.75, tag + ' B 皮肤明暗比', skinLB.ratio.toFixed(2));
+    ok(skinLA.total < 80 || skinLA.basePct >= 0.45, tag + ' A 皮肤底色还在', skinLA.basePct.toFixed(2));
+    ok(skinLB.total < 80 || skinLB.basePct >= 0.45, tag + ' B 皮肤底色还在', skinLB.basePct.toFixed(2));
+    // 墨线 3px 内的皮肤不能偏色，也不能比这块皮肤的中位色亮出 25%。源图本来更亮的高光除外。
+    function skinInkEdge(side) {
+      var ww = base.width, hh = base.height;
+      var lums = [];
+      var hues = [];
+      var keyLum = (0.299 * 240 + 0.587 * 200 + 0.114 * 160) / 255;
+      var i, o, hs, lum;
+      for (i = 0; i < mask.claim.length; i++) {
+        if (mask.claim[i] !== side || mask.part[i] !== 5) continue;
+        o = i * 4;
+        if (data[o + 3] < 200) continue;
+        lum = (0.299 * data[o] + 0.587 * data[o + 1] + 0.114 * data[o + 2]) / 255;
+        lums.push(lum);
+        hs = hueSat(data[o], data[o + 1], data[o + 2]);
+        if (hs.s >= 0.18) hues.push(hs.h);
+      }
+      if (lums.length < 40) return { bad: 0, n: 0 };
+      lums.sort(function (a, b) { return a - b; });
+      hues.sort(function (a, b) { return a - b; });
+      var medL = lums[(lums.length / 2) | 0];
+      var medH = hues.length ? hues[(hues.length / 2) | 0] : 0;
+      var bad = 0, n = 0;
+      function inkAt(id) {
+        if (mask.part[id] === 6) return true;
+        var z = id * 4;
+        var r = base.data[z], g = base.data[z + 1], b = base.data[z + 2], a = base.data[z + 3];
+        if (a < 80) return false;
+        var mx = Math.max(r, g, b), mn = Math.min(r, g, b);
+        return mx < 70 && (mx - mn) < 28;
+      }
+      for (i = 0; i < mask.claim.length; i++) {
+        if (mask.claim[i] !== side || mask.part[i] !== 5) continue;
+        var x = i % ww, y = (i / ww) | 0;
+        var nearInk = false;
+        var dy, dx;
+        for (dy = -3; dy <= 3 && !nearInk; dy++) {
+          var ny = y + dy; if (ny < 0 || ny >= hh) continue;
+          for (dx = -3; dx <= 3; dx++) {
+            if (!dx && !dy) continue;
+            if (Math.max(Math.abs(dx), Math.abs(dy)) > 3) continue;
+            var nx = x + dx; if (nx < 0 || nx >= ww) continue;
+            if (inkAt(ny * ww + nx)) { nearInk = true; break; }
+          }
+        }
+        if (!nearInk) continue;
+        o = i * 4;
+        if (data[o + 3] < 200) continue;
+        n++;
+        var srcLum = (0.299 * base.data[o] + 0.587 * base.data[o + 1] + 0.114 * base.data[o + 2]) / 255;
+        lum = (0.299 * data[o] + 0.587 * data[o + 1] + 0.114 * data[o + 2]) / 255;
+        if (srcLum > keyLum + 0.03) continue;
+        hs = hueSat(data[o], data[o + 1], data[o + 2]);
+        // 贴着墨线、已经收成黑色的像素没有稳定色相。
+        if (lum < 0.06) continue;
+        var dh = Math.abs(hs.h - medH);
+        if (dh > 180) dh = 360 - dh;
+        var hueBad = hues.length > 20 && hs.s > 0.18 && dh > 15;
+        var lightBad = lum > medL * 1.25 + 0.02;
+        if (hueBad || lightBad) bad++;
+      }
+      return { bad: bad, n: n };
+    }
+    var edgeA = skinInkEdge(1), edgeB = skinInkEdge(2);
+    ok(edgeA.n < 30 || edgeA.bad <= 3, tag + ' A 墨线边皮肤不发白不偏色', edgeA.bad + '/' + edgeA.n);
+    ok(edgeB.n < 30 || edgeB.bad <= 3, tag + ' B 墨线边皮肤不发白不偏色', edgeB.bad + '/' + edgeB.n);
     ok(bootWhite === 0, tag + ' 球鞋没有剩半块白', String(bootWhite));
     ok(bootA.n < 40 || bootA.pct >= 0.9, tag + ' A 球鞋九成是鞋的色相', bootA.pct.toFixed(2));
     ok(bootB.n < 40 || bootB.pct >= 0.9, tag + ' B 球鞋九成是鞋的色相', bootB.pct.toFixed(2));
