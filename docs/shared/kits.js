@@ -681,6 +681,39 @@
     ];
   }
 
+  // 同一色相按比例压暗。饱和度不升，也不会比目标更红。
+  function darkerSame(rgb, frac) {
+    return [
+      Math.max(0, Math.min(255, Math.round(rgb[0] * frac))),
+      Math.max(0, Math.min(255, Math.round(rgb[1] * frac))),
+      Math.max(0, Math.min(255, Math.round(rgb[2] * frac))),
+    ];
+  }
+
+  // 真正的墨线是近黑、几乎没有色相。暗红的 (22,0,0) 是皮肤线，不是墨。
+  function isNeutralInkPx(r, g, b) {
+    var mx = r > g ? r : g; if (b > mx) mx = b;
+    var mn = r < g ? r : g; if (b < mn) mn = b;
+    if (mx < 16) return true;
+    return mx < 46 && (mx - mn) < 12;
+  }
+
+  function isSkinKeyPx(r, g, b) {
+    return Math.abs(r - 240) <= 16 && Math.abs(g - 200) <= 16 && Math.abs(b - 160) <= 20 && r > g && g >= b - 8;
+  }
+
+  function isKitKeyPx(r, g, b) {
+    if (Math.abs(r - 255) + g + Math.abs(b - 255) <= 36) return true;
+    if (Math.abs(r - 255) + Math.abs(g - 136) + b <= 36) return true;
+    if (r + Math.abs(g - 255) + Math.abs(b - 255) <= 36) return true;
+    if (Math.abs(r - 136) + g + Math.abs(b - 255) <= 48) return true;
+    if (Math.abs(r - 255) + g + Math.abs(b - 136) <= 42 && b > 70) return true;
+    if (r < 50 && g < 50 && b > 150) return true;
+    return false;
+  }
+
+  var SKIN_KEY_LUM = relLum(240, 200, 160);
+
   function grassLineY(d, w, h) {
     var y, x, i, g, k, s;
     for (y = 0; y < h - 8; y++) {
@@ -1936,101 +1969,390 @@
     }
     clearStrayBoots();
 
-    // 脸上的小块品红或红是嘴，不是鞋。色键嘴涂成固定的舌粉和口腔暗红，牙齿留白。
+    // 白球衣上散落的鞋色键是 JPG 把品红压暗了，涂成鞋会变成黄点。并回那件球衣。
+    // 脸上的小块鞋色是嘴或皮肤线，先放开，交给后面的嘴和皮肤线。
+    (function reclaimClothSpecks() {
+      var seen = new Uint8Array(n);
+      var p0;
+      for (p0 = 0; p0 < n; p0++) {
+        if (seen[p0] || part[p0] !== 3) continue;
+        var q = [p0]; seen[p0] = 1;
+        var comp = [p0];
+        var qi = 0, minY = h, maxY = 0, minX = w, maxX = 0;
+        while (qi < q.length) {
+          var id = q[qi++];
+          var x = id % w, y = (id / w) | 0;
+          if (y < minY) minY = y; if (y > maxY) maxY = y;
+          if (x < minX) minX = x; if (x > maxX) maxX = x;
+          var dy, dx;
+          for (dy = -1; dy <= 1; dy++) {
+            var ny = y + dy; if (ny < 0 || ny >= h) continue;
+            for (dx = -1; dx <= 1; dx++) {
+              if (!dx && !dy) continue;
+              var nx = x + dx; if (nx < 0 || nx >= w) continue;
+              var nid = ny * w + nx;
+              if (seen[nid] || part[nid] !== 3) continue;
+              seen[nid] = 1; q.push(nid); comp.push(nid);
+            }
+          }
+        }
+        if (comp.length >= 320) continue;
+        var skinN = 0, jerseyN = 0, shortN = 0;
+        var jerseySideN = [0, 0, 0];
+        var ci, dy2, dx2;
+        for (ci = 0; ci < comp.length; ci++) {
+          var cx = comp[ci] % w, cy = (comp[ci] / w) | 0;
+          for (dy2 = -2; dy2 <= 2; dy2++) {
+            var ny2 = cy + dy2; if (ny2 < 0 || ny2 >= h) continue;
+            for (dx2 = -2; dx2 <= 2; dx2++) {
+              if (!dx2 && !dy2) continue;
+              var nx2 = cx + dx2; if (nx2 < 0 || nx2 >= w) continue;
+              var nn = ny2 * w + nx2;
+              var np = part[nn];
+              if (np === 5) skinN++;
+              else if (np === 1 && jerseySize[nn] >= 150) { jerseyN++; jerseySideN[claim[nn]]++; }
+              else if (np === 2 && shortSize[nn] >= 200) shortN++;
+            }
+          }
+        }
+        var midY = (minY + maxY) >> 1;
+        var bi;
+        if (comp.length < 160 && jerseyN > comp.length * 4 && shortN * 5 < jerseyN && skinN * 2 < jerseyN) {
+          var side = jerseySideN[1] >= jerseySideN[2] ? 1 : 2;
+          if (!jerseySideN[side]) continue;
+          for (bi = 0; bi < comp.length; bi++) {
+            claim[comp[bi]] = side;
+            part[comp[bi]] = 1;
+          }
+        } else if (skinN > 24 && skinN > jerseyN && (
+          (comp.length < 100 && skinN > shortN * 3 && (!grassY || midY < grassY - 80))
+          || (comp.length < 320 && (maxX - minX) < 40 && (maxY - minY) < 28
+            && skinN > shortN * 4 && skinN > comp.length
+            && (!grassY || midY < grassY - 80))
+        )) {
+          // 脸上的小块鞋色。真鞋贴着短裤，而且比 40×28 大。
+          for (bi = 0; bi < comp.length; bi++) {
+            claim[comp[bi]] = 0;
+            part[comp[bi]] = 0;
+          }
+        }
+      }
+    })();
+
+    // 张开的嘴：牙齿 #f8f8f8，口腔 #7a1f24，舌头 #d86a78。皮肤上的红褐线不进嘴。
     (function sealMouths() {
-      var seenM = new Uint8Array(n);
-      function mouthish(r, g, b) {
-        var bootD = Math.abs(r - 255) + g + Math.abs(b - 136);
-        if (bootD <= 48 && b > 70 && g < 80) return true;
-        if (r > 70 && r > g + 18 && r > b + 18 && b < 110 && g < 130 && !(b < 90 && g > 160 && r > 160)) return true;
-        if (r > 16 && r < 90 && g < 36 && b < 36 && r > g + 8 && r > b + 8) return true;
+      function satOf(r, g, b) {
+        var mx = r > g ? r : g; if (b > mx) mx = b;
+        var mn = r < g ? r : g; if (b < mn) mn = b;
+        return mx ? (mx - mn) / mx : 0;
+      }
+      function isTongue(r, g, b) {
+        return Math.abs(r - 255) + g + Math.abs(b - 136) <= 48 && b > 80 && b > g + 30 && g < 80;
+      }
+      function isTooth(r, g, b) {
+        var mn = r < g ? r : g; if (b < mn) mn = b;
+        return relLum(r, g, b) > 0.62 && satOf(r, g, b) < 0.2 && mn > 175;
+      }
+      function isPink(r, g, b) {
+        return r > 155 && g < 155 && b < 155 && r > g + 40 && Math.abs(g - b) < 50 && g > 30;
+      }
+      function isOrangeSpeck(r, g, b) {
+        return r > 200 && g > 70 && g < 190 && b < 70;
+      }
+      var seeds = [];
+      var seedMark = new Uint8Array(n);
+      var p0;
+      for (p0 = 0; p0 < n; p0++) {
+        if (ball[p0] || sky[p0]) continue;
+        var o = p0 * 4;
+        if (d[o + 3] < 128 || !isTooth(d[o], d[o + 1], d[o + 2])) continue;
+        var x = p0 % w, y = (p0 / w) | 0;
+        if (part[p0] === 1 && jerseySize[p0] >= 150) continue;
+        var near = false, dy, dx;
+        for (dy = -4; dy <= 4 && !near; dy++) {
+          var ny = y + dy; if (ny < 0 || ny >= h) continue;
+          for (dx = -4; dx <= 4; dx++) {
+            var nx = x + dx; if (nx < 0 || nx >= w) continue;
+            if (part[ny * w + nx] === 5) { near = true; break; }
+          }
+        }
+        if (!near) continue;
+        seedMark[p0] = 1;
+        seeds.push(p0);
+      }
+      var seen = new Uint8Array(n);
+      var si;
+      for (si = 0; si < seeds.length; si++) {
+        if (seen[seeds[si]]) continue;
+        var q = [seeds[si]]; seen[seeds[si]] = 1;
+        var comp = [seeds[si]];
+        var qi = 0, minX = w, maxX = 0, minY = h, maxY = 0;
+        while (qi < q.length) {
+          var id = q[qi++];
+          var x = id % w, y = (id / w) | 0;
+          if (x < minX) minX = x; if (x > maxX) maxX = x;
+          if (y < minY) minY = y; if (y > maxY) maxY = y;
+          var dy, dx;
+          for (dy = -3; dy <= 3; dy++) {
+            var ny = y + dy; if (ny < 0 || ny >= h) continue;
+            for (dx = -3; dx <= 3; dx++) {
+              if (!dx && !dy) continue;
+              if (Math.max(Math.abs(dx), Math.abs(dy)) > 3) continue;
+              var nx = x + dx; if (nx < 0 || nx >= w) continue;
+              var nid = ny * w + nx;
+              if (!seedMark[nid] || seen[nid]) continue;
+              seen[nid] = 1; q.push(nid); comp.push(nid);
+            }
+          }
+        }
+        var pi;
+        for (pi = 0; pi < comp.length; pi++) {
+          var pid = comp[pi];
+          var po = pid * 4;
+          d[po] = d[po + 1] = d[po + 2] = 248;
+          d[po + 3] = 255;
+          claim[pid] = 0; part[pid] = 0; keep[pid] = 1; sky[pid] = 0;
+        }
+        if (comp.length < 6) continue;
+        if ((maxX - minX) > 42 || (maxY - minY) > 34) continue;
+        var x0 = Math.max(0, minX - 1), x1 = Math.min(w - 1, maxX + 1);
+        var y0 = Math.max(0, minY - 1), y1 = Math.min(h - 1, maxY + 1);
+        var ey, ex;
+        for (ey = y0; ey <= y1; ey++) for (ex = x0; ex <= x1; ex++) {
+          var eid = ey * w + ex;
+          if (keep[eid] || ball[eid] || sky[eid]) continue;
+          if (part[eid] === 4) continue;
+          if (part[eid] === 1 && jerseySize[eid] >= 150) continue;
+          var eo = eid * 4;
+          var er = d[eo], eg = d[eo + 1], eb = d[eo + 2], ea = d[eo + 3];
+          if (ea < 128 || isSkinKeyPx(er, eg, eb) || isNeutralInkPx(er, eg, eb)) continue;
+          var gap = isPink(er, eg, eb) || isTongue(er, eg, eb) || isOrangeSpeck(er, eg, eb) || satOf(er, eg, eb) < 0.28;
+          if (!gap) continue;
+          var touch = 0, tdy, tdx;
+          for (tdy = -2; tdy <= 2 && touch < 2; tdy++) {
+            var tny = ey + tdy; if (tny < minY || tny > maxY) continue;
+            for (tdx = -2; tdx <= 2; tdx++) {
+              var tnx = ex + tdx; if (tnx < minX || tnx > maxX) continue;
+              if (seedMark[tny * w + tnx]) touch++;
+            }
+          }
+          if (touch < 2) continue;
+          if (isTongue(er, eg, eb)) { d[eo] = 216; d[eo + 1] = 106; d[eo + 2] = 120; }
+          else { d[eo] = 122; d[eo + 1] = 31; d[eo + 2] = 36; }
+          d[eo + 3] = 255;
+          claim[eid] = 0; part[eid] = 0; keep[eid] = 1; sky[eid] = 0;
+        }
+      }
+      var gp;
+      for (gp = 0; gp < n; gp++) {
+        if (keep[gp] || ball[gp] || sky[gp] || seedMark[gp]) continue;
+        if (part[gp] === 4) continue;
+        if (part[gp] === 1 && jerseySize[gp] >= 150) continue;
+        var go = gp * 4;
+        var gr = d[go], gg = d[go + 1], gb = d[go + 2], ga = d[go + 3];
+        if (ga < 128 || isSkinKeyPx(gr, gg, gb) || isNeutralInkPx(gr, gg, gb)) continue;
+        var gap = isPink(gr, gg, gb) || isTongue(gr, gg, gb) || isOrangeSpeck(gr, gg, gb) || satOf(gr, gg, gb) < 0.28;
+        if (!gap) continue;
+        var gx = gp % w, gy = (gp / w) | 0, touch = 0, tdy, tdx;
+        for (tdy = -2; tdy <= 2 && touch < 4; tdy++) {
+          var tny = gy + tdy; if (tny < 0 || tny >= h) continue;
+          for (tdx = -2; tdx <= 2; tdx++) {
+            var tnx = gx + tdx; if (tnx < 0 || tnx >= w) continue;
+            if (seedMark[tny * w + tnx]) touch++;
+          }
+        }
+        if (touch < 4) continue;
+        if (isTongue(gr, gg, gb)) { d[go] = 216; d[go + 1] = 106; d[go + 2] = 120; }
+        else { d[go] = 122; d[go + 1] = 31; d[go + 2] = 36; }
+        d[go + 3] = 255;
+        claim[gp] = 0; part[gp] = 0; keep[gp] = 1; sky[gp] = 0;
+      }
+      // 牙缝里的灰点和嘴下方没被牙床围住的口腔：左右都是皮肤或牙，就铺平。
+      function barrierAt(id) {
+        if (ball[id] || sky[id]) return true;
+        if (part[id] === 5 || part[id] === 4 || part[id] === 6) return true;
+        if (part[id] === 1 && jerseySize[id] >= 150) return true;
+        if (part[id] === 2 && shortSize[id] >= 200) return true;
+        var o = id * 4;
+        var r = d[o], g = d[o + 1], b = d[o + 2];
+        if (isNeutralInkPx(r, g, b)) return true;
+        if (r === 248 && g === 248 && b === 248) return true;
+        if (r === 122 && g === 31 && b === 36) return true;
+        if (r === 216 && g === 106 && b === 120) return true;
         return false;
       }
-      function tongueKey(r, g, b) {
-        return Math.abs(r - 255) + g + Math.abs(b - 136) <= 56 && b > 70 && b > g;
+      function nearWhiteMouth(r, g, b) {
+        var mx = r > g ? r : g; if (b > mx) mx = b;
+        var mn = r < g ? r : g; if (b < mn) mn = b;
+        return mn > 188 && (mx - mn) < 30;
       }
-      var mp;
-      for (mp = 0; mp < n; mp++) {
-        if (seenM[mp] || ball[mp] || sky[mp]) continue;
-        var mo = mp * 4;
-        if (d[mo + 3] < 128 || !mouthish(d[mo], d[mo + 1], d[mo + 2])) { seenM[mp] = 1; continue; }
-        var mq = [mp]; seenM[mp] = 1;
-        var mids = [mp];
-        var mqi = 0, minX = w, maxX = 0, minY = h, maxY = 0;
-        while (mqi < mq.length) {
-          var mid = mq[mqi++];
-          var mx = mid % w, my = (mid / w) | 0;
-          if (mx < minX) minX = mx; if (mx > maxX) maxX = mx;
-          if (my < minY) minY = my; if (my > maxY) maxY = my;
-          var mdy, mdx;
-          for (mdy = -1; mdy <= 1; mdy++) {
-            var mny = my + mdy; if (mny < 0 || mny >= h) continue;
-            for (mdx = -1; mdx <= 1; mdx++) {
-              if (!mdx && !mdy) continue;
-              var mnx = mx + mdx; if (mnx < 0 || mnx >= w) continue;
-              var mnid = mny * w + mnx;
-              if (seenM[mnid] || ball[mnid] || sky[mnid]) continue;
-              var mno = mnid * 4;
-              if (d[mno + 3] < 128 || !mouthish(d[mno], d[mno + 1], d[mno + 2])) continue;
-              seenM[mnid] = 1; mq.push(mnid); mids.push(mnid);
+      function mouthInterior(r, g, b) {
+        if (isPink(r, g, b) || isTongue(r, g, b) || isOrangeSpeck(r, g, b)) return true;
+        if (r > g + 12 && r > b + 12 && relLum(r, g, b) < 0.72) return true;
+        if (satOf(r, g, b) < 0.35 && relLum(r, g, b) < 0.55) return true;
+        return false;
+      }
+      var seenBox = new Uint8Array(n);
+      var bi2;
+      for (bi2 = 0; bi2 < seeds.length; bi2++) {
+        if (seenBox[seeds[bi2]]) continue;
+        var bq = [seeds[bi2]]; seenBox[seeds[bi2]] = 1;
+        var bcomp = [seeds[bi2]];
+        var bqi = 0, bminX = w, bmaxX = 0, bminY = h, bmaxY = 0, redN = 0;
+        while (bqi < bq.length) {
+          var bid = bq[bqi++];
+          var bx = bid % w, by = (bid / w) | 0;
+          if (bx < bminX) bminX = bx; if (bx > bmaxX) bmaxX = bx;
+          if (by < bminY) bminY = by; if (by > bmaxY) bmaxY = by;
+          var bdy, bdx;
+          for (bdy = -3; bdy <= 3; bdy++) {
+            var bny = by + bdy; if (bny < 0 || bny >= h) continue;
+            for (bdx = -3; bdx <= 3; bdx++) {
+              if (!bdx && !bdy) continue;
+              var bnx = bx + bdx; if (bnx < 0 || bnx >= w) continue;
+              var bnid = bny * w + bnx;
+              if (!seedMark[bnid] || seenBox[bnid]) continue;
+              seenBox[bnid] = 1; bq.push(bnid); bcomp.push(bnid);
             }
           }
         }
-        var marea = mids.length;
-        if (marea < 8 || marea > 520) continue;
-        var bwM = maxX - minX + 1, bhM = maxY - minY + 1;
-        if (Math.max(bwM, bhM) > 48) continue;
-        var skinT = 0, clothT = 0, grassT = 0;
-        var mi;
-        for (mi = 0; mi < mids.length; mi++) {
-          var tx = mids[mi] % w, ty = (mids[mi] / w) | 0;
-          var tdy, tdx;
-          for (tdy = -2; tdy <= 2; tdy++) {
-            var tny = ty + tdy; if (tny < 0 || tny >= h) continue;
-            for (tdx = -2; tdx <= 2; tdx++) {
-              if (!tdx && !tdy) continue;
-              var tnx = tx + tdx; if (tnx < 0 || tnx >= w) continue;
-              var tn = tny * w + tnx;
-              var tp = part[tn];
-              if (tp === 5 || tp === 4 || cls[tn] === 'skin' || cls[tn] === 'hair') skinT++;
-              else if (tp === 1 || tp === 2) clothT++;
-              else {
-                var to = tn * 4;
-                if (isGrassPixel(d[to], d[to + 1], d[to + 2])) grassT++;
-              }
+        if (bcomp.length < 8) continue;
+        if ((bmaxX - bminX) > 42 || (bmaxY - bminY) > 34) continue;
+        var ry, rx;
+        var yLo = Math.max(0, bminY - 1), yHi = Math.min(h - 1, bmaxY + 14);
+        var xLo = Math.max(0, bminX - 8), xHi = Math.min(w - 1, bmaxX + 8);
+        for (ry = yLo; ry <= yHi; ry++) for (rx = xLo; rx <= xHi; rx++) {
+          var rid = ry * w + rx;
+          if (ball[rid] || sky[rid] || barrierAt(rid)) continue;
+          var ro = rid * 4;
+          if (d[ro + 3] < 128) continue;
+          if (mouthInterior(d[ro], d[ro + 1], d[ro + 2])) redN++;
+        }
+        var allowCavity = redN >= 4;
+        for (ry = yLo; ry <= yHi; ry++) {
+          var leftB = -1, rightB = -1, sx;
+          for (sx = bminX; sx >= xLo; sx--) if (barrierAt(ry * w + sx)) { leftB = sx; break; }
+          for (sx = bmaxX; sx <= xHi; sx++) if (barrierAt(ry * w + sx)) { rightB = sx; break; }
+          if (leftB < 0 || rightB < 0 || rightB - leftB < 3) continue;
+          if (rightB - leftB > (bmaxX - bminX) + 14) continue;
+          for (sx = leftB + 1; sx < rightB; sx++) {
+            var mid = ry * w + sx;
+            if (ball[mid] || sky[mid] || barrierAt(mid)) continue;
+            if (part[mid] === 1 && jerseySize[mid] >= 150) continue;
+            if (part[mid] === 2 && shortSize[mid] >= 200) continue;
+            var mo = mid * 4;
+            var mr = d[mo], mg = d[mo + 1], mb = d[mo + 2], ma = d[mo + 3];
+            if (ma < 128) continue;
+            var toothish = nearWhiteMouth(mr, mg, mb) || (satOf(mr, mg, mb) < 0.22 && relLum(mr, mg, mb) > 0.42);
+            if (toothish) {
+              d[mo] = d[mo + 1] = d[mo + 2] = 248;
+            } else if (!allowCavity || !mouthInterior(mr, mg, mb)) {
+              continue;
+            } else if (isTongue(mr, mg, mb)) {
+              d[mo] = 216; d[mo + 1] = 106; d[mo + 2] = 120;
+            } else {
+              d[mo] = 122; d[mo + 1] = 31; d[mo + 2] = 36;
             }
+            d[mo + 3] = 255;
+            claim[mid] = 0; part[mid] = 0; keep[mid] = 1; sky[mid] = 0;
           }
         }
-        if (skinT < 12 || clothT > skinT || grassT > skinT) continue;
-        // 脚边的鞋在草皮线上。嘴在头上，不贴着大块短裤。
-        var cyM = (minY + maxY) >> 1, cxM = (minX + maxX) >> 1;
-        if (grassY && cyM > grassY - 70) continue;
-        var nearShort = false;
-        var sy, sx2;
-        for (sy = Math.max(0, cyM - 28); sy <= Math.min(h - 1, cyM + 36) && !nearShort; sy += 2) {
-          for (sx2 = Math.max(0, cxM - 28); sx2 <= Math.min(w - 1, cxM + 28); sx2 += 2) {
-            var sn = sy * w + sx2;
-            if (part[sn] === 2 && shortSize[sn] >= 200) { nearShort = true; break; }
+      }
+    })();
+
+    // 已经被网线保护住、但贴着皮肤的暗红线，不是网，改回皮肤线。
+    (function releaseKeptSkinLines() {
+      var lp;
+      for (lp = 0; lp < n; lp++) {
+        if (!keep[lp] || ball[lp] || sky[lp]) continue;
+        var lo = lp * 4;
+        var lr = d[lo], lg = d[lo + 1], lb = d[lo + 2];
+        if (lr === 248 && lg === 248 && lb === 248) continue;
+        if (lr === 122 && lg === 31 && lb === 36) continue;
+        if (lr === 216 && lg === 106 && lb === 120) continue;
+        if (isNeutralInkPx(lr, lg, lb) || isNearWhitePixel(lr, lg, lb)) continue;
+        var mx = lr > lg ? lr : lg; if (lb > mx) mx = lb;
+        var mn = lr < lg ? lr : lg; if (lb < mn) mn = lb;
+        if (!mx || (mx - mn) / mx < 0.28) continue;
+        if (relLum(lr, lg, lb) >= SKIN_KEY_LUM - 0.08) continue;
+        var lx = lp % w, ly = (lp / w) | 0;
+        var best = 0, ldy, ldx;
+        for (ldy = -1; ldy <= 1 && !best; ldy++) {
+          var lny = ly + ldy; if (lny < 0 || lny >= h) continue;
+          for (ldx = -1; ldx <= 1; ldx++) {
+            var lnx = lx + ldx; if (lnx < 0 || lnx >= w) continue;
+            if (part[lny * w + lnx] === 5 && claim[lny * w + lnx]) { best = claim[lny * w + lnx]; break; }
           }
         }
-        if (nearShort) continue;
-        for (mi = 0; mi < mids.length; mi++) {
-          var pid = mids[mi];
-          var po = pid * 4;
-          var pr = d[po], pg = d[po + 1], pb = d[po + 2];
-          if (isNearWhitePixel(pr, pg, pb)) {
-            d[po] = d[po + 1] = d[po + 2] = 255;
-          } else if (tongueKey(pr, pg, pb)) {
-            d[po] = 224; d[po + 1] = 112; d[po + 2] = 136;
-          } else {
-            d[po] = 138; d[po + 1] = 48; d[po + 2] = 48;
+        if (!best) continue;
+        keep[lp] = 0;
+        claim[lp] = best;
+        part[lp] = 5;
+      }
+    })();
+
+    // 脸上没被嘴收走的鞋色键是舌头。球衣上的残键并回球衣，不能留着原色。
+    (function mopBootKeys() {
+      var bp;
+      for (bp = 0; bp < n; bp++) {
+        if (claim[bp] || keep[bp] || ball[bp] || sky[bp]) continue;
+        var bo = bp * 4;
+        var br = d[bo], bg = d[bo + 1], bb = d[bo + 2];
+        if (Math.abs(br - 255) + bg + Math.abs(bb - 136) > 18 || bb < 70) continue;
+        var bx = bp % w, by = (bp / w) | 0;
+        var skinN = 0, jerseyN = 0, jside = 0;
+        var dy, dx;
+        for (dy = -3; dy <= 3; dy++) {
+          var ny = by + dy; if (ny < 0 || ny >= h) continue;
+          for (dx = -3; dx <= 3; dx++) {
+            var nx = bx + dx; if (nx < 0 || nx >= w) continue;
+            var nid = ny * w + nx;
+            if (part[nid] === 5) skinN++;
+            else if (keep[nid]) skinN++;
+            else if (part[nid] === 1 && jerseySize[nid] >= 150) { jerseyN++; jside = claim[nid]; }
           }
-          d[po + 3] = 255;
-          claim[pid] = 0;
-          part[pid] = 0;
-          keep[pid] = 1;
-          sky[pid] = 0;
         }
+        if (skinN) {
+          d[bo] = 216; d[bo + 1] = 106; d[bo + 2] = 120; d[bo + 3] = 255;
+          claim[bp] = 0; part[bp] = 0; keep[bp] = 1;
+        } else if (jerseyN && jside) {
+          claim[bp] = jside;
+          part[bp] = 1;
+        }
+      }
+    })();
+
+    // 贴着皮肤、比色键暗、又不是中性墨线的像素是皮肤线。红褐的内轮廓算在这里。
+    (function claimSkinLines() {
+      var srcPart = new Uint8Array(part);
+      var srcClaim = new Uint8Array(claim);
+      var lp;
+      for (lp = 0; lp < n; lp++) {
+        if (claim[lp] || keep[lp] || ball[lp] || sky[lp]) continue;
+        var lo = lp * 4;
+        if (d[lo + 3] < 128) continue;
+        var lr = d[lo], lg = d[lo + 1], lb = d[lo + 2];
+        if (isNeutralInkPx(lr, lg, lb) || isNearWhitePixel(lr, lg, lb) || isGrassPixel(lr, lg, lb)) continue;
+        if (isKitKeyPx(lr, lg, lb) || isSkinKeyPx(lr, lg, lb)) continue;
+        if (lb > lr + 18 && lb > lg + 10 && lr < 90) continue;
+        if (relLum(lr, lg, lb) >= SKIN_KEY_LUM - 0.08) continue;
+        var lx = lp % w, ly = (lp / w) | 0;
+        var best = 0, bestD = 9;
+        var ldy, ldx;
+        for (ldy = -1; ldy <= 1; ldy++) {
+          var lny = ly + ldy; if (lny < 0 || lny >= h) continue;
+          for (ldx = -1; ldx <= 1; ldx++) {
+            if (!ldx && !ldy) continue;
+            var lnx = lx + ldx; if (lnx < 0 || lnx >= w) continue;
+            var ln = lny * w + lnx;
+            if (srcPart[ln] !== 5 || !srcClaim[ln]) continue;
+            var dist = Math.max(Math.abs(ldx), Math.abs(ldy));
+            if (dist < bestD) { bestD = dist; best = srcClaim[ln]; }
+          }
+        }
+        if (!best) continue;
+        claim[lp] = best;
+        part[lp] = 5;
       }
     })();
 
@@ -2241,8 +2563,23 @@
     var box1 = jerseyBox(1);
     var box2 = jerseyBox(2);
     var boxes = [null, box1, box2];
-    var hairRef = relLum(0, 0, 255);
-    var skinRef = relLum(240, 200, 160);
+    var skinRef = SKIN_KEY_LUM;
+    var skinLine = [null, darkerSame(skins[1], 0.5), darkerSame(skins[2], 0.5)];
+    var skinShade = [null, darkerSame(skins[1], 0.8), darkerSame(skins[2], 0.8)];
+    var hairLine = [null, darkerSame(hairs[1], 0.55), darkerSame(hairs[2], 0.55)];
+    function paintSkin(side, r, g, b) {
+      if (isNeutralInkPx(r, g, b)) return [0, 0, 0];
+      var lum = relLum(r, g, b);
+      if (lum >= skinRef - 0.045) return shadeRgb(skins[side], r, g, b, skinRef);
+      // 暗线压到目标亮度的一半。只比底色稍暗的阴影用同一个同色相平涂，不留灰点。
+      if (lum < 0.62) return skinLine[side];
+      return skinShade[side];
+    }
+    function paintHair(side, r, g, b) {
+      if (isNeutralInkPx(r, g, b)) return [0, 0, 0];
+      if (b > r + 12 && b > g + 8 && r < 100 && b > 28) return hairs[side];
+      return hairLine[side];
+    }
     function jerseyRgb(side, x, y) {
       var look = looks[side];
       var kit = kits[side];
@@ -2277,14 +2614,18 @@
       else if (pr === 1) {
         var jerseyBase = jerseyRgb(side, p % w, (p / w) | 0);
         var jerseyKeyLum = side === 1 ? relLum(255, 0, 255) : relLum(255, 136, 0);
-        rgb = shadeRgb(jerseyBase, d[o], d[o + 1], d[o + 2], jerseyKeyLum);
+        var jH = rgbToHsl(jerseyBase[0], jerseyBase[1], jerseyBase[2]);
+        var sH = rgbToHsl(d[o], d[o + 1], d[o + 2]);
+        // 近白球衣上的品红残渣是压缩噪点，不是阴影，不能涂成黄或灰。
+        if (jH.s < 0.1 && jH.l > 0.82 && sH.s > 0.28) rgb = jerseyBase;
+        else rgb = shadeRgb(jerseyBase, d[o], d[o + 1], d[o + 2], jerseyKeyLum);
       } else if (pr === 2) {
         var shortBase = hexRgb(kits[side].shorts);
         var shortKeyLum = side === 1 ? relLum(0, 255, 255) : relLum(136, 0, 255);
         rgb = shadeRgb(shortBase, d[o], d[o + 1], d[o + 2], shortKeyLum);
       } else if (pr === 3) rgb = shadeRgb(hexRgb(kits[side].shoes || '#222222'), d[o], d[o + 1], d[o + 2], relLum(255, 0, 136));
-      else if (pr === 4) rgb = shadeRgb(hairs[side], d[o], d[o + 1], d[o + 2], hairRef);
-      else if (pr === 5) rgb = shadeRgb(skins[side], d[o], d[o + 1], d[o + 2], skinRef);
+      else if (pr === 4) rgb = paintHair(side, d[o], d[o + 1], d[o + 2]);
+      else if (pr === 5) rgb = paintSkin(side, d[o], d[o + 1], d[o + 2]);
       if (!rgb) continue;
       d[o] = rgb[0]; d[o + 1] = rgb[1]; d[o + 2] = rgb[2]; d[o + 3] = 255;
     }
