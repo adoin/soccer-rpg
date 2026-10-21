@@ -2677,9 +2677,91 @@
     return { w: w, h: h, claim: claim, part: part, ball: ball, sky: sky, keep: keep, grassY: grassY };
   }
 
-  // Palette per label. Cloth is the kit colour times a luminance factor.
-  // Faces are flat: a hatched source must not come back as speckles.
-  // Irises and ink keep the source pixel. They are never recolored.
+  function srgbToLinear(c) {
+    c = c / 255;
+    return c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
+  }
+  function linearToSrgb(c) {
+    if (c <= 0) return 0;
+    if (c >= 1) return 255;
+    var s = c <= 0.0031308 ? 12.92 * c : 1.055 * Math.pow(c, 1 / 2.4) - 0.055;
+    return Math.max(0, Math.min(255, Math.round(s * 255)));
+  }
+  function rgbToLab(r, g, b) {
+    var R = srgbToLinear(r), G = srgbToLinear(g), B = srgbToLinear(b);
+    var x = R * 0.4124564 + G * 0.3575761 + B * 0.1804375;
+    var y = R * 0.2126729 + G * 0.7151522 + B * 0.0721750;
+    var z = R * 0.0193339 + G * 0.1191920 + B * 0.9503041;
+    var Xn = 0.95047, Yn = 1, Zn = 1.08883;
+    function f(t) { return t > 0.008856 ? Math.pow(t, 1 / 3) : (7.787 * t + 16 / 116); }
+    var fx = f(x / Xn), fy = f(y / Yn), fz = f(z / Zn);
+    return [116 * fy - 16, 500 * (fx - fy), 200 * (fy - fz)];
+  }
+  function labToLinear(L, a, b) {
+    if (L < 0) L = 0;
+    if (L > 100) L = 100;
+    var fy = (L + 16) / 116;
+    var fx = a / 500 + fy;
+    var fz = fy - b / 200;
+    function finv(t) {
+      var t3 = t * t * t;
+      return t3 > 0.008856 ? t3 : (t - 16 / 116) / 7.787;
+    }
+    var X = finv(fx) * 0.95047, Y = finv(fy), Z = finv(fz) * 1.08883;
+    return [
+      X * 3.2404542 + Y * -1.5371385 + Z * -0.4985314,
+      X * -0.9692660 + Y * 1.8760108 + Z * 0.0415560,
+      X * 0.0556434 + Y * -0.2040259 + Z * 1.0572252,
+    ];
+  }
+  function labToRgb(L, a, b) {
+    var lin = labToLinear(L, a, b);
+    return [linearToSrgb(lin[0]), linearToSrgb(lin[1]), linearToSrgb(lin[2])];
+  }
+  function labChroma(a, b) { return Math.sqrt(a * a + b * b); }
+  function hsvOfRgb(r, g, b) {
+    var max = r > g ? r : g; if (b > max) max = b;
+    var min = r < g ? r : g; if (b < min) min = b;
+    var d = max - min;
+    var s = max === 0 ? 0 : d / max;
+    var h = 0;
+    if (d) {
+      if (max === r) h = ((g - b) / d) % 6;
+      else if (max === g) h = (b - r) / d + 2;
+      else h = (r - g) / d + 4;
+      h *= 60; if (h < 0) h += 360;
+    }
+    return { h: h, s: s, v: max };
+  }
+  function hsvToRgb(h, s, v) {
+    var c = v * s;
+    var hh = ((h % 360) + 360) % 360 / 60;
+    var x = c * (1 - Math.abs(hh % 2 - 1));
+    var m = v - c;
+    var r = 0, g = 0, b = 0;
+    if (hh < 1) { r = c; g = x; }
+    else if (hh < 2) { r = x; g = c; }
+    else if (hh < 3) { g = c; b = x; }
+    else if (hh < 4) { g = x; b = c; }
+    else if (hh < 5) { r = x; b = c; }
+    else { r = c; b = x; }
+    return [
+      Math.max(0, Math.min(255, Math.round((r + m) * 255))),
+      Math.max(0, Math.min(255, Math.round((g + m) * 255))),
+      Math.max(0, Math.min(255, Math.round((b + m) * 255))),
+    ];
+  }
+  // 近黑、几乎没色相的像素是墨线。已经归进皮肤、衣服的像素不算，那些要按亮度搬色。
+  function sourceInk(r, g, b) {
+    var y = 0.299 * r + 0.587 * g + 0.114 * b;
+    if (y >= 60) return false;
+    var mx = r > g ? r : g; if (b > mx) mx = b;
+    var mn = r < g ? r : g; if (b < mn) mn = b;
+    return (mx - mn) < 18;
+  }
+
+  // 标签只决定这块像素属于谁。颜色用 CIELAB 按原图亮度和色度搬过去，
+  // 眉毛、眼线、鼻线和嘴线都留在原图像素上，不再铺成一块平涂。
   function paintMangaLabels(imgData, map, aLook, bLook) {
     aLook = aLook || {};
     bLook = bLook || {};
@@ -2694,8 +2776,6 @@
     var hairs = [null,
       hexRgb((HAIR_PRESETS[aLook.hair] || HAIR_PRESETS.black).color),
       hexRgb((HAIR_PRESETS[bLook.hair] || HAIR_PRESETS.black).color)];
-    var skinLine = [null, darkerSame(skins[1], 0.5), darkerSame(skins[2], 0.5)];
-    var hairLine = [null, darkerSame(hairs[1], 0.55), darkerSame(hairs[2], 0.55)];
     function jerseyBox(side) {
       var seen = new Uint8Array(n);
       var best = null;
@@ -2746,51 +2826,7 @@
       if (on) hex = kit.secondary || kit.primary;
       return hexRgb(hex);
     }
-    // Median source luminance per cloth label, so flat key pixels stay exact.
-    var hist = {};
-    var p, o, lab, fig, key, lumByte;
-    for (p = 0; p < n; p++) {
-      lab = label[p];
-      if (lab !== MLAB.SHIRT && lab !== MLAB.SHORTS && lab !== MLAB.SOCKS && lab !== MLAB.BOOTS) continue;
-      fig = figure[p];
-      if (!fig) continue;
-      o = p * 4;
-      if (d[o + 3] < 128) continue;
-      key = lab * 4 + fig;
-      lumByte = Math.round(relLum(d[o], d[o + 1], d[o + 2]) * 255);
-      if (!hist[key]) hist[key] = new Uint32Array(256);
-      hist[key][lumByte]++;
-    }
-    var median = {};
-    Object.keys(hist).forEach(function (k) {
-      var bins = hist[k];
-      var total = 0, b;
-      for (b = 0; b < 256; b++) total += bins[b];
-      var half = total / 2, acc = 0, found = 128;
-      for (b = 0; b < 256; b++) {
-        acc += bins[b];
-        if (acc >= half) { found = b; break; }
-      }
-      median[k] = found / 255;
-    });
-    function factor(srcLum, med) {
-      if (!med || med < 0.02) return 1;
-      if (Math.abs(srcLum - med) <= med * 0.08) return 1;
-      var f = srcLum / med;
-      if (f < 0.78) return 0.78;
-      if (f > 1.1) return 1.1;
-      return f;
-    }
-    function scale(rgb, f) {
-      return [
-        Math.max(0, Math.min(255, Math.round(rgb[0] * f))),
-        Math.max(0, Math.min(255, Math.round(rgb[1] * f))),
-        Math.max(0, Math.min(255, Math.round(rgb[2] * f))),
-      ];
-    }
-    // Exact colour keys that the labeler left on ink, sky or the ball would
-    // survive, because those labels keep the source pixel. Put them back on
-    // the part the key actually names.
+    // 色键落在墨线、天空或没归属的像素上时，按色键本身归回那一块。
     var keyPart = {};
     keyPart['255,0,255'] = [MLAB.SHIRT, 1];
     keyPart['255,136,0'] = [MLAB.SHIRT, 2];
@@ -2817,45 +2853,180 @@
       }
       return 1;
     }
+    var useLab = new Uint8Array(n);
+    var useFig = new Uint8Array(n);
+    var p, o, lab, fig, named;
+    function regionKind(lab) {
+      if (lab === MLAB.SKIN || lab === MLAB.SKIN_LINE) return MLAB.SKIN;
+      if (lab === MLAB.HAIR || lab === MLAB.HAIR_LINE) return MLAB.HAIR;
+      if (lab === MLAB.SHIRT || lab === MLAB.SHORTS || lab === MLAB.SOCKS || lab === MLAB.BOOTS) return lab;
+      return 0;
+    }
     for (p = 0; p < n; p++) {
+      useLab[p] = label[p];
+      useFig[p] = figure[p];
       o = p * 4;
-      lab = label[p];
-      fig = figure[p];
-      if (lab === MLAB.SKY) { d[o] = 0; d[o + 1] = 0; d[o + 2] = 0; d[o + 3] = 0; continue; }
-      if (kept[lab] || !fig) {
-        var named = keyPart[d[o] + ',' + d[o + 1] + ',' + d[o + 2]];
-        if (named && d[o + 3] > 200) {
-          lab = named[0];
-          fig = named[1] || nearFig(p);
+      if (d[o + 3] < 200) continue;
+      named = keyPart[d[o] + ',' + d[o + 1] + ',' + d[o + 2]];
+      if (!named) continue;
+      // 标签已经说了这块是谁，就按标签。没标到人身上的色键，按色键补回部位。
+      if (regionKind(label[p])) {
+        if (!useFig[p]) useFig[p] = named[1] || nearFig(p);
+        continue;
+      }
+      useLab[p] = named[0];
+      useFig[p] = named[1] || nearFig(p);
+    }
+    function blocked(i) {
+      var lab = useLab[i];
+      if (lab === MLAB.INK || lab === MLAB.SKY || lab === MLAB.GRASS || lab === MLAB.LINE || lab === MLAB.NET || lab === MLAB.BALL) return true;
+      if (lab === MLAB.EYE || lab === MLAB.IRIS || lab === MLAB.MOUTH || lab === MLAB.TEETH || lab === MLAB.TONGUE) return true;
+      o = i * 4;
+      if (d[o + 3] < 40) return true;
+      return sourceInk(d[o], d[o + 1], d[o + 2]);
+    }
+    // 区域向外扩 2px，只吃抗锯齿，不吃墨线，也不吃眼睛和嘴。
+    var pass;
+    for (pass = 0; pass < 2; pass++) {
+      var addLab = [];
+      var addFig = [];
+      var addAt = [];
+      for (p = 0; p < n; p++) {
+        if (!regionKind(useLab[p]) || !useFig[p]) continue;
+        var x = p % w, y = (p / w) | 0;
+        var dy, dx, ny, nx, nid;
+        for (dy = -1; dy <= 1; dy++) {
+          ny = y + dy; if (ny < 0 || ny >= h) continue;
+          for (dx = -1; dx <= 1; dx++) {
+            if (!dx && !dy) continue;
+            nx = x + dx; if (nx < 0 || nx >= w) continue;
+            nid = ny * w + nx;
+            if (regionKind(useLab[nid]) || blocked(nid)) continue;
+            addAt.push(nid);
+            addLab.push(useLab[p]);
+            addFig.push(useFig[p]);
+          }
         }
       }
-      if (lab === MLAB.INK || lab === MLAB.IRIS || lab === MLAB.BALL || lab === MLAB.GRASS || lab === MLAB.LINE) continue;
+      for (var ai = 0; ai < addAt.length; ai++) {
+        if (regionKind(useLab[addAt[ai]]) || blocked(addAt[ai])) continue;
+        useLab[addAt[ai]] = addLab[ai];
+        useFig[addAt[ai]] = addFig[ai];
+      }
+    }
+    // 每个区域的源图中位色。皮肤线跟皮肤用同一个中位，头发线跟头发。
+    var samples = {};
+    function sampleKey(kind, side) { return kind + ':' + side; }
+    for (p = 0; p < n; p++) {
+      var kind = regionKind(label[p]);
+      fig = figure[p];
+      if (!kind || !fig) continue;
+      o = p * 4;
+      if (d[o + 3] < 128) continue;
+      if (sourceInk(d[o], d[o + 1], d[o + 2])) continue;
+      var sk = sampleKey(kind, fig);
+      if (!samples[sk]) samples[sk] = { L: [], a: [], b: [] };
+      var sl = rgbToLab(d[o], d[o + 1], d[o + 2]);
+      samples[sk].L.push(sl[0]);
+      samples[sk].a.push(sl[1]);
+      samples[sk].b.push(sl[2]);
+    }
+    var keyLab = {};
+    Object.keys(samples).forEach(function (sk) {
+      function mid(arr) {
+        var s = arr.slice().sort(function (a, b) { return a - b; });
+        return s[(s.length / 2) | 0];
+      }
+      var L = mid(samples[sk].L), a = mid(samples[sk].a), b = mid(samples[sk].b);
+      keyLab[sk] = [L, a, b, labChroma(a, b)];
+    });
+    function targetRgb(kind, side, x, y) {
+      if (kind === MLAB.SHIRT) return jerseyRgb(side, x, y);
+      if (kind === MLAB.SHORTS || kind === MLAB.SOCKS) {
+        return hexRgb(kits[side].socks && kind === MLAB.SOCKS ? kits[side].socks : kits[side].shorts);
+      }
+      if (kind === MLAB.BOOTS) return hexRgb(kits[side].shoes || '#222222');
+      if (kind === MLAB.SKIN) return skins[side];
+      if (kind === MLAB.HAIR) return hairs[side];
+      return null;
+    }
+    // L_out = L_src * (L_target / L_key)。色相锁在目标上：按目标的线性 RGB 缩放到这个 L，
+    // 再按色度比例往同亮度的灰收。直接截 Lab 会把深色剪成别的色相。
+    function yFromL(L) {
+      var fy = (L + 16) / 116;
+      var t3 = fy * fy * fy;
+      return t3 > 0.008856 ? t3 : (fy - 16 / 116) / 7.787;
+    }
+    function transfer(r, g, b, tgt, key) {
+      if (!key || !(key[0] > 1)) return tgt;
+      var src = rgbToLab(r, g, b);
+      var dst = rgbToLab(tgt[0], tgt[1], tgt[2]);
+      var Ls = src[0], Cs = labChroma(src[1], src[2]);
+      var Lk = key[0], Ck = key[3];
+      var lScale = Lk > 1 ? Ls / Lk : 1;
+      // 比色键更亮的抗锯齿只略亮于目标，避免金发边上爆成白点。
+      if (lScale > 1.12) lScale = 1.12;
+      var cScale = Ck > 1 ? Math.min(1, Cs / Ck) : 0;
+      // 灰阶阴影没有色度，仍收进目标色相，不然球裤和脸上会剩一块灰斑。
+      if (Ck > 8 && cScale < 0.55) cScale = 0.55;
+      if (Math.abs(lScale - 1) <= 0.02 && cScale >= 0.96) return tgt;
+      var Lout = lScale * dst[0];
+      if (Lout < 0) Lout = 0;
+      if (Lout > 100) Lout = 100;
+      var linT = [srgbToLinear(tgt[0]), srgbToLinear(tgt[1]), srgbToLinear(tgt[2])];
+      var Yt = 0.2126729 * linT[0] + 0.7151522 * linT[1] + 0.0721750 * linT[2];
+      var k = Yt > 1e-8 ? yFromL(Lout) / Yt : 0;
+      var peak = Math.max(linT[0], linT[1], linT[2]);
+      if (peak > 0 && k * peak > 1) k = 1 / peak;
+      var lin = [linT[0] * k, linT[1] * k, linT[2] * k];
+      var rgb = [linearToSrgb(lin[0]), linearToSrgb(lin[1]), linearToSrgb(lin[2])];
+      var tgtHs = hsvOfRgb(tgt[0], tgt[1], tgt[2]);
+      // 近白近黑的球衣本来就没色相，按亮度灰混就行。
+      if (tgtHs.s < 0.18) {
+        if (cScale >= 0.999) return rgb;
+        var Y = 0.2126729 * lin[0] + 0.7151522 * lin[1] + 0.0721750 * lin[2];
+        return [
+          linearToSrgb(Y + cScale * (lin[0] - Y)),
+          linearToSrgb(Y + cScale * (lin[1] - Y)),
+          linearToSrgb(Y + cScale * (lin[2] - Y)),
+        ];
+      }
+      // 伽马会把同一个色相拧过色相桶的边界。色相锁回目标，只留亮度。
+      var hs = hsvOfRgb(rgb[0], rgb[1], rgb[2]);
+      if (hs.v < 16) return rgb;
+      var s = cScale < 0.999 ? hs.s * cScale : hs.s;
+      if (s > 1) s = 1;
+      return hsvToRgb(tgtHs.h, s, hs.v / 255);
+    }
+    for (p = 0; p < n; p++) {
+      o = p * 4;
+      lab = useLab[p];
+      fig = useFig[p];
       if (lab === MLAB.NET) {
         if (d[o + 3] < 40) { d[o] = 255; d[o + 1] = 255; d[o + 2] = 255; d[o + 3] = 255; }
         continue;
       }
-      if (!fig) continue;
-      var rgb = null;
-      if (lab === MLAB.SHIRT) {
-        var base = jerseyRgb(fig, p % w, (p / w) | 0);
-        var srcLum = relLum(d[o], d[o + 1], d[o + 2]);
-        rgb = scale(base, factor(srcLum, median[lab * 4 + fig]));
-      } else if (lab === MLAB.SHORTS || lab === MLAB.SOCKS) {
-        rgb = scale(hexRgb(kits[fig].socks && lab === MLAB.SOCKS ? kits[fig].socks : kits[fig].shorts),
-          factor(relLum(d[o], d[o + 1], d[o + 2]), median[lab * 4 + fig]));
-      } else if (lab === MLAB.BOOTS) {
-        rgb = scale(hexRgb(kits[fig].shoes || '#222222'),
-          factor(relLum(d[o], d[o + 1], d[o + 2]), median[lab * 4 + fig]));
-      } else if (lab === MLAB.SKIN) rgb = skins[fig];
-      else if (lab === MLAB.SKIN_LINE) rgb = skinLine[fig];
-      else if (lab === MLAB.HAIR) rgb = hairs[fig];
-      else if (lab === MLAB.HAIR_LINE) rgb = hairLine[fig];
-      else if (lab === MLAB.EYE) rgb = [255, 255, 255];
-      else if (lab === MLAB.TEETH) rgb = [248, 248, 248];
-      else if (lab === MLAB.MOUTH) rgb = [122, 31, 36];
-      else if (lab === MLAB.TONGUE) rgb = [216, 106, 120];
-      if (!rgb) continue;
-      d[o] = rgb[0]; d[o + 1] = rgb[1]; d[o + 2] = rgb[2]; d[o + 3] = 255;
+      if (lab === MLAB.SKY || d[o + 3] < 40) {
+        d[o] = 0; d[o + 1] = 0; d[o + 2] = 0; d[o + 3] = 0;
+        continue;
+      }
+      if (lab === MLAB.IRIS || lab === MLAB.EYE || lab === MLAB.TEETH || lab === MLAB.BALL || lab === MLAB.GRASS || lab === MLAB.LINE) continue;
+      // 墨线标签，以及没归进皮肤衣服的近黑像素，保持原图。皮肤里的深线要搬成目标色相。
+      if (lab === MLAB.INK || (sourceInk(d[o], d[o + 1], d[o + 2]) && !regionKind(lab))) continue;
+      if (lab === MLAB.MOUTH || lab === MLAB.TONGUE) {
+        named = keyPart[d[o] + ',' + d[o + 1] + ',' + d[o + 2]];
+        if (named) {
+          var cavity = lab === MLAB.TONGUE ? [216, 106, 120] : [122, 31, 36];
+          d[o] = cavity[0]; d[o + 1] = cavity[1]; d[o + 2] = cavity[2];
+        }
+        continue;
+      }
+      var kind = regionKind(lab);
+      if (!kind || !fig) continue;
+      var tgt = targetRgb(kind, fig, p % w, (p / w) | 0);
+      if (!tgt) continue;
+      var rgb = transfer(d[o], d[o + 1], d[o + 2], tgt, keyLab[sampleKey(kind, fig)]);
+      d[o] = rgb[0]; d[o + 1] = rgb[1]; d[o + 2] = rgb[2];
     }
     return imgData;
   }
