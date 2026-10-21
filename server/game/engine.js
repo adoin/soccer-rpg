@@ -152,7 +152,7 @@ Match.prototype.autoSwitchToCarrier = function (playerId) {
 //   不是单纯离球最近。远在球前方的人不切。手动切人锁定期间不抢。
 Match.prototype.autoSwitchToDefender = function () {
   var cur = this.byId[this.control.playerId];
-  if (cur && cur.pos === 'GK') return; // ★ 当前在控门将（测试/特殊状态），不抢
+  if (cur && cur.team === 'home' && cur.pos === 'GK') return; // ★ 当前在控本方门将，不抢
   if (this.control.manualUntil && this.now < this.control.manualUntil) return;
   var id = Switch.pick(this, 'home', null, 0);
   if (id && this.control.playerId !== id) {
@@ -166,7 +166,7 @@ Match.prototype.considerDefensiveSwitch = function () {
   var c = this.control;
   if (c.manualUntil && this.now < c.manualUntil) return;
   var cur = this.byId[c.playerId];
-  if (cur && cur.pos === 'GK') return;
+  if (cur && cur.team === 'home' && cur.pos === 'GK') return;
   if (cur && cur.team === 'home' && (c.dx || c.dy) && this.now - c.activeStamp <= 2000) return;
   if (this._switchAt && this.now < this._switchAt) return;
   this._switchAt = this.now + 450;
@@ -182,6 +182,9 @@ Match.prototype.considerDefensiveSwitch = function () {
   this.lastDecisionPos = { x: 0, y: 0 };
   this.aiCooldownUntil = 0; // AI 决策冷却
   this.kickoffTeam = 'home';
+  this.formationId = T.DEFAULT_FORMATION || '4-2-3-1';
+  this.autoSwap = true; // 被拉出位置时队友临时补位；以后可做成开关
+  this.restart = null;  // 定位球摆放 { kind, team, x, y, takerId, label }
 
   // 裁判与规则：每场比赛随机一名裁判（执法尺度影响牌阈值，不影响判罚正确性）
   this.referee = Foul.pickReferee(this.rng);
@@ -207,7 +210,12 @@ Match.prototype.resetPositions = function (kickoffTeam) {
     p._vx = 0; p._vy = 0; // ★ 速度矢量清零（加速度模型用）
     p.frozenUntil = 0; p.beatenUntil = 0; p.retreatTarget = null;
     p.holdingUntil = 0; // 急停收步中（行为层）
+    p.cover = p.num;
+    p.swapWith = null;
+    p._swapHold = false;
   });
+  this.restart = null;
+  this._lastCarrierId = null;
   this.ball.x = FIELD.W / 2; this.ball.y = FIELD.H / 2;
   // ★ 开球规则：非开球方球员必须在 9.15 米开外（之前客队前锋按阵型站在 5 米处，
   //   保护期一过决策菜单立刻弹出劫持键盘，用户还没带两步球）
@@ -232,6 +240,7 @@ Match.prototype.resetPositions = function (kickoffTeam) {
   this.lastDecisionPos = { x: kicker.x, y: kicker.y };
   this.aiCooldownUntil = this.now + 2500;
   this.kickoffTeam = kickoffTeam;
+  this.ensureControl();
 };
 
 Match.prototype.goal = function (scorer, team) {
@@ -249,6 +258,7 @@ Match.prototype.goal = function (scorer, team) {
     until: Date.now() + 3400,
   });
   this.concedeTeam = team === 'home' ? 'away' : 'home';
+  this.restart = null;
   return a;
 };
 
@@ -577,6 +587,7 @@ Match.prototype.moveFlightPlayers = function (pf, dt) {
 };
 
 Match.prototype.tick = function () {
+  this.ensureControl();
   if (this.paused) return;
   var dt = this.config.tickMs / 1000;
 
@@ -697,29 +708,49 @@ Match.prototype.tick = function () {
       if (this.now >= this.phaseUntil) this.resumeStoppage();
       break;
   }
+  this.ensureControl();
 };
 
 // ---------- 死球恢复（越位 / 犯规哨声 / 点球之后） ----------
 
-Match.prototype.enterStoppage = function (phase, ms, ownerId) {
+Match.prototype.enterStoppage = function (phase, ms, ownerId, extra) {
   this.phase = phase; // 'whistle' 或 'penalty'
   this.phaseUntil = this.now + ms;
   this.decision = null;
-  this.pendingResume = { ownerId: ownerId };
+  this.pendingResume = extra || {};
+  this.pendingResume.ownerId = ownerId;
 };
 
 Match.prototype.resumeStoppage = function () {
   var r = this.pendingResume;
   this.pendingResume = null;
-  if (r && r.ownerId && this.byId[r.ownerId] && !this.byId[r.ownerId].sentOff) {
-    this.ball.ownerId = r.ownerId;
-    this.ball.x = this.byId[r.ownerId].x;
-    this.ball.y = this.byId[r.ownerId].y;
+  if (r && r.kick === 'penalty' && r.foul) {
+    this.restart = null;
+    this.resolvePenalty(r.foul, r.prefixText || '');
+    this.ensureControl();
+    return;
   }
+  if (r && r.ownerId && this.byId[r.ownerId] && !this.byId[r.ownerId].sentOff) {
+    var owner = this.byId[r.ownerId];
+    this.ball.ownerId = owner.id;
+    this.ball.x = owner.x;
+    this.ball.y = owner.y;
+    this.ball.vx = 0; this.ball.vy = 0; this.ball.vz = 0; this.ball.z = 0;
+    // 主队定位球：恢复比赛时把操作权交到主罚者身上，并重新给操作窗口。
+    // 哨声期间时钟在走，不能沿用摆球那一刻的时间戳，否则一恢复就被 AI 接走。
+    if (owner.team === 'home' && owner.pos !== 'GK' && !owner.sentOff) {
+      this.control.playerId = owner.id;
+      this.control.activeStamp = this.now;
+    } else if (owner.team !== 'home') {
+      this.aiCooldownUntil = Math.max(this.aiCooldownUntil || 0, this.now + 700);
+    }
+  }
+  this.restart = null;
   this.phase = 'play';
   this.nextDecisionAt = this.now + 1500;
   var c = this.carrier();
   if (c) this.lastDecisionPos = { x: c.x, y: c.y };
+  this.ensureControl();
 };
 
 Match.prototype.endHalf = function () {
@@ -880,6 +911,8 @@ Match.prototype.moveToward = function (p, tx, ty, speed, dt) {
 // 返回 true 表示本 tick 的移动已由输入接管（含冻结/松手的情况，避免 AI 顶替）。
 Match.prototype.controlMove = function (p, dt) {
   var c = this.control;
+  // 人类只推动本方。控制 id 一旦落到客队，这一下也不能把对手踢起来。
+  if (!p || p.team !== 'home' || p.sentOff) return false;
   if (p.id !== c.playerId) return false;
   // ★ 手机手柄按住不动时 touchmove 不触发、无新输入——但 dx/dy 非零就是"正在操作"，
   //   不能算无操作而 AI 接管（否则按住方向 2 秒后 AI 抢走闷头往前带，用户再推也没用）。
@@ -1000,6 +1033,7 @@ Match.prototype.simulate = function (dt) {
       if (carrier.team === 'home') this.autoSwitchToCarrier(carrier.id);
       else this.autoSwitchToDefender();
     }
+    this.ensureControl();
   }
   if (!carrier) {
     // ★ 自由球：三维积分（滚动摩擦 / 弹跳），不再落地瞬停。
@@ -1016,6 +1050,10 @@ Match.prototype.simulate = function (dt) {
     if (recv && this.now < recv.until && recv.id && this.byId[recv.id] && !this.byId[recv.id].sentOff) {
       chaseIds[recv.id] = 'recv';
     }
+    Behavior.updateSwaps(self, 'home', {}, null);
+    Behavior.updateSwaps(self, 'away', {}, null);
+    var looseHome = Behavior.blockTargets(self, 'home');
+    var looseAway = Behavior.blockTargets(self, 'away');
     this.players.forEach(function (p) {
       if (p.sentOff) return;
       if (self.controlMove(p, dt)) { self.updateEnergy(p, dt); return; }
@@ -1030,7 +1068,9 @@ Match.prototype.simulate = function (dt) {
         }
         self.moveToward(p, tx, ty, self.playerSpeed(p, true) * 0.95, dt);
       } else {
-        self.moveToward(p, p.hx, p.hy, self.playerSpeed(p, false) * 0.7, dt);
+        var looseShape = p.team === 'home' ? looseHome : looseAway;
+        var ls = looseShape[p.id] || { x: p.hx, y: p.hy };
+        self.moveToward(p, ls.x, ls.y, self.playerSpeed(p, false) * 0.7, dt);
       }
       self.updateEnergy(p, dt);
     });
@@ -1086,12 +1126,14 @@ Match.prototype.simulate = function (dt) {
   sortedOpp.forEach(function (q, idx) {
     if (idx < 2 && self.now >= q.beatenUntil && self.now >= q.frozenUntil) pressing[q.id] = true;
   });
-  var defTeam = carrier.team === 'home' ? 'away' : 'home';
-  var lineTargets = Behavior.defensiveShape(self, defTeam, pressing);
-  var snapAtt = Offside.snapshot(self, carrier.team);
-  // ★ 行为层·无球任务：进攻方接应/前插/拉边/拖后（带任务粘性），防守方中场盯人
-  var atkTasks = Behavior.attackTasks(self, carrier, snapAtt);
-  var manMarks = Behavior.markTargets(self, defTeam, carrier, pressing);
+  // 全队按 4-2-3-1 槽位整体平移。只有 pressing 里的 1～2 人离开阵型去抢球。
+  Behavior.updateSwaps(self, 'home', pressing, carrier.id);
+  Behavior.updateSwaps(self, 'away', pressing, carrier.id);
+  var shape = {};
+  var sh = Behavior.blockTargets(self, 'home');
+  var sa = Behavior.blockTargets(self, 'away');
+  Object.keys(sh).forEach(function (id) { shape[id] = sh[id]; });
+  Object.keys(sa).forEach(function (id) { shape[id] = sa[id]; });
   this.players.forEach(function (p) {
     if (p.id === carrier.id) return;
     if (p.sentOff) return; // 罚下球员不再参与模拟
@@ -1142,27 +1184,23 @@ Match.prototype.simulate = function (dt) {
         ty = (carrier.y + FIELD.H / 2) / 2;
         sp = self.playerSpeed(p, false) * 0.5;
       } else {
-        // ★ 行为层：DF 按防线纪律落位/造越位，MF 盯人，都没有则回阵型点
-        //   慢跑（0.4/0.55），不是冲刺——阵地战就该是这个节奏
-        var lt = (p.pos === 'DF' && lineTargets[p.id]) ? lineTargets[p.id] : null;
-        var mk = manMarks[p.id];
+        // 其余人守住整体阵型的区域，不追球
+        var lt = shape[p.id];
         if (lt) { tx = lt.x; ty = lt.y; }
-        else if (mk) { tx = mk.x; ty = mk.y; }
         else { tx = p.hx; ty = p.hy; }
-        sp = self.playerSpeed(p, false) * (mk ? 0.55 : 0.4);
-        if (beaten) sp *= 0.08; // ★ 被晃倒：原地踉跄定住（2026-10-09 用户：过完人被过掉的要在原地一段时间，不然过人没意义；之前 0.45 还在跑，看着像马上反抢）
+        sp = self.playerSpeed(p, false) * 0.5;
+        if (beaten) sp *= 0.08; // ★ 被晃倒：原地踉跄定住
       }
     } else if (self.now < p.holdingUntil) {
       // ★ 行为层：急停收步中——原地不动，不参与这次进攻
       tx = p.x; ty = p.y;
       sp = 0;
     } else {
-      // ★ 行为层·无球任务：接应/前插/拉边/拖后（带任务粘性，不再全员同步前压）
-      //   无球跑位是慢跑穿插，只有明确前插才加速——阵地战节奏
-      var at = atkTasks[p.id];
+      // 进攻方无球队员守住前移后的阵型，不再全员追球
+      var at = shape[p.id];
       if (at) { tx = at.x; ty = at.y; }
       else { tx = p.hx; ty = p.hy; }
-      sp = self.playerSpeed(p, false) * (at && at.type === 'run' ? 0.75 : 0.45);
+      sp = self.playerSpeed(p, false) * 0.5;
     }
     if (!pFrozen) {
       self.moveToward(p, tx, ty, sp, dt);
@@ -1704,35 +1742,88 @@ Match.prototype.bestOnsideTarget = function (p, snap) {
   return best;
 };
 
+// 离某个点最近的非门将。队里没有外场球员时才让门将客串。
+Match.prototype.nearestOutfield = function (team, x, y) {
+  var taker = null, bd = 1e9;
+  this.players.forEach(function (q) {
+    if (q.team !== team || q.sentOff || q.pos === 'GK') return;
+    var d = Math.sqrt((q.x - x) * (q.x - x) + (q.y - y) * (q.y - y));
+    if (d < bd || (Math.abs(d - bd) < 0.001 && taker && q.id < taker.id)) { bd = d; taker = q; }
+  });
+  if (!taker) {
+    this.players.forEach(function (q) {
+      if (q.team === team && !q.sentOff && !taker) taker = q;
+    });
+  }
+  return taker;
+};
+
+// 把一支球队推到圆外。贴边被夹回来时再沿边线挪开，避免人站在 9.15 米以内。
+Match.prototype.pushCircle = function (x, y, team, minDist) {
+  this.players.forEach(function (q) {
+    if (q.team !== team || q.sentOff) return;
+    var dx = q.x - x, dy = q.y - y;
+    var dd = Math.sqrt(dx * dx + dy * dy);
+    if (dd >= minDist) return;
+    if (dd <= 0.001) { dx = 1; dy = 0; dd = 1; }
+    q.x = x + dx / dd * minDist;
+    q.y = y + dy / dd * minDist;
+    q.x = clamp(q.x, 1.2, FIELD.W - 1.2);
+    q.y = clamp(q.y, 1.2, FIELD.H - 1.2);
+    var ddx = q.x - x, ddy = q.y - y;
+    var d2 = Math.sqrt(ddx * ddx + ddy * ddy);
+    if (d2 < minDist - 0.05) {
+      var room = Math.sqrt(Math.max(0, minDist * minDist - ddx * ddx));
+      q.y = clamp(y + (dy >= 0 ? room : -room), 1.2, FIELD.H - 1.2);
+      ddy = q.y - y;
+      d2 = Math.sqrt(ddx * ddx + ddy * ddy);
+      if (d2 < minDist - 0.05) {
+        room = Math.sqrt(Math.max(0, minDist * minDist - ddy * ddy));
+        q.x = clamp(x + (dx >= 0 ? room : -room), 1.2, FIELD.W - 1.2);
+      }
+    }
+    q._vx = 0; q._vy = 0;
+  });
+};
+
+// 记下定位球摆放，供客户端画横幅和球点。主队主罚时绿圈落到主罚者身上。
+Match.prototype.markRestart = function (opts) {
+  var taker = opts.taker;
+  this.restart = {
+    kind: opts.kind,
+    team: opts.team,
+    x: opts.x,
+    y: opts.y,
+    takerId: taker ? taker.id : null,
+    label: opts.label,
+  };
+  if (taker && taker.team === 'home' && taker.pos !== 'GK' && !taker.sentOff) {
+    this.control.playerId = taker.id;
+    this.control.activeStamp = this.now;
+  }
+  this.ensureControl();
+};
+
 // ---------- 越位哨声：间接任意球 ----------
 Match.prototype.whistleOffside = function (os, passer) {
   // ★ 铁律：持球人永不越位（2026-10-10 用户报：带球突破中被莫名吹越位）。
   //   现实规则里自己带球不可能越位，这里是最后一道防线。
   if (os.player && this.ball.ownerId === os.player.id) return { type: 'playon' };
   var defendingTeam = passer.team === 'home' ? 'away' : 'home';
-  var taker = null, bd = 1e9, self = this;
-  this.players.forEach(function (q) {
-    if (q.team !== defendingTeam || q.sentOff) return;
-    var d = dist(q, os.spot);
-    if (d < bd) { bd = d; taker = q; }
-  });
-  if (taker) {
-    this.ball.ownerId = taker.id;
-    this.ball.x = taker.x; this.ball.y = taker.y;
-  }
-  // ★ 间接任意球：越位方球员必须退到 9.15 米外（真实规则，同开球）。
-  //   否则越位的前锋就站在发球者 2 米外（哨响全员冻结），哨一停直接反抢回来射门，越位白吹了
-  //   （2026-10-09 用户报"离谱"：越位→对方发球→下一秒自己拿球射门）。
-  var sx = this.ball.x, sy = this.ball.y;
-  this.players.forEach(function (q) {
-    if (q.team !== passer.team || q.sentOff) return;
-    var dd = Math.sqrt(Math.pow(q.x - sx, 2) + Math.pow(q.y - sy, 2));
-    if (dd < 9.15 && dd > 0.001) {
-      q.x = sx + (q.x - sx) / dd * 9.15;
-      q.y = sy + (q.y - sy) / dd * 9.15;
-    } else if (dd <= 0.001) { q.x = sx + 9.15; }
-  });
-  this.enterStoppage('whistle', 2200, this.ball.ownerId);
+  var sx = clamp(os.spot.x, 2, FIELD.W - 2);
+  var sy = clamp(os.spot.y, 2, FIELD.H - 2);
+  var taker = this.nearestOutfield(defendingTeam, sx, sy);
+  if (!taker) { this.phase = 'play'; return { type: 'playon' }; }
+  taker.x = sx; taker.y = sy; taker._vx = 0; taker._vy = 0;
+  this.ball.ownerId = taker.id;
+  this.ball.x = sx; this.ball.y = sy;
+  this.ball.vx = 0; this.ball.vy = 0; this.ball.vz = 0; this.ball.z = 0;
+  this.ball.lastTouchTeam = defendingTeam; this.ball.lastTouchId = taker.id;
+  this.ball.restartExempt = null;
+  // 越位方退到 9.15 米外。主罚者已经站在点上，不推主罚方。
+  this.pushCircle(sx, sy, passer.team, 9.15);
+  this.enterStoppage('whistle', 2200, taker.id);
+  this.markRestart({ kind: 'offside', team: defendingTeam, x: sx, y: sy, taker: taker, label: '越位 → 任意球' });
   var teamName = defendingTeam === 'home' ? T.HOME_NAME : T.AWAY_NAME;
   this.setAction({
     kind: 'offside',
@@ -1741,7 +1832,7 @@ Match.prototype.whistleOffside = function (os, passer) {
     team: defendingTeam,
     success: false,
     text: Offside.reasonText(os.reason, os.player) + ' ' + teamName + '获得间接任意球。',
-    cut: 'offside',
+    cut: null,
     until: Date.now() + 2200,
   });
   return this.lastAction;
@@ -1809,6 +1900,7 @@ Match.prototype.whistleThrowIn = function (team, bx, by) {
     } else if (dd <= 0.001) { q.x = sx + 2; }
   });
   this.enterStoppage('whistle', 1400, taker.id);
+  this.markRestart({ kind: 'throwin', team: team, x: sx, y: sy, taker: taker, label: '界外球' });
   var teamName = team === 'home' ? T.HOME_NAME : T.AWAY_NAME;
   this.setAction({
     kind: 'throwin', label: '界外球', playerName: taker.name, team: team, success: true,
@@ -1840,6 +1932,7 @@ Match.prototype.whistleGoalKick = function (team) {
     if (inBox) q.x = boxX + dir * 1.5;
   });
   this.enterStoppage('whistle', 1600, keeper.id);
+  this.markRestart({ kind: 'goalkick', team: team, x: gx, y: FIELD.H / 2, taker: keeper, label: '球门球' });
   var teamName = team === 'home' ? T.HOME_NAME : T.AWAY_NAME;
   this.setAction({
     kind: 'goalkick', label: '球门球', playerName: keeper.name, team: team, success: true,
@@ -1876,6 +1969,7 @@ Match.prototype.whistleCorner = function (team) {
     } else if (dd <= 0.001) { q.x = cx + 9.15; }
   });
   this.enterStoppage('whistle', 1800, taker.id);
+  this.markRestart({ kind: 'corner', team: team, x: cx, y: cy, taker: taker, label: '角球' });
   var teamName = team === 'home' ? T.HOME_NAME : T.AWAY_NAME;
   this.setAction({
     kind: 'corner', label: '角球', playerName: taker.name, team: team, success: true,
@@ -1954,26 +2048,28 @@ Match.prototype.applyFoulResult = function (foul) {
 
   var text = Foul.cardText(foul);
   var teamName = foul.team === 'home' ? T.HOME_NAME : T.AWAY_NAME;
-  if (!foul.penalty) text += teamName + '获得直接任意球。';
 
   if (foul.penalty) {
-    return this.resolvePenalty(foul, text);
+    return this.setupPenalty(foul, text);
   }
 
-  // 直接任意球：受害方在犯规地点重新组织
-  this.ball.ownerId = foul.victim.id;
-  this.ball.x = foul.spot.x; this.ball.y = foul.spot.y;
-  // ★ 直接任意球：犯规方球员必须退到 9.15 米外（同越位，同开球），否则犯规者站在球点上哨一停就反抢
-  var fbx = this.ball.x, fby = this.ball.y;
-  this.players.forEach(function (q) {
-    if (q.team !== foul.defender.team || q.sentOff) return;
-    var fdd = Math.sqrt(Math.pow(q.x - fbx, 2) + Math.pow(q.y - fby, 2));
-    if (fdd < 9.15 && fdd > 0.001) {
-      q.x = fbx + (q.x - fbx) / fdd * 9.15;
-      q.y = fby + (q.y - fby) / fdd * 9.15;
-    } else if (fdd <= 0.001) { q.x = fbx + 9.15; }
-  });
-  this.enterStoppage('whistle', 2400, foul.victim.id);
+  text += teamName + '获得直接任意球。';
+  var fbx = clamp(foul.spot.x, 2, FIELD.W - 2);
+  var fby = clamp(foul.spot.y, 2, FIELD.H - 2);
+  var taker = foul.victim;
+  if (!taker || taker.sentOff || taker.team !== foul.team || taker.pos === 'GK') {
+    taker = this.nearestOutfield(foul.team, fbx, fby);
+  }
+  if (!taker) { this.phase = 'play'; return this.lastAction; }
+  taker.x = fbx; taker.y = fby; taker._vx = 0; taker._vy = 0;
+  this.ball.ownerId = taker.id;
+  this.ball.x = fbx; this.ball.y = fby;
+  this.ball.vx = 0; this.ball.vy = 0; this.ball.vz = 0; this.ball.z = 0;
+  this.ball.lastTouchTeam = foul.team; this.ball.lastTouchId = taker.id;
+  this.ball.restartExempt = null;
+  this.pushCircle(fbx, fby, foul.defender.team, 9.15);
+  this.enterStoppage('whistle', 2400, taker.id);
+  this.markRestart({ kind: 'foul', team: foul.team, x: fbx, y: fby, taker: taker, label: '犯规 → 任意球' });
   var cardLabel = foul.card === 'red' ? '红牌' : (foul.card === 'yellow' ? '黄牌' : '犯规');
   this.setAction({
     kind: 'foul',
@@ -1982,8 +2078,71 @@ Match.prototype.applyFoulResult = function (foul) {
     team: foul.team,
     success: false,
     text: text,
-    cut: 'foul',
+    cut: null,
     until: Date.now() + 2400,
+  });
+  return this.lastAction;
+};
+
+// 禁区内犯规：先把点球摆出来（罚球点、主罚者、门将站在门线上，其余人退出禁区并离开 9.15 米），
+// 哨声结束后再按原有骰子结算进球或扑出。
+Match.prototype.setupPenalty = function (foul, prefixText) {
+  var team = foul.team;
+  var spotX = team === 'home' ? FIELD.W - 11 : 11;
+  var spotY = FIELD.H / 2;
+  var taker = foul.victim;
+  if (!taker || taker.sentOff || taker.team !== team || taker.pos === 'GK') {
+    taker = this.nearestOutfield(team, spotX, spotY);
+  }
+  var keeperTeam = team === 'home' ? 'away' : 'home';
+  var keeper = null;
+  this.players.forEach(function (q) {
+    if (q.team === keeperTeam && q.pos === 'GK' && !q.sentOff) keeper = q;
+  });
+  if (taker) {
+    taker.x = spotX; taker.y = spotY; taker._vx = 0; taker._vy = 0;
+    this.ball.ownerId = taker.id;
+    this.ball.lastTouchTeam = team; this.ball.lastTouchId = taker.id;
+  }
+  this.ball.x = spotX; this.ball.y = spotY;
+  this.ball.vx = 0; this.ball.vy = 0; this.ball.vz = 0; this.ball.z = 0;
+  this.ball.restartExempt = null;
+  if (keeper) {
+    keeper.x = team === 'home' ? FIELD.W - 1 : 1;
+    keeper.y = spotY;
+    keeper._vx = 0; keeper._vy = 0;
+  }
+  var boxX = team === 'home' ? FIELD.W - 16.5 : 16.5;
+  this.players.forEach(function (q) {
+    if (q.sentOff) return;
+    if (taker && q.id === taker.id) return;
+    if (keeper && q.id === keeper.id) return;
+    if (team === 'home' ? q.x > boxX : q.x < boxX) q.x = team === 'home' ? boxX - 1.2 : boxX + 1.2;
+  });
+  var opp = team === 'home' ? 'away' : 'home';
+  this.pushCircle(spotX, spotY, opp, 9.15);
+  this.pushCircle(spotX, spotY, team, 9.15);
+  if (taker) { taker.x = spotX; taker.y = spotY; }
+  if (keeper) {
+    keeper.x = team === 'home' ? FIELD.W - 1 : 1;
+    keeper.y = spotY;
+  }
+  this.enterStoppage('penalty', 1800, taker ? taker.id : null, {
+    kick: 'penalty', foul: foul, prefixText: prefixText || '',
+  });
+  this.markRestart({
+    kind: 'penalty', team: team, x: spotX, y: spotY, taker: taker, label: '犯规 → 点球',
+  });
+  var teamName = team === 'home' ? T.HOME_NAME : T.AWAY_NAME;
+  this.setAction({
+    kind: 'penalty',
+    label: '点球',
+    playerName: (foul.defender && foul.defender.name) || '',
+    team: team,
+    success: false,
+    text: (prefixText || '') + teamName + '获得点球。',
+    cut: null,
+    until: Date.now() + 1800,
   });
   return this.lastAction;
 };
@@ -2094,7 +2253,7 @@ Match.prototype.setInput = function (data) {
   var cur = this.byId[c.playerId];
   var wantSwitch = !!data.switchPlayer;
   if (data.playerId && this.byId[data.playerId]) {
-    // 点名操控：只接受主队非门将、未罚下球员
+    // 点名操控：只接受主队非门将、未罚下球员。客队 id 一律丢掉。
     var want = this.byId[data.playerId];
     if (want.team === 'home' && want.pos !== 'GK' && !want.sentOff && want.id !== c.playerId) {
       c.playerId = want.id;
@@ -2102,18 +2261,36 @@ Match.prototype.setInput = function (data) {
       var carrierNow = this.carrier();
       // 回防中手动点人：锁住几秒，自动切换不能马上改回去
       c.manualUntil = (carrierNow && carrierNow.team !== 'home') ? this.now + 3500 : 0;
+      this.ensureControl();
       return { ok: true, controlledId: c.playerId };
     }
   }
   if (!cur || cur.team !== 'home' || cur.sentOff || wantSwitch) {
-    c.playerId = this.selectControlled(cur && wantSwitch ? cur.id : null);
+    c.playerId = this.selectControlled(cur && cur.team === 'home' && wantSwitch ? cur.id : null);
     if (wantSwitch) {
       c.activeStamp = this.now;
       var carrierNow2 = this.carrier();
       c.manualUntil = (carrierNow2 && carrierNow2.team !== 'home') ? this.now + 3500 : 0;
     }
   }
+  this.ensureControl();
   return { ok: true, controlledId: c.playerId };
+};
+
+// 人类永远只控制青鹰高校。客队、罚下、空 id 都会被拉回本方。
+// 已经在控本方门将时不改（球门球和测试用的特殊状态）。
+Match.prototype.ensureControl = function () {
+  var c = this.control;
+  if (!c) return;
+  var cur = c.playerId ? this.byId[c.playerId] : null;
+  if (cur && cur.team === 'home' && !cur.sentOff) return;
+  var carrier = this.carrier();
+  if (carrier && carrier.team === 'home' && carrier.pos !== 'GK' && !carrier.sentOff) {
+    c.playerId = carrier.id;
+    return;
+  }
+  var id = this.selectControlled(null);
+  if (id) c.playerId = id;
 };
 
 // 选择被操控球员：默认离球最近的主队非门将；switch 时按离球距离轮换下一名。
@@ -2176,8 +2353,18 @@ Match.prototype.serialize = function () {
         gkSet: !!p.gkSet, gkSpread: !!p.gkSpread,
         cards: p.cards,
         sentOff: !!p.sentOff,
+        cover: p.cover || p.num,
+        swapped: !!p.swapWith,
       };
     }),
+    restart: this.restart ? {
+      kind: this.restart.kind,
+      team: this.restart.team,
+      x: this.restart.x,
+      y: this.restart.y,
+      takerId: this.restart.takerId,
+      label: this.restart.label,
+    } : null,
     referee: { name: this.referee.name, strictness: this.referee.strictness },
     controlledId: this.control.playerId, // 当前被玩家直接操控的球员
     controlActive: (this.now - this.control.activeStamp) <= 2000, // 2 秒内有有效操作→玩家实控，否则 AI 接管

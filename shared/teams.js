@@ -13,21 +13,36 @@
 })(typeof self !== 'undefined' ? self : this, function () {
   'use strict';
 
-  // 阵型站位（主队视角：向 +x 方向进攻，自家球门在 x=0）
-  // 客队站位由程序自动镜像（x -> 105 - x）
-  var FORMATION_HOME = {
-    1:  { x: 5,  y: 34 }, // GK
-    2:  { x: 22, y: 20 }, // DF
-    3:  { x: 20, y: 34 }, // DF
-    4:  { x: 22, y: 48 }, // DF
-    5:  { x: 38, y: 14 }, // MF
-    6:  { x: 36, y: 28 }, // MF
-    7:  { x: 36, y: 40 }, // MF
-    8:  { x: 38, y: 54 }, // MF
-    9:  { x: 52, y: 24 }, // FW
-    10: { x: 50, y: 34 }, // FW（开球球员）
-    11: { x: 52, y: 44 }, // FW
+  // 阵型是数据。u = 距本方球门线的米数（主队向 +x 进攻），y = 场地横向。
+  // 客队由程序镜像（x = 105 - u）。比赛中整块阵型再按球和攻防阶段平移，
+  // 这里只存未平移的本位点。换阵型以后改 DEFAULT_FORMATION 即可。
+  var FORMATIONS = {
+    '4-2-3-1': {
+      id: '4-2-3-1',
+      refU: 30, // 双后腰线，整块平移时以这条线为锚
+      slots: {
+        1:  { u: 6,  y: 34, pos: 'GK', line: 'GK' },
+        2:  { u: 18, y: 12, pos: 'DF', line: 'DF' }, // 左后卫
+        3:  { u: 15, y: 26, pos: 'DF', line: 'DF' }, // 左中卫
+        4:  { u: 15, y: 42, pos: 'DF', line: 'DF' }, // 右中卫
+        5:  { u: 18, y: 56, pos: 'DF', line: 'DF' }, // 右后卫
+        6:  { u: 30, y: 27, pos: 'MF', line: 'DM' }, // 左后腰
+        8:  { u: 30, y: 41, pos: 'MF', line: 'DM' }, // 右后腰
+        7:  { u: 42, y: 13, pos: 'MF', line: 'AM' }, // 左边锋
+        10: { u: 44, y: 34, pos: 'MF', line: 'AM' }, // 前腰（开球）
+        11: { u: 42, y: 55, pos: 'MF', line: 'AM' }, // 右边锋
+        9:  { u: 50, y: 34, pos: 'FW', line: 'ST' }, // 中锋
+      },
+    },
   };
+  var DEFAULT_FORMATION = '4-2-3-1';
+
+  // 未平移的主队本位点。旧代码读 x/y；新代码读 FORMATIONS。
+  var FORMATION_HOME = {};
+  Object.keys(FORMATIONS[DEFAULT_FORMATION].slots).forEach(function (n) {
+    var s = FORMATIONS[DEFAULT_FORMATION].slots[n];
+    FORMATION_HOME[n] = { x: s.u, y: s.y };
+  });
 
   // FM 式属性 key（1-20）
   var OUTFIELD_KEYS = [
@@ -64,13 +79,13 @@
     { num: 2,  name: '石川 健',  pos: 'DF', level: 9,  stats: base({ tackling: 13, marking: 13, positioning: 13, anticipation: 13, aggression: 13, bravery: 12, pace: 12, acceleration: 11, strength: 12, heading: 11, jumping: 11, decisions: 11, composure: 11, teamwork: 12 }), special: null },
     { num: 3,  name: '高桥 翔',  pos: 'DF', level: 9,  stats: base({ tackling: 13, marking: 12, positioning: 12, anticipation: 12, pace: 12, acceleration: 11, passing: 11, strength: 11, heading: 11, decisions: 11, composure: 11, aggression: 11 }), special: null },
     { num: 4,  name: '松本 勇',  pos: 'DF', level: 8,  stats: base({ tackling: 12, marking: 12, positioning: 11, anticipation: 11, pace: 11, aggression: 12, bravery: 12, strength: 12, heading: 11, jumping: 11, longShots: 9, finishing: 8 }), special: null },
-    { num: 5,  name: '井上 蓝',  pos: 'MF', level: 9,  stats: base({ passing: 14, vision: 14, decisions: 13, dribbling: 12, technique: 12, firstTouch: 12, pace: 12, offBall: 11, anticipation: 11, composure: 11, teamwork: 12, stamina: 12, aggression: 9 }), special: null },
+    { num: 5,  name: '井上 蓝',  pos: 'DF', level: 9,  stats: base({ passing: 14, vision: 14, decisions: 13, dribbling: 12, technique: 12, firstTouch: 12, pace: 12, offBall: 11, anticipation: 11, composure: 11, teamwork: 12, stamina: 12, aggression: 9 }), special: null },
     { num: 6,  name: '山田 光',  pos: 'MF', level: 8,  stats: base({ passing: 12, vision: 12, decisions: 12, pace: 12, acceleration: 11, tackling: 11, marking: 10, teamwork: 12, stamina: 12, composure: 11, aggression: 10 }), special: null },
     { num: 7,  name: '佐藤 疾风', pos: 'MF', level: 10, stats: base({ pace: 16, acceleration: 16, dribbling: 15, agility: 14, balance: 13, firstTouch: 13, technique: 13, passing: 12, vision: 12, offBall: 12, finishing: 12, longShots: 11, composure: 12, determination: 12 }), special: { name: '疾风突破射门' } },
     { num: 8,  name: '斋藤 心',  pos: 'MF', level: 8,  stats: base({ passing: 12, vision: 12, decisions: 13, tackling: 11, pace: 11, technique: 11, teamwork: 13, composure: 11, stamina: 11, aggression: 9 }), special: null },
     { num: 9,  name: '木村 雷',  pos: 'FW', level: 11, stats: base({ finishing: 15, strength: 14, heading: 14, longShots: 13, jumping: 13, balance: 12, pace: 13, acceleration: 12, offBall: 13, anticipation: 13, composure: 12, bravery: 12, firstTouch: 12 }), special: { name: '雷光射门' } },
-    { num: 10, name: '风间 隼',  pos: 'FW', level: 12, stats: base({ pace: 17, acceleration: 16, dribbling: 16, finishing: 15, firstTouch: 15, anticipation: 15, offBall: 15, composure: 14, agility: 14, technique: 14, decisions: 14, determination: 14, vision: 13, balance: 13, longShots: 12, jumping: 12 }), special: { name: '疾风射门' } },
-    { num: 11, name: '中村 翼',  pos: 'FW', level: 10, stats: base({ finishing: 13, pace: 14, acceleration: 14, dribbling: 12, jumping: 14, heading: 13, offBall: 13, anticipation: 13, composure: 12, firstTouch: 12, longShots: 11, strength: 11 }), special: { name: '翔空射门' } },
+    { num: 10, name: '风间 隼',  pos: 'MF', level: 12, stats: base({ pace: 17, acceleration: 16, dribbling: 16, finishing: 15, firstTouch: 15, anticipation: 15, offBall: 15, composure: 14, agility: 14, technique: 14, decisions: 14, determination: 14, vision: 13, balance: 13, longShots: 12, jumping: 12 }), special: { name: '疾风射门' } },
+    { num: 11, name: '中村 翼',  pos: 'MF', level: 10, stats: base({ finishing: 13, pace: 14, acceleration: 14, dribbling: 12, jumping: 14, heading: 13, offBall: 13, anticipation: 13, composure: 12, firstTouch: 12, longShots: 11, strength: 11 }), special: { name: '翔空射门' } },
   ];
 
   // ---------------- 客队：烈风学院（AI，整体弱约 1-2 点） ----------------
@@ -79,13 +94,13 @@
     { num: 2,  name: '火野 强',  pos: 'DF', level: 9,  stats: base({ tackling: 12, marking: 12, positioning: 12, anticipation: 12, aggression: 13, bravery: 12, pace: 11, strength: 12, heading: 11, jumping: 10, decisions: 10 }), special: null },
     { num: 3,  name: '炎上 刚',  pos: 'DF', level: 8,  stats: base({ tackling: 11, marking: 11, positioning: 11, anticipation: 11, pace: 11, passing: 10, aggression: 12, strength: 11, heading: 10 }), special: null },
     { num: 4,  name: '爆裂 直',  pos: 'DF', level: 8,  stats: base({ tackling: 11, marking: 10, positioning: 10, aggression: 13, bravery: 13, strength: 12, pace: 10, heading: 11, jumping: 11, longShots: 8, finishing: 7 }), special: null },
-    { num: 5,  name: '疾风 烈',  pos: 'MF', level: 9,  stats: base({ pace: 13, acceleration: 13, agility: 12, dribbling: 12, passing: 11, vision: 11, offBall: 11, anticipation: 11, composure: 10, teamwork: 11, stamina: 11 }), special: null },
+    { num: 5,  name: '疾风 烈',  pos: 'DF', level: 9,  stats: base({ pace: 13, acceleration: 13, agility: 12, dribbling: 12, passing: 11, vision: 11, offBall: 11, anticipation: 11, composure: 10, teamwork: 11, stamina: 11 }), special: null },
     { num: 6,  name: '红莲 斗',  pos: 'MF', level: 8,  stats: base({ passing: 11, vision: 11, decisions: 11, tackling: 11, pace: 11, teamwork: 11, aggression: 11, stamina: 11, composure: 10 }), special: null },
     { num: 7,  name: '旋风 丸',  pos: 'MF', level: 8,  stats: base({ pace: 12, acceleration: 12, agility: 12, dribbling: 11, passing: 10, offBall: 10, stamina: 11, firstTouch: 10 }), special: null },
     { num: 8,  name: '烈火 阵',  pos: 'MF', level: 7,  stats: base({ passing: 10, vision: 10, decisions: 10, tackling: 10, pace: 10, teamwork: 10, stamina: 10, technique: 9 }), special: null },
     { num: 9,  name: '灼热 牙',  pos: 'FW', level: 10, stats: base({ finishing: 13, strength: 13, pace: 12, acceleration: 11, longShots: 12, offBall: 12, anticipation: 12, composure: 11, bravery: 12, heading: 12, jumping: 11, firstTouch: 11 }), special: { name: '灼热射门' } },
-    { num: 10, name: '炎 隼人',  pos: 'FW', level: 11, stats: base({ pace: 15, acceleration: 15, dribbling: 14, finishing: 14, offBall: 13, anticipation: 13, firstTouch: 13, composure: 13, technique: 13, determination: 13, agility: 13, balance: 12, longShots: 12, vision: 12 }), special: { name: '烈焰射门' } },
-    { num: 11, name: '火渡 空',  pos: 'FW', level: 9,  stats: base({ finishing: 12, pace: 13, acceleration: 12, offBall: 11, anticipation: 11, heading: 11, jumping: 11, composure: 10, dribbling: 10 }), special: null },
+    { num: 10, name: '炎 隼人',  pos: 'MF', level: 11, stats: base({ pace: 15, acceleration: 15, dribbling: 14, finishing: 14, offBall: 13, anticipation: 13, firstTouch: 13, composure: 13, technique: 13, determination: 13, agility: 13, balance: 12, longShots: 12, vision: 12 }), special: { name: '烈焰射门' } },
+    { num: 11, name: '火渡 空',  pos: 'MF', level: 9,  stats: base({ finishing: 12, pace: 13, acceleration: 12, offBall: 11, anticipation: 11, heading: 11, jumping: 11, composure: 10, dribbling: 10 }), special: null },
   ];
 
   // 生成比赛用球员对象（深拷贝 + 运行时字段）
@@ -93,6 +108,8 @@
   function makeTeams() {
     function build(list, team) {
       return list.map(function (p, i) {
+        var form = FORMATIONS[DEFAULT_FORMATION];
+        var slot = form.slots[p.num];
         var home = FORMATION_HOME[p.num];
         return {
           id: (team === 'home' ? 'h' : 'a') + p.num,
@@ -100,7 +117,12 @@
           team: team,
           num: p.num,
           name: p.name,
-          pos: p.pos,
+          pos: slot ? slot.pos : p.pos,
+          formation: form.id,
+          cover: p.num,     // 当前补位的槽位号，默认等于自己的号码
+          swapWith: null,   // 临时对调的队友 id
+          formU: home.x,
+          formY: home.y,
           level: p.level,
           stats: Object.assign({}, p.stats),
           maxStamina: 100,
@@ -133,6 +155,8 @@
 
   return {
     FORMATION_HOME: FORMATION_HOME,
+    FORMATIONS: FORMATIONS,
+    DEFAULT_FORMATION: DEFAULT_FORMATION,
     makeTeams: makeTeams,
     HOME_NAME: '青鹰高校',
     AWAY_NAME: '烈风学院',

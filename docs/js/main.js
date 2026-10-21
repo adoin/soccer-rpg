@@ -404,6 +404,7 @@ var HORIZON = 150, GROUND = 548;
 // ★ 镜头：有限视野跟随球（场地显得大），全场只在小地图里看
 //   传球选落点（aim 层）时临时拉远，方便点选远处落点
 function curViewW() {
+  if (/[?&]wide=1/.test(location.search)) return 120;
   var lvl = (typeof hmTop === 'function') ? hmTop() : null;
   if (ui.hmenu && lvl && lvl.kind === 'aim') return 70;
   return 38;
@@ -1142,6 +1143,7 @@ function drawGame(t) {
   drawPitch();
   drawGoals();
   drawActors(t);
+  drawRestartMark();
   drawScoreboard();
   drawMinimap(); // ★ 小地图：全场只在这里看（球员点/球/镜头框/被操控绿圈）
   drawPauseButton();
@@ -1368,6 +1370,7 @@ function drawActors(t) {
     }
     // 冻结标记
     if (p.frozen) text('💫', pr.x, pr.y - dh - 8, 14 * s, '#fff', 'center');
+    if (p.swapped) text('⇄', pr.x, pr.y - dh - 16 * s, 16 * s, '#ffd94a', 'center', true);
     if (stagger) ctx.restore(); // ★ 踉跄倾斜结束
     if (stagger) {
       // ★ 眩晕星星：被晃倒头顶转星星，不用眯眼也能看出"这人被过了定住了"
@@ -1634,7 +1637,12 @@ function drawIdleHint(x, y, w, h) {
   var msg = isTouch ? '拖左盘移动（绿圈球员）；持球遇防守时在球员头顶选指令；防守贴近对方持球者可上抢'
                     : 'WASD 移动（绿圈球员）；持球遇防守时在球员头顶选指令；防守贴近对方持球者可上抢';
   if (state) {
-    if (state.phase === 'kickoff') msg = '开球！';
+    if (state.restart && (state.phase === 'whistle' || state.phase === 'penalty')) {
+      msg = state.restart.label || '定位球';
+      if (state.restart.team === 'home' && state.restart.kind !== 'goalkick' && state.restart.kind !== 'penalty') msg += ' · 按 E 传球或射门';
+      else if (state.restart.team === 'home' && state.restart.kind === 'penalty') msg += ' · 主罚';
+    }
+    else if (state.phase === 'kickoff') msg = '开球！';
     else if (state.phase === 'goal') msg = '⚽ 进球！';
     else if (state.phase === 'halftime') msg = '中场休息…';
     else if (state.paused) msg = '已暂停';
@@ -1659,6 +1667,30 @@ function wrapText(str, x, y, maxW, size, color, maxLines) {
     ctx.fillStyle = color; ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
     ctx.fillText(line, x, ly);
   }
+}
+
+// 定位球：场上画球点，画面上方留一条短横幅（犯规/越位 → 任意球，点球同理）。
+function drawRestartMark() {
+  if (!state || !state.restart) return;
+  if (state.phase !== 'whistle' && state.phase !== 'penalty') return;
+  var r = state.restart;
+  var spot = project(r.x, r.y);
+  ctx.save();
+  ctx.strokeStyle = 'rgba(255, 217, 74, 0.95)';
+  ctx.lineWidth = 3;
+  ctx.beginPath();
+  ctx.arc(spot.x, spot.y, Math.max(8, 16 * spot.s), 0, Math.PI * 2);
+  ctx.stroke();
+  ctx.restore();
+  var label = r.label || '定位球';
+  ctx.font = 'bold 26px "PingFang SC","Microsoft YaHei",sans-serif';
+  var bw = Math.max(300, ctx.measureText(label).width + 56);
+  var bh = 48, bx = (W - bw) / 2, by = 86;
+  ctx.fillStyle = 'rgba(8, 12, 26, 0.9)';
+  rr(bx, by, bw, bh, 8); ctx.fill();
+  ctx.strokeStyle = '#ffd94a'; ctx.lineWidth = 3;
+  rr(bx, by, bw, bh, 8); ctx.stroke();
+  text(label, W / 2, by + bh / 2, 24, '#ffd94a', 'center', true);
 }
 
 function drawRadar(x, y, w, h) {

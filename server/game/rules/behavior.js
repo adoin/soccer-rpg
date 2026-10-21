@@ -26,6 +26,7 @@
 var Offside = require('./offside');
 var GKPos = require('./gk');
 var FM = require('../../../shared/fm');
+var Teams = require('../../../shared/teams');
 var FIELD_W = 105, FIELD_H = 68;
 var HALF = FIELD_W / 2;
 
@@ -177,6 +178,10 @@ module.exports = {
   markTargets: markTargets,
   carrierAdjust: carrierAdjust,
   keeperTarget: keeperTarget,
+  blockShift: blockShift,
+  blockTargets: blockTargets,
+  updateSwaps: updateSwaps,
+  slotPoint: slotPoint,
   HOLD_BAR: HOLD_BAR,
   TRAP_BAR: TRAP_BAR,
   ANTI_BAR: ANTI_BAR,
@@ -350,4 +355,150 @@ function nearestOpp(match, x, y, team) {
     if (d < bd) { bd = d; best = q; }
   });
   return best ? { q: best, d: bd } : null;
+}
+
+// ============================================================
+// 4-2-3-1 整体移动：全队共用一个平移量，只有最近的 1～2 人离开阵型去抢球。
+// 阵型槽位在 shared/teams.js 的 FORMATIONS 里。换阵型只换数据。
+// ============================================================
+
+var LINE_U = {
+  GK: { min: 2, max: 16 },
+  DF: { min: 8, max: 62 },
+  DM: { min: 18, max: 74 },
+  AM: { min: 30, max: 88 },
+  ST: { min: 40, max: 98 },
+};
+
+function formationOf(p) {
+  var id = (p && p.formation) || Teams.DEFAULT_FORMATION || '4-2-3-1';
+  return Teams.FORMATIONS[id] || Teams.FORMATIONS['4-2-3-1'];
+}
+
+function slotDef(p, num) {
+  var form = formationOf(p);
+  return form.slots[num] || form.slots[String(num)] || { u: p.formU || 40, y: p.formY || 34, pos: p.pos, line: 'DM' };
+}
+
+// 整队平移：进攻时后腰线落在球后约 10 米，防守时约 16 米。宽度一起收放。
+function blockShift(match, team) {
+  var form = formationOf(match.players.filter(function (p) { return p.team === team; })[0]);
+  var carrier = match.ball.ownerId ? match.byId[match.ball.ownerId] : null;
+  var attack = !!(carrier && carrier.team === team);
+  var ballU = team === 'home' ? match.ball.x : (FIELD_W - match.ball.x);
+  var behind = attack ? 10 : 16;
+  var du = clamp(ballU - behind - form.refU, -16, 40);
+  if (match.mentality === 'attack') du += attack ? 4 : 1;
+  if (match.mentality === 'defend') du -= attack ? 1 : 4;
+  du = clamp(du, -18, 42);
+  var width = attack ? 1 : 0.82;
+  var yShift = clamp((match.ball.y - FIELD_H / 2) * (attack ? 0.42 : 0.28), -8, 8);
+  return { du: du, width: width, yShift: yShift, attack: attack, refU: form.refU };
+}
+
+// 某个槽位在本队坐标系下的场地坐标（已含整块平移）。
+function slotPoint(p, num, shift) {
+  var slot = slotDef(p, num == null ? p.num : num);
+  var line = LINE_U[slot.line] || LINE_U.DM;
+  var u, y;
+  if (slot.line === 'GK' || slot.pos === 'GK') {
+    u = clamp(slot.u + shift.du * 0.08, line.min, line.max);
+    y = clamp(FIELD_H / 2 + (matchBallY(shift) - FIELD_H / 2) * 0.12, 28, 40);
+  } else {
+    u = clamp(slot.u + shift.du, line.min, line.max);
+    y = clamp(FIELD_H / 2 + (slot.y - FIELD_H / 2) * shift.width + shift.yShift, 6, FIELD_H - 6);
+  }
+  var x = p.team === 'home' ? u : FIELD_W - u;
+  return { x: clamp(x, 2, FIELD_W - 2), y: y, u: u };
+}
+
+function matchBallY(shift) {
+  return shift._ballY == null ? FIELD_H / 2 : shift._ballY;
+}
+
+function blockTargets(match, team) {
+  var shift = blockShift(match, team);
+  shift._ballY = match.ball.y;
+  var out = {};
+  match.players.forEach(function (p) {
+    if (p.team !== team || p.sentOff) return;
+    out[p.id] = slotPoint(p, p.cover || p.num, shift);
+  });
+  return out;
+}
+
+var SWAP_OUT = 16;  // 离开自己槽位超过这么远，才找人补
+var SWAP_NEAR = 18; // 补位的人自己得到这个槽位的距离上限
+var SWAP_HOME = 12; // 回到自己槽位这个范围内，才允许再次换位
+
+// 临时换位。两人都不持球、且都没有当前的上抢/协防任务时换回。
+// 换回后先锁住，等本人回到自己的槽位附近才允许再换，避免一帧换上、一帧换回。
+function updateSwaps(match, team, pressing, carrierId) {
+  if (match.autoSwap === false) return;
+  pressing = pressing || {};
+  var shift = blockShift(match, team);
+  shift._ballY = match.ball.y;
+  var mates = match.players.filter(function (p) {
+    return p.team === team && !p.sentOff && p.pos !== 'GK';
+  });
+  mates.sort(function (a, b) { return a.id < b.id ? -1 : a.id > b.id ? 1 : 0; });
+
+  var seen = {};
+  mates.forEach(function (p) {
+    if (!p.swapWith || seen[p.id]) return;
+    var q = match.byId[p.swapWith];
+    seen[p.id] = true;
+    if (!q || q.swapWith !== p.id || q.team !== team || q.sentOff) {
+      p.swapWith = null;
+      p.cover = p.num;
+      return;
+    }
+    seen[q.id] = true;
+    var onBall = !!(carrierId && (carrierId === p.id || carrierId === q.id));
+    var marking = !!(pressing[p.id] || pressing[q.id]);
+    if (!onBall && !marking) {
+      p.swapWith = null;
+      q.swapWith = null;
+      p.cover = p.num;
+      q.cover = q.num;
+      p._swapHold = true;
+      q._swapHold = true;
+    }
+  });
+
+  mates.forEach(function (p) {
+    if (!p._swapHold || p.swapWith) return;
+    var home = slotPoint(p, p.num, shift);
+    var back = Math.sqrt((p.x - home.x) * (p.x - home.x) + (p.y - home.y) * (p.y - home.y));
+    if (back < SWAP_HOME || carrierId === p.id || pressing[p.id]) p._swapHold = false;
+  });
+
+  var used = {};
+  mates.forEach(function (p) { if (p.swapWith) used[p.id] = true; });
+  mates.forEach(function (p) {
+    if (used[p.id] || p._swapHold) return;
+    var slot = slotPoint(p, p.cover || p.num, shift);
+    var dOwn = Math.sqrt((p.x - slot.x) * (p.x - slot.x) + (p.y - slot.y) * (p.y - slot.y));
+    if (dOwn <= SWAP_OUT) return;
+    var best = null, bd = dOwn;
+    mates.forEach(function (q) {
+      if (q.id === p.id || used[q.id] || q._swapHold) return;
+      if (carrierId && q.id === carrierId) return;
+      var dq = Math.sqrt((q.x - slot.x) * (q.x - slot.x) + (q.y - slot.y) * (q.y - slot.y));
+      if (dq >= bd || dq > SWAP_NEAR) return;
+      if (!best || dq < bd - 0.001 || (Math.abs(dq - bd) < 0.001 && q.id < best.id)) {
+        best = q;
+        bd = dq;
+      }
+    });
+    if (!best) return;
+    var pc = p.cover || p.num;
+    var bc = best.cover || best.num;
+    p.cover = bc;
+    best.cover = pc;
+    p.swapWith = best.id;
+    best.swapWith = p.id;
+    used[p.id] = true;
+    used[best.id] = true;
+  });
 }

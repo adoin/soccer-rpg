@@ -30,6 +30,12 @@ function ball(m, x, y) { m.ball.x = x; m.ball.y = y; }
 function awayLine(m, x2, x3, x4, gkX) {
   set(m, 'a2', x2, 36); set(m, 'a3', x3, 34); set(m, 'a4', x4, 30);
   set(m, 'a1', gkX == null ? 100 : gkX, 34);
+  // 4-2-3-1 的右后卫默认站位可能比这条测试防线更靠近球门，先把他和其余人放到越位线后面
+  var line = Math.min(x2, x3, x4);
+  ['a5', 'a6', 'a7', 'a8', 'a9', 'a10', 'a11'].forEach(function (id, i) {
+    var p = P(m, id);
+    if (p.x >= line - 0.5) set(m, id, Math.max(2, line - 12), 6 + (i % 7) * 8);
+  });
 }
 // 把防线之外的客队球员摆到远处，避免干扰越位线 / 最近防守人计算
 function parkAway(m) {
@@ -702,3 +708,4 @@ console.log(failures === 0 ? '\nALL TESTS PASSED' : '\n' + failures + ' TEST(S) 
 if (failures) process.exit(1);
 // 领球 / 弹跳 / 护球 / 回防切换 / 门将站位（同一套固定种子）
 require('child_process').execSync('node ' + require('path').join(__dirname, 'test-play-physics.js'), { stdio: 'inherit' });
+require('child_process').execSync('node ' + require('path').join(__dirname, 'test-team-shape.js'), { stdio: 'inherit' });
