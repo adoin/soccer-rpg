@@ -955,7 +955,8 @@
       var minor = bw < bh ? bw : bh;
       var major = bw > bh ? bw : bh;
       var line = minor <= 24 && major >= 70 && grassN > 12;
-      var bootish = bootN > 6 && !line && area < 1600 && (major / Math.max(1, minor)) < 3.2 && grassN < 10 && bootN * 2 > darkN;
+      // 贴着球网墨线的大块白不是鞋头。鞋头的暗边很少。
+      var bootish = bootN > 6 && !line && area < 1600 && (major / Math.max(1, minor)) < 3.2 && grassN < 10 && bootN * 2 > darkN && darkN < 90;
       var net = !line && !bootish && area >= 280 && darkN > 18 && grassN < darkN;
       if (!line && !net) continue;
       var ci;
@@ -1276,6 +1277,91 @@
       }
     }
 
+    // 球门网的格子是一小块白，四周是墨线，又贴着草。不能当成两人之间的天空抠掉，
+    // 否则网上有的格子透天、旁边的格子仍是白的。腿间的大洞又宽又大，不在这里。
+    (function rescueNetCells() {
+      var seenC = new Uint8Array(n);
+      var cellN = 0;
+      var cp;
+      for (cp = 0; cp < n; cp++) {
+        if (seenC[cp] || ball[cp]) continue;
+        var co = cp * 4;
+        if (d[co + 3] < 200 || !isNearWhitePixel(d[co], d[co + 1], d[co + 2])) { seenC[cp] = 1; continue; }
+        var cq = [cp]; seenC[cp] = 1;
+        var carea = 0, cminX = w, cmaxX = 0, cminY = h, cmaxY = 0, cqi = 0;
+        while (cqi < cq.length) {
+          var cid = cq[cqi++];
+          carea++;
+          var cx = cid % w, cy = (cid / w) | 0;
+          if (cx < cminX) cminX = cx; if (cx > cmaxX) cmaxX = cx;
+          if (cy < cminY) cminY = cy; if (cy > cmaxY) cmaxY = cy;
+          var cdy, cdx;
+          for (cdy = -1; cdy <= 1; cdy++) {
+            var cny = cy + cdy; if (cny < 0 || cny >= h) continue;
+            for (cdx = -1; cdx <= 1; cdx++) {
+              if (!cdx && !cdy) continue;
+              var cnx = cx + cdx; if (cnx < 0 || cnx >= w) continue;
+              var cnid = cny * w + cnx;
+              if (seenC[cnid] || ball[cnid]) continue;
+              var cno = cnid * 4;
+              if (d[cno + 3] < 200 || !isNearWhitePixel(d[cno], d[cno + 1], d[cno + 2])) continue;
+              seenC[cnid] = 1; cq.push(cnid);
+            }
+          }
+        }
+        var cbw = cmaxX - cminX + 1, cbh = cmaxY - cminY + 1;
+        if (carea >= 200 && carea <= 5000 && Math.max(cbw, cbh) <= 100) cellN++;
+      }
+      if (cellN < 40) return;
+      var seenS = new Uint8Array(n);
+      for (cp = 0; cp < n; cp++) {
+        if (seenS[cp] || !sky[cp] || ball[cp]) continue;
+        var so = cp * 4;
+        if (d[so + 3] < 200 || !isNearWhitePixel(d[so], d[so + 1], d[so + 2])) { seenS[cp] = 1; continue; }
+        var sqn = [cp]; seenS[cp] = 1;
+        var sids = [cp];
+        var sqi = 0, sminX = w, smaxX = 0, sminY = h, smaxY = 0;
+        while (sqi < sqn.length) {
+          var sid = sqn[sqi++];
+          var sx = sid % w, sy = (sid / w) | 0;
+          if (sx < sminX) sminX = sx; if (sx > smaxX) smaxX = sx;
+          if (sy < sminY) sminY = sy; if (sy > smaxY) smaxY = sy;
+          var sdy, sdx;
+          for (sdy = -1; sdy <= 1; sdy++) {
+            var sny = sy + sdy; if (sny < 0 || sny >= h) continue;
+            for (sdx = -1; sdx <= 1; sdx++) {
+              if (!sdx && !sdy) continue;
+              var snx = sx + sdx; if (snx < 0 || snx >= w) continue;
+              var snid = sny * w + snx;
+              if (seenS[snid] || !sky[snid]) continue;
+              var sno = snid * 4;
+              if (d[sno + 3] < 200 || !isNearWhitePixel(d[sno], d[sno + 1], d[sno + 2])) continue;
+              seenS[snid] = 1; sqn.push(snid); sids.push(snid);
+            }
+          }
+        }
+        var sbw = smaxX - sminX + 1, sbh = smaxY - sminY + 1;
+        var sarea = sids.length;
+        if (sarea < 200 || sarea >= 4500) continue;
+        if (Math.max(sbw, sbh) > 90) continue;
+        if (Math.max(sbw, sbh) / Math.max(1, Math.min(sbw, sbh)) >= 2) continue;
+        var onGrass = false;
+        var gx, gy;
+        for (gy = smaxY; gy <= smaxY + 8 && gy < h && !onGrass; gy++) {
+          for (gx = sminX; gx <= smaxX; gx++) {
+            var go = (gy * w + gx) * 4;
+            if (isGrassPixel(d[go], d[go + 1], d[go + 2])) { onGrass = true; break; }
+          }
+        }
+        if (!onGrass) continue;
+        var si2;
+        for (si2 = 0; si2 < sids.length; si2++) {
+          sky[sids[si2]] = 0;
+          keep[sids[si2]] = 1;
+        }
+      }
+    })();
+
     // 鞋头的白和鞋里的红点整块收回鞋。只认原来的鞋色键，不把皮球吞进去。
     var bootSeed = new Uint8Array(n);
     for (p = 0; p < n; p++) if (cls[p] === 'boot') bootSeed[p] = 1;
@@ -1288,7 +1374,7 @@
         if (d[bi + 3] < 128 || !matchFn(d[bi], d[bi + 1], d[bi + 2])) continue;
         bq = [bp]; seenB[bp] = 1; bqi = 0;
         bcomp = [bp]; btouch = false;
-        var bminX = w, bmaxX = 0, bminY = h, bmaxY = 0, bgrass = 0;
+        var bminX = w, bmaxX = 0, bminY = h, bmaxY = 0, bgrass = 0, bdark = 0;
         while (bqi < bq.length) {
           bid = bq[bqi++];
           bx = bid % w; by = (bid / w) | 0;
@@ -1313,6 +1399,7 @@
               var bni = bnid * 4;
               if (d[bni + 3] < 128) continue;
               if (isGrassPixel(d[bni], d[bni + 1], d[bni + 2])) { bgrass++; continue; }
+              if (d[bni] < 50 && d[bni + 1] < 50 && d[bni + 2] < 50) bdark++;
               if (!matchFn(d[bni], d[bni + 1], d[bni + 2])) continue;
               seenB[bnid] = 1; bq.push(bnid); bcomp.push(bnid);
             }
@@ -1324,6 +1411,8 @@
         var bminor = bbw < bbh ? bbw : bbh, bmajor = bbw > bbh ? bbw : bbh;
         if (bminor <= 24 && bmajor >= 70) continue;
         if (bmajor / Math.max(1, bminor) > 3.5 && bgrass > 8) continue;
+        // 底下垫着球网墨线的白方块不是鞋。
+        if (bdark > 100 && bminor >= 18) continue;
         var bc;
         for (bc = 0; bc < bcomp.length; bc++) {
           ball[bcomp[bc]] = 0;
@@ -1389,6 +1478,32 @@
         } else jerseySize[speckComp[si]] = speckN;
       }
     }
+    // 短裤也一样：脸上的一两个青色像素不是短裤。
+    var shortSeen = new Uint8Array(n);
+    var shortSize = new Uint32Array(n);
+    for (p = 0; p < n; p++) {
+      if (shortSeen[p] || part[p] !== 2) continue;
+      var shq = [p]; shortSeen[p] = 1;
+      var shcomp = [p];
+      var shqi = 0;
+      while (shqi < shq.length) {
+        var shid = shq[shqi++];
+        var shx = shid % w, shy = (shid / w) | 0;
+        var shdy, shdx;
+        for (shdy = -1; shdy <= 1; shdy++) {
+          var shny = shy + shdy; if (shny < 0 || shny >= h) continue;
+          for (shdx = -1; shdx <= 1; shdx++) {
+            if (!shdx && !shdy) continue;
+            var shnx = shx + shdx; if (shnx < 0 || shnx >= w) continue;
+            var shnid = shny * w + shnx;
+            if (shortSeen[shnid] || part[shnid] !== 2) continue;
+            shortSeen[shnid] = 1; shq.push(shnid); shcomp.push(shnid);
+          }
+        }
+      }
+      var shi;
+      for (shi = 0; shi < shcomp.length; shi++) shortSize[shcomp[shi]] = shcomp.length;
+    }
 
     // 只从成片球衣出发。头发、皮肤、鞋的每一整块跟最近的那件球衣。
     var jerseySide = new Uint8Array(n);
@@ -1423,6 +1538,8 @@
 
     // 头发、皮肤、鞋各成一块。包在短裤里的小块蓝是衣服阴影。
     var regSeen = new Uint8Array(n);
+    var skinStamp = new Uint32Array(n);
+    var skinStampId = 1;
     for (p = 0; p < n; p++) {
       var rkind = partCode(cls[p]);
       if (regSeen[p] || ball[p] || sky[p] || (rkind !== 3 && rkind !== 4 && rkind !== 5)) continue;
@@ -1475,10 +1592,63 @@
         var sd = jerseySide[rcomp[rc]];
         if (sd) sideVotes[sd]++;
       }
+      // 腿在短裤和球袜之间，离自己的球衣远、离对方的球衣近。
+      // 从这块皮肤顺着身体（墨线和空档，不穿草地）走到球衣、短裤或球袜，跟那个人。
       var who = 0;
-      if (sideVotes[1] > sideVotes[2]) who = 1;
-      else if (sideVotes[2] > sideVotes[1]) who = 2;
-      else who = jerseySide[rcomp[0]] || 0;
+      if (rkind === 5) {
+        var clothNear = [0, 0, 0];
+        skinStampId++;
+        var sq = [];
+        var sqd = [];
+        for (rc = 0; rc < rcomp.length; rc++) {
+          skinStamp[rcomp[rc]] = skinStampId;
+          sq.push(rcomp[rc]);
+          sqd.push(0);
+        }
+        var sqi = 0;
+        while (sqi < sq.length) {
+          var sid = sq[sqi];
+          var sdist = sqd[sqi];
+          sqi++;
+          if (sdist >= 48) continue;
+          var sx0 = sid % w, sy0 = (sid / w) | 0;
+          var sdy, sdx;
+          for (sdy = -1; sdy <= 1; sdy++) {
+            var syy = sy0 + sdy; if (syy < 0 || syy >= h) continue;
+            for (sdx = -1; sdx <= 1; sdx++) {
+              if (!sdx && !sdy) continue;
+              var sxx = sx0 + sdx; if (sxx < 0 || sxx >= w) continue;
+              var sn = syy * w + sxx;
+              if (skinStamp[sn] === skinStampId || ball[sn] || sky[sn] || keep[sn]) continue;
+              var spt = part[sn];
+              if ((spt === 1 || spt === 2) && claim[sn]) {
+                // 脸上的小块橙不是球衣，不能把脸判给对方。每块布只算一次。
+                if (spt === 1 && jerseySize[sn] < 150) continue;
+                if (spt === 2 && shortSize[sn] < 200) continue;
+                if (skinStamp[sn] === skinStampId) continue;
+                skinStamp[sn] = skinStampId;
+                clothNear[claim[sn]]++;
+                continue;
+              }
+              if (spt === 3) continue;
+              // 头发包着脸。穿过头发才能从脸走到球衣。
+              var so = sn * 4;
+              if (d[so + 3] < 128) continue;
+              if (isGrassPixel(d[so], d[so + 1], d[so + 2])) continue;
+              skinStamp[sn] = skinStampId;
+              sq.push(sn);
+              sqd.push(sdist + 1);
+            }
+          }
+        }
+        if (clothNear[1] > clothNear[2]) who = 1;
+        else if (clothNear[2] > clothNear[1]) who = 2;
+      }
+      if (!who) {
+        if (sideVotes[1] > sideVotes[2]) who = 1;
+        else if (sideVotes[2] > sideVotes[1]) who = 2;
+        else who = jerseySide[rcomp[0]] || 0;
+      }
       for (rc = 0; rc < rcomp.length; rc++) {
         rpix = rcomp[rc];
         if (asCloth && clothSum) {
@@ -1630,8 +1800,45 @@
         var maj = mv[1] >= mv[2] ? 1 : 2;
         if (!mv[maj]) continue;
         if (mv[3 - maj] > mv[maj] * 0.2) continue;
+        // 整张脸或一条腿不能并进另一人。只收拾边上的零星像素。
+        if (mv[3 - maj] > 120) continue;
         var mi;
         for (mi = 0; mi < mcomp.length; mi++) claim[mcomp[mi]] = maj;
+      }
+    }
+
+    // 没有鞋色键、又贴着球网的整块“鞋”是门线旁边的白方块，留白。
+    var bootSeen = new Uint8Array(n);
+    for (p = 0; p < n; p++) {
+      if (bootSeen[p] || part[p] !== 3) continue;
+      var bq = [p]; bootSeen[p] = 1;
+      var bcomp = [p];
+      var bqi = 0, bkey = 0, bkeep = 0;
+      while (bqi < bq.length) {
+        var bid = bq[bqi++];
+        var bo = bid * 4;
+        var br = d[bo], bg = d[bo + 1], bb = d[bo + 2];
+        if (Math.abs(br - 255) + bg + Math.abs(bb - 136) < 28) bkey++;
+        var bx = bid % w, by = (bid / w) | 0;
+        var bdy, bdx;
+        for (bdy = -1; bdy <= 1; bdy++) {
+          var bny = by + bdy; if (bny < 0 || bny >= h) continue;
+          for (bdx = -1; bdx <= 1; bdx++) {
+            if (!bdx && !bdy) continue;
+            var bnx = bx + bdx; if (bnx < 0 || bnx >= w) continue;
+            var bnid = bny * w + bnx;
+            if (keep[bnid]) bkeep++;
+            if (bootSeen[bnid] || part[bnid] !== 3) continue;
+            bootSeen[bnid] = 1; bq.push(bnid); bcomp.push(bnid);
+          }
+        }
+      }
+      if (bcomp.length < 80 || bkey > bcomp.length * 0.08 || bkeep < 40) continue;
+      var bi;
+      for (bi = 0; bi < bcomp.length; bi++) {
+        claim[bcomp[bi]] = 0;
+        part[bcomp[bi]] = 0;
+        keep[bcomp[bi]] = 1;
       }
     }
 

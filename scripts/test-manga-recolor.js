@@ -291,7 +291,7 @@ poses.forEach(function (pose) {
         if (seenW[sp]) continue;
         var so = sp * 4;
         if (data[so + 3] < 200 || !nearWhite(data[so], data[so + 1], data[so + 2])) { seenW[sp] = 1; continue; }
-        if ((mask.ball && mask.ball[sp]) || mask.claim[sp]) { seenW[sp] = 1; continue; }
+        if ((mask.ball && mask.ball[sp]) || mask.claim[sp] || (mask.keep && mask.keep[sp])) { seenW[sp] = 1; continue; }
         var q = [sp]; seenW[sp] = 1;
         var area = 0, peri = 0, above = 0, minX = ww, maxX = 0, minY = hh, maxY = 0;
         for (var qi = 0; qi < q.length; qi++) {
@@ -307,7 +307,7 @@ poses.forEach(function (pose) {
             if (nx < 0 || ny < 0 || nx >= ww || ny >= hh) { edge = true; return; }
             var nid = ny * ww + nx;
             var no = nid * 4;
-            if (data[no + 3] >= 200 && nearWhite(data[no], data[no + 1], data[no + 2]) && !(mask.ball && mask.ball[nid]) && !mask.claim[nid]) {
+            if (data[no + 3] >= 200 && nearWhite(data[no], data[no + 1], data[no + 2]) && !(mask.ball && mask.ball[nid]) && !mask.claim[nid] && !(mask.keep && mask.keep[nid])) {
               if (!seenW[nid]) { seenW[nid] = 1; q.push(nid); }
             } else edge = true;
           });
@@ -350,8 +350,125 @@ poses.forEach(function (pose) {
           if (lchanged || data[lo + 3] < 200) netChanged++;
         }
       }
-      console.log('LEAK ' + pose + ' ' + leak + ' keep ' + netN + ' keepChanged ' + netChanged);
+      // 贴着球网、里面没有鞋色键的整块鞋色（门线下的色块）。
+      var bootBlock = 0;
+      if (mask.part) {
+        var bseen = new Uint8Array(mask.claim.length);
+        var bw0 = base.width, bh0 = base.height;
+        for (var bp = 0; bp < bseen.length; bp++) {
+          if (bseen[bp] || mask.part[bp] !== 3) continue;
+          var bq = [bp]; bseen[bp] = 1;
+          var barea = 0, bkey = 0, bkeep = 0;
+          for (var bqi = 0; bqi < bq.length; bqi++) {
+            var bid = bq[bqi];
+            barea++;
+            var bso = bid * 4;
+            var bsr = base.data[bso], bsg = base.data[bso + 1], bsb = base.data[bso + 2];
+            if (Math.abs(bsr - 255) + bsg + Math.abs(bsb - 136) < 28) bkey++;
+            var bx = bid % bw0, by = (bid / bw0) | 0;
+            [[1,0],[-1,0],[0,1],[0,-1],[1,1],[1,-1],[-1,1],[-1,-1]].forEach(function (dlt) {
+              var nx = bx + dlt[0], ny = by + dlt[1];
+              if (nx < 0 || ny < 0 || nx >= bw0 || ny >= bh0) return;
+              var nid = ny * bw0 + nx;
+              if (mask.keep && mask.keep[nid]) bkeep++;
+              if (bseen[nid] || mask.part[nid] !== 3) return;
+              bseen[nid] = 1; bq.push(nid);
+            });
+          }
+          if (barea >= 80 && bkey <= barea * 0.08 && bkeep >= 40) { bootBlock += barea; leak += barea; }
+        }
+      }
+      // 同一个人的脸、手臂、腿必须是同一个皮肤底色。腿跟着短裤和球袜，不跟着更近的对方球衣。
+      var skinClash = 0;
+      (function () {
+        var ww = base.width, hh = base.height, nn = ww * hh;
+        var presets = [null, skinRgbA, skinRgbB];
+        function isBase(px, rgb) {
+          return Math.abs(px[0] - rgb[0]) <= 8 && Math.abs(px[1] - rgb[1]) <= 8 && Math.abs(px[2] - rgb[2]) <= 8;
+        }
+        var seen = new Uint8Array(nn);
+        var bucket = { 1: [0, 0, 0], 2: [0, 0, 0] };
+        for (var sp = 0; sp < nn; sp++) {
+          if (seen[sp] || mask.part[sp] !== 5) continue;
+          var q = [sp]; seen[sp] = 1;
+          var area = 0, vote = [0, 0, 0], tones = [0, 0, 0], claims = [0, 0, 0];
+          for (var qi = 0; qi < q.length; qi++) {
+            var id = q[qi];
+            area++;
+            claims[mask.claim[id]]++;
+            var o = id * 4;
+            var px = [data[o], data[o + 1], data[o + 2]];
+            if (isBase(px, presets[1])) tones[1]++;
+            else if (isBase(px, presets[2])) tones[2]++;
+            var x = id % ww, y = (id / ww) | 0;
+            for (var dy = -2; dy <= 2; dy++) {
+              var ny = y + dy; if (ny < 0 || ny >= hh) continue;
+              for (var dx = -2; dx <= 2; dx++) {
+                if (!dx && !dy) continue;
+                var nx = x + dx; if (nx < 0 || nx >= ww) continue;
+                var nid = ny * ww + nx;
+                if ((mask.part[nid] === 1 || mask.part[nid] === 2) && mask.claim[nid]) vote[mask.claim[nid]]++;
+                if (mask.part[nid] === 5 && !seen[nid]) { seen[nid] = 1; q.push(nid); }
+              }
+            }
+          }
+          if (area < 200) continue;
+          // 布料票要明显一边倒，才说明这块皮肤属于那个人。缠在一起时信这块自己的归属。
+          var side = 0;
+          if (vote[1] > vote[2] * 2 && vote[1] > 30) side = 1;
+          else if (vote[2] > vote[1] * 2 && vote[2] > 30) side = 2;
+          else side = claims[1] >= claims[2] ? 1 : 2;
+          if (!side) continue;
+          bucket[side][1] += tones[1];
+          bucket[side][2] += tones[2];
+        }
+        [1, 2].forEach(function (side) {
+          var mine = bucket[side][side];
+          var other = bucket[side][side === 1 ? 2 : 1];
+          if (other > 400 && other > mine * 0.08) skinClash += other;
+        });
+      })();
+      var netSky = 0;
+      if (/goal|gk_|hit_post|round_gk|shot_wide/.test(pose) && mask.sky) {
+        var nsw = base.width, nsh = base.height, nsSeen = new Uint8Array(nsw * nsh);
+        for (var nsp = 0; nsp < nsSeen.length; nsp++) {
+          if (nsSeen[nsp] || !mask.sky[nsp] || base.data[nsp * 4 + 3] < 200) continue;
+          var nsq = [nsp]; nsSeen[nsp] = 1;
+          var nsArea = 0, nsMinX = nsw, nsMaxX = 0, nsMinY = nsh, nsMaxY = 0;
+          for (var nsi = 0; nsi < nsq.length; nsi++) {
+            var nid2 = nsq[nsi];
+            nsArea++;
+            var nx2 = nid2 % nsw, ny2 = (nid2 / nsw) | 0;
+            if (nx2 < nsMinX) nsMinX = nx2; if (nx2 > nsMaxX) nsMaxX = nx2;
+            if (ny2 < nsMinY) nsMinY = ny2; if (ny2 > nsMaxY) nsMaxY = ny2;
+            [[1,0],[-1,0],[0,1],[0,-1],[1,1],[1,-1],[-1,1],[-1,-1]].forEach(function (dlt) {
+              var ax = nx2 + dlt[0], ay = ny2 + dlt[1];
+              if (ax < 0 || ay < 0 || ax >= nsw || ay >= nsh) return;
+              var aid = ay * nsw + ax;
+              if (nsSeen[aid] || !mask.sky[aid] || base.data[aid * 4 + 3] < 200) return;
+              nsSeen[aid] = 1; nsq.push(aid);
+            });
+          }
+          var nsbw = nsMaxX - nsMinX + 1, nsbh = nsMaxY - nsMinY + 1;
+          if (nsArea < 200 || nsArea >= 4500 || Math.max(nsbw, nsbh) > 90) continue;
+          if (Math.max(nsbw, nsbh) / Math.max(1, Math.min(nsbw, nsbh)) >= 2) continue;
+          var onGrass = false;
+          for (var gy = nsMaxY; gy <= nsMaxY + 8 && gy < nsh && !onGrass; gy++) {
+            for (var gx = nsMinX; gx <= nsMaxX; gx++) {
+              var go = (gy * nsw + gx) * 4;
+              var gr = base.data[go], gg = base.data[go + 1], gb = base.data[go + 2];
+              if (gg > gr + 8 && gg + 8 >= gb && gb < gg * 0.55 && gg > 55) onGrass = true;
+            }
+          }
+          if (onGrass) netSky += nsArea;
+        }
+      }
+      leak += netSky;
+      console.log('LEAK ' + pose + ' ' + leak + ' keep ' + netN + ' keepChanged ' + netChanged + ' bootBlock ' + bootBlock + ' skinClash ' + skinClash + ' netSky ' + netSky);
       ok(leak <= 20, tag + ' 场地球网门柱没有渗色', String(leak));
+      ok(bootBlock === 0, tag + ' 球门下没有整块鞋色', String(bootBlock));
+      ok(skinClash < 250, tag + ' 同一个人皮肤只有一个底色', String(skinClash));
+      if (/goal|gk_|hit_post|round_gk|shot_wide/.test(pose)) ok(netSky === 0, tag + ' 球网格子没有被抠成天空', String(netSky));
       var keeperPose = /goal|gk_|hit_post|round_gk|shot_wide/.test(pose);
       if (keeperPose) ok(netN > 400 && netChanged === 0, tag + ' 球网和门柱像素没变', netChanged + '/' + netN);
     }
