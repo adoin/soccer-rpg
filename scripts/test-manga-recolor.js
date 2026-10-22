@@ -145,14 +145,21 @@ poses.forEach(function (pose) {
   ok(aN > 500 && bN > 500, pose + ' 两个人都分出来了', aN + '/' + bN);
   ok(aj > 200 && bj > 200, pose + ' 两件球衣都在', aj + '/' + bj);
   // 深肤：皮肤块里发亮、又不是原图纯白高光的连通块，算没搬过去。
+  function linOf(c) {
+    c = c / 255;
+    return c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
+  }
+  function labOf(r, g, b) {
+    var R = linOf(r), G = linOf(g), B = linOf(b);
+    var x = R * 0.4124564 + G * 0.3575761 + B * 0.1804375;
+    var y = R * 0.2126729 + G * 0.7151522 + B * 0.0721750;
+    var z = R * 0.0193339 + G * 0.1191920 + B * 0.9503041;
+    function f(t) { return t > 0.008856 ? Math.pow(t, 1 / 3) : (7.787 * t + 16 / 116); }
+    var fx = f(x / 0.95047), fy = f(y), fz = f(z / 1.08883);
+    return [116 * fy - 16, 500 * (fx - fy), 200 * (fy - fz)];
+  }
   function labLOf(r, g, b) {
-    function lin(c) {
-      c = c / 255;
-      return c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
-    }
-    var y = lin(r) * 0.2126729 + lin(g) * 0.7151522 + lin(b) * 0.0721750;
-    var fy = y > 0.008856 ? Math.pow(y, 1 / 3) : (7.787 * y + 16 / 116);
-    return 116 * fy - 16;
+    return labOf(r, g, b)[0];
   }
   function sourceWhiteAt(buf, i) {
     var o = i * 4;
@@ -419,6 +426,58 @@ poses.forEach(function (pose) {
       return { n: n, pct: n ? okN / n : 1 };
     }
     var bootA = bootHuePct(1, aShoe), bootB = bootHuePct(2, bShoe);
+    // 每只鞋的鞋面（鞋钉太暗，不进平均）都要靠近本队鞋色。白鞋和金鞋不能各占一只。
+    function bootLeatherDE(side, shoe) {
+      var tgt = labOf(shoe[0], shoe[1], shoe[2]);
+      var ww = base.width, hh = base.height, nn = ww * hh;
+      var seen = new Uint8Array(nn);
+      var worst = 0, where = '';
+      var feet = 0;
+      for (var i = 0; i < nn; i++) {
+        if (seen[i] || mask.part[i] !== 3 || mask.claim[i] !== side) continue;
+        var q = [i];
+        seen[i] = 1;
+        var comp = [i];
+        for (var qi = 0; qi < q.length; qi++) {
+          var id = q[qi], x = id % ww, y = (id / ww) | 0;
+          for (var dy = -1; dy <= 1; dy++) {
+            var ny = y + dy; if (ny < 0 || ny >= hh) continue;
+            for (var dx = -1; dx <= 1; dx++) {
+              if (!dx && !dy) continue;
+              var nx = x + dx; if (nx < 0 || nx >= ww) continue;
+              var nid = ny * ww + nx;
+              if (seen[nid] || mask.part[nid] !== 3 || mask.claim[nid] !== side) continue;
+              seen[nid] = 1;
+              q.push(nid);
+              comp.push(nid);
+            }
+          }
+        }
+        if (comp.length < 80) continue;
+        feet++;
+        var sr = 0, sg = 0, sb = 0, c = 0, ci2, id2, o2, L;
+        for (ci2 = 0; ci2 < comp.length; ci2++) {
+          id2 = comp[ci2];
+          o2 = id2 * 4;
+          if (data[o2 + 3] < 200) continue;
+          L = labOf(data[o2], data[o2 + 1], data[o2 + 2]);
+          if (L[0] < 35) continue;
+          sr += data[o2]; sg += data[o2 + 1]; sb += data[o2 + 2];
+          c++;
+        }
+        if (c < 40) continue;
+        var mean = labOf(sr / c, sg / c, sb / c);
+        var d = Math.sqrt((mean[0] - tgt[0]) * (mean[0] - tgt[0]) + (mean[1] - tgt[1]) * (mean[1] - tgt[1]) + (mean[2] - tgt[2]) * (mean[2] - tgt[2]));
+        if (d > worst) {
+          worst = d;
+          where = (comp[0] % ww) + ',' + ((comp[0] / ww) | 0) + ' dE=' + d.toFixed(1) + ' n=' + comp.length;
+        }
+      }
+      return { de: worst, where: where, feet: feet };
+    }
+    var deA = bootLeatherDE(1, aShoe), deB = bootLeatherDE(2, bShoe);
+    ok(deA.de < 10, tag + ' A 两只鞋都是本队鞋色', deA.where || deA.de.toFixed(1));
+    ok(deB.de < 10, tag + ' B 两只鞋都是本队鞋色', deB.where || deB.de.toFixed(1));
     var bootWhite = 0;
     [1, 2].forEach(function (side) {
       var shoe = side === 1 ? aShoe : bShoe;
