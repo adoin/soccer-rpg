@@ -3239,11 +3239,11 @@
         if (lab !== 0 && lab !== MLAB.BOOTS) return false;
         var r = d[o], g = d[o + 1], b = d[o + 2];
         var y = 0.299 * r + 0.587 * g + 0.114 * b;
-        if (y < 200) return false;
+        if (y < 170) return false;
         var mx = r > g ? r : g; if (b > mx) mx = b;
         var mn = r < g ? r : g; if (b < mn) mn = b;
-        if (mx - mn > 28) return false;
-        if (Math.abs(r - g) > 22 || Math.abs(g - b) > 28) return false;
+        if (mx - mn > 42) return false;
+        if (Math.abs(r - g) > 36 || Math.abs(g - b) > 40) return false;
         return true;
       }
       var i, qi, id, x, y, dy, dx, ny, nx, nid;
@@ -3280,10 +3280,35 @@
           useLab[pix[k]] = MLAB.BOOTS;
           if (!useFig[pix[k]]) useFig[pix[k]] = bfig;
         }
-        // 贴着白条的两圈不是色键的像素，是条上的棕斑，跟着条走浅色。
+        // 条尖的棕斑往往没标成鞋：浅粉被收成皮肤，或落在标签外。只沿条向外吃几圈，
+        // 而且蓝不能明显低于绿，免得把脚踝的橙皮肤卷进来。
         var ring, rk;
         var edge = pix.slice();
-        for (ring = 0; ring < 2; ring++) {
+        function stripeTip(nid, howFar) {
+          if (bootDetail[nid] || flatBootKey(nid)) return false;
+          var oo = nid * 4;
+          if (d[oo + 3] < 180) return false;
+          var r = d[oo], g = d[oo + 1], b = d[oo + 2];
+          if (sourceInk(r, g, b)) return false;
+          var labN = label[nid];
+          var onBoot = labN === MLAB.BOOTS || useLab[nid] === MLAB.BOOTS;
+          var yv = 0.299 * r + 0.587 * g + 0.114 * b;
+          var pink = !(g > b + 14 && r > b + 18) && b + 6 >= g && r + 10 >= g;
+          if (onBoot) {
+            if (howFar < 2) return true;
+            return pink && yv >= 140;
+          }
+          if (labN !== 0 && labN !== MLAB.SKIN && labN !== MLAB.SKIN_LINE) return false;
+          if (!pink) return false;
+          if (labN === 0) return yv >= 40;
+          if (labN === MLAB.SKIN || labN === MLAB.SKIN_LINE) {
+            var mx = r > g ? r : g; if (b > mx) mx = b;
+            var mn = r < g ? r : g; if (b < mn) mn = b;
+            if (yv < 155 || b < g - 2 || mx - mn > 48) return false;
+          }
+          return true;
+        }
+        for (ring = 0; ring < 6; ring++) {
           var grown = [];
           for (rk = 0; rk < edge.length; rk++) {
             id = edge[rk]; x = id % w; y = (id / w) | 0;
@@ -3292,10 +3317,9 @@
               for (dx = -1; dx <= 1; dx++) {
                 nx = x + dx; if (nx < 0 || nx >= w) continue;
                 nid = ny * w + nx;
-                if (bootDetail[nid] || flatBootKey(nid)) continue;
-                if (label[nid] !== MLAB.BOOTS && useLab[nid] !== MLAB.BOOTS) continue;
-                if (sourceInk(d[nid * 4], d[nid * 4 + 1], d[nid * 4 + 2])) continue;
+                if (!stripeTip(nid, ring)) continue;
                 bootDetail[nid] = 1;
+                useLab[nid] = MLAB.BOOTS;
                 if (!useFig[nid]) useFig[nid] = bfig;
                 grown.push(nid);
               }
@@ -3396,12 +3420,104 @@
         var sumY = 0;
         for (pi = 0; pi < pp.length; pi++) sumY += (pp[pi] / w) | 0;
         var rel = (sumY / pp.length - bMin[comp]) / span;
-        var mode = rel < 0.42 ? 1 : 2;
+        // 鞋口是鞋带浅色。靠下的粉点只有长得像鞋钉才留灰，其余收成鞋色。
+        var mode = rel < 0.42 ? 1 : (studShape(pp, bMin[comp], bMax[comp]) ? 2 : 0);
         for (pi = 0; pi < pp.length; pi++) {
-          bootDetail[pp[pi]] = mode;
+          if (mode) bootDetail[pp[pi]] = mode;
           useLab[pp[pi]] = MLAB.BOOTS;
           if (!useFig[pp[pi]]) useFig[pp[pi]] = bSide[comp];
         }
+        if (mode !== 1) continue;
+        // 鞋带顶上没达到品红门槛的桃粉，跟着鞋带走浅色。
+        var ledge = pp.slice();
+        for (ring = 0; ring < 3; ring++) {
+          var lg = [];
+          for (rk = 0; rk < ledge.length; rk++) {
+            id = ledge[rk]; x = id % w; y = (id / w) | 0;
+            for (dy = -1; dy <= 1; dy++) {
+              ny = y + dy; if (ny < 0 || ny >= h) continue;
+              for (dx = -1; dx <= 1; dx++) {
+                nx = x + dx; if (nx < 0 || nx >= w) continue;
+                nid = ny * w + nx;
+                if (bootDetail[nid] || label[nid] !== 0) continue;
+                var po = nid * 4;
+                if (d[po + 3] < 140) continue;
+                var pr = d[po], pg = d[po + 1], pb = d[po + 2];
+                if (sourceInk(pr, pg, pb)) continue;
+                if (!(pr > 55 && pr > pg + 8 && pb + 8 >= pg && pg < 190)) continue;
+                if (0.299 * pr + 0.587 * pg + 0.114 * pb < 24) continue;
+                bootDetail[nid] = 1;
+                useLab[nid] = MLAB.BOOTS;
+                if (!useFig[nid]) useFig[nid] = bSide[comp];
+                lg.push(nid);
+              }
+            }
+          }
+          ledge = lg;
+        }
+      }
+      // 鞋钉是鞋底上的小团，不是轮廓上的抗锯齿。轮廓和鞋带的灰边仍走鞋色。
+      var seenS = new Uint8Array(n);
+      for (i = 0; i < n; i++) {
+        if (seenS[i] || bootDetail[i] || label[i] !== MLAB.BOOTS) continue;
+        var scomp = bId[i];
+        if (!bSide[scomp]) continue;
+        var so = i * 4;
+        if (!bootStudNeutral(d[so], d[so + 1], d[so + 2])) continue;
+        var sq = [i];
+        seenS[i] = 1;
+        var spix = [i];
+        for (qi = 0; qi < sq.length; qi++) {
+          id = sq[qi]; x = id % w; y = (id / w) | 0;
+          for (dy = -1; dy <= 1; dy++) {
+            ny = y + dy; if (ny < 0 || ny >= h) continue;
+            for (dx = -1; dx <= 1; dx++) {
+              nx = x + dx; if (nx < 0 || nx >= w) continue;
+              nid = ny * w + nx;
+              if (seenS[nid] || bootDetail[nid] || label[nid] !== MLAB.BOOTS || bId[nid] !== scomp) continue;
+              var s2 = nid * 4;
+              if (!bootStudNeutral(d[s2], d[s2 + 1], d[s2 + 2])) continue;
+              seenS[nid] = 1;
+              sq.push(nid);
+              spix.push(nid);
+            }
+          }
+        }
+        if (!studShape(spix, bMin[scomp], bMax[scomp])) continue;
+        for (pi = 0; pi < spix.length; pi++) bootDetail[spix[pi]] = 2;
+      }
+      function studShape(pix, minY, maxY) {
+        var span = maxY - minY;
+        var count = pix.length;
+        if (span < 8 || count < 4 || count > 36) return false;
+        var minX = w, maxX = 0, y0 = h, y1 = 0, sy = 0, edge = 0, k;
+        var inside = new Uint8Array(n);
+        for (k = 0; k < count; k++) inside[pix[k]] = 1;
+        for (k = 0; k < count; k++) {
+          var idS = pix[k], xs = idS % w, ys = (idS / w) | 0;
+          sy += ys;
+          if (xs < minX) minX = xs;
+          if (xs > maxX) maxX = xs;
+          if (ys < y0) y0 = ys;
+          if (ys > y1) y1 = ys;
+          var touch = false;
+          var dirs = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+          for (var di = 0; di < 4 && !touch; di++) {
+            var nxx = xs + dirs[di][0], nyy = ys + dirs[di][1];
+            if (nxx < 0 || nyy < 0 || nxx >= w || nyy >= h) { touch = true; break; }
+            var nidS = nyy * w + nxx;
+            if (inside[nidS]) continue;
+            if (d[nidS * 4 + 3] < 40 || label[nidS] !== MLAB.BOOTS) touch = true;
+          }
+          if (touch) edge++;
+        }
+        var bw = maxX - minX + 1, bh = y1 - y0 + 1;
+        if (Math.min(bw, bh) < 2) return false;
+        if (count / (bw * bh) < 0.42) return false;
+        if (Math.max(bw, bh) / Math.min(bw, bh) > 2.4) return false;
+        if ((sy / count - minY) / span < 0.66) return false;
+        if (edge / count > 0.8) return false;
+        return true;
       }
     })();
     for (p = 0; p < n; p++) {
@@ -3455,7 +3571,7 @@
         d[o] = tint[0]; d[o + 1] = tint[1]; d[o + 2] = tint[2];
         continue;
       }
-      if (kind === MLAB.BOOTS && (bootDetail[p] === 2 || bootStudNeutral(d[o], d[o + 1], d[o + 2]))) {
+      if (kind === MLAB.BOOTS && bootDetail[p] === 2) {
         var gv = bootGreyByte(d[o], d[o + 1], d[o + 2]);
         d[o] = gv; d[o + 1] = gv; d[o + 2] = gv;
         continue;
