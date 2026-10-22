@@ -257,6 +257,7 @@ poses.forEach(function (pose) {
     return { blobs: blobs, where: where };
   }
   combos.forEach(function (combo, ci) {
+    var tag = pose + '/' + combo.name;
     var data = new Uint8ClampedArray(base.data);
     var img = { width: base.width, height: base.height, data: data };
     kits.paintMangaLabels(img, map, combo.a, combo.b);
@@ -296,9 +297,9 @@ poses.forEach(function (pose) {
         else if (same(px, bColors[0]) || same(px, bColors[1])) bSeen[px.join(',')] = 1;
       } else if (part === 2 && claim === 1 && !shadeOk(px, aShort)) badAS++;
       else if (part === 2 && claim === 2 && !shadeOk(px, bShort)) badBS++;
-      else if (part === 3 && claim === 1 && !shadeOk(px, aShoe)) badA++;
-      else if (part === 3 && claim === 2 && !shadeOk(px, bShoe)) badB++;
-      if (claim && part && part !== 6 && data[p + 3] > 200 && nearWhite(px[0], px[1], px[2])) {
+      else if (part === 3 && claim === 1 && hsvOf(px[0], px[1], px[2]).s >= 0.12 && !shadeOk(px, aShoe)) badA++;
+      else if (part === 3 && claim === 2 && hsvOf(px[0], px[1], px[2]).s >= 0.12 && !shadeOk(px, bShoe)) badB++;
+      if (claim && part && part !== 3 && part !== 6 && data[p + 3] > 200 && nearWhite(px[0], px[1], px[2])) {
         var allowed = aColors.concat(bColors, [aShort, bShort, aShoe, bShoe]).some(function (c) { return same(px, c); });
         var piece = part === 1 ? (claim === 1 ? aColors : bColors) : part === 2 ? [claim === 1 ? aShort : bShort] : part === 3 ? [claim === 1 ? aShoe : bShoe] : [];
         var lightPiece = piece.some(function (c) { return nearWhite(c[0], c[1], c[2]); });
@@ -456,13 +457,25 @@ poses.forEach(function (pose) {
         if (comp.length < 80) continue;
         feet++;
         var sr = 0, sg = 0, sb = 0, c = 0, ci2, id2, o2, L;
+        var neutralN = 0, leatherN = 0;
+        var pixL = [];
         for (ci2 = 0; ci2 < comp.length; ci2++) {
           id2 = comp[ci2];
           o2 = id2 * 4;
           if (data[o2 + 3] < 200) continue;
           L = labOf(data[o2], data[o2 + 1], data[o2 + 2]);
           if (L[0] < 35) continue;
-          sr += data[o2]; sg += data[o2 + 1]; sb += data[o2 + 2];
+          var chroma = Math.max(data[o2], data[o2 + 1], data[o2 + 2]) - Math.min(data[o2], data[o2 + 1], data[o2 + 2]);
+          pixL.push([data[o2], data[o2 + 1], data[o2 + 2], chroma]);
+          if (chroma < 28) neutralN++;
+          else leatherN++;
+        }
+        // 鞋钉和鞋钉高光是中性灰，不进鞋面平均。整只鞋都发灰发白时仍要算进去。
+        var useNeutral = neutralN > comp.length * 0.25 && leatherN < 40;
+        if (!useNeutral && leatherN < 40) continue;
+        for (ci2 = 0; ci2 < pixL.length; ci2++) {
+          if (!useNeutral && pixL[ci2][3] < 28) continue;
+          sr += pixL[ci2][0]; sg += pixL[ci2][1]; sb += pixL[ci2][2];
           c++;
         }
         if (c < 40) continue;
@@ -482,10 +495,34 @@ poses.forEach(function (pose) {
     [1, 2].forEach(function (side) {
       var shoe = side === 1 ? aShoe : bShoe;
       var shoeWhite = nearWhite(shoe[0], shoe[1], shoe[2]);
+      if (shoeWhite) return;
+      var seenW = new Uint8Array(mask.claim.length);
+      var ww = base.width, hh = base.height;
       for (var i = 0; i < mask.claim.length; i++) {
-        if (mask.claim[i] !== side || mask.part[i] !== 3) continue;
+        if (seenW[i] || mask.claim[i] !== side || mask.part[i] !== 3) continue;
         var o = i * 4;
-        if (!shoeWhite && data[o + 3] > 200 && nearWhite(data[o], data[o + 1], data[o + 2])) bootWhite++;
+        if (!(data[o + 3] > 200 && nearWhite(data[o], data[o + 1], data[o + 2]))) { seenW[i] = 1; continue; }
+        var q = [i]; seenW[i] = 1;
+        var area = 0;
+        for (var qi = 0; qi < q.length; qi++) {
+          area++;
+          var id = q[qi], x = id % ww, y = (id / ww) | 0;
+          for (var dy = -1; dy <= 1; dy++) {
+            var ny = y + dy; if (ny < 0 || ny >= hh) continue;
+            for (var dx = -1; dx <= 1; dx++) {
+              if (!dx && !dy) continue;
+              var nx = x + dx; if (nx < 0 || nx >= ww) continue;
+              var nid = ny * ww + nx;
+              if (seenW[nid] || mask.claim[nid] !== side || mask.part[nid] !== 3) continue;
+              var no = nid * 4;
+              if (!(data[no + 3] > 200 && nearWhite(data[no], data[no + 1], data[no + 2]))) continue;
+              seenW[nid] = 1;
+              q.push(nid);
+            }
+          }
+        }
+        // 鞋钉上的一小点白高光留着。半只鞋还是白的才算没涂上。
+        if (area >= 40) bootWhite += area;
       }
     });
     // 草皮线以上、人物外面的成片白天空。球和网（碎边）不算。
@@ -537,7 +574,6 @@ poses.forEach(function (pose) {
         if (bodySide(-1) && bodySide(1)) skyBlob = Math.max(skyBlob, area);
       }
     }
-    var tag = pose + '/' + combo.name;
     ok(keys === 0, tag + ' 没有剩余色键', String(keys));
     ok(badA === 0 && badB === 0, tag + ' 球衣鞋是本人的颜色', badA + '/' + badB);
     ok(badAS === 0 && badBS === 0, tag + ' 短裤球袜是本人的颜色', badAS + '/' + badBS);

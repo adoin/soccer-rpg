@@ -3201,6 +3201,209 @@
       if (s > 1) s = 1;
       return hsvToRgb(tgtHs.h, s, hs.v / 255);
     }
+    // 1 = 侧条/鞋带（鞋色的浅色），2 = 鞋钉（中性灰，不吃 #FF0088）。
+    var bootDetail = new Uint8Array(n);
+    function flatBootKey(i) {
+      var o = i * 4;
+      return d[o + 3] >= 200 && d[o] > 240 && d[o + 1] < 25 && d[o + 2] > 100 && d[o + 2] < 170;
+    }
+    function bootGreyByte(r, g, b) {
+      var y = 0.299 * r + 0.587 * g + 0.114 * b;
+      if (y < 0) y = 0;
+      if (y > 255) y = 255;
+      return Math.round(y);
+    }
+    // 色键渗进灰钉和高光时，绿通道被抬起来，不能再锁成鞋的色相。
+    function bootStudNeutral(r, g, b) {
+      if (r > 240 && g < 25 && b > 100 && b < 170) return false;
+      var y = 0.299 * r + 0.587 * g + 0.114 * b;
+      var mx = r > g ? r : g; if (b > mx) mx = b;
+      var mn = r < g ? r : g; if (b < mn) mn = b;
+      if (y > 48 && (mx - mn) < 36) return true;
+      if (g >= 40 && r > g + 15 && b > g && y > 60) return true;
+      return false;
+    }
+    function lightBootTint(tgt) {
+      return [
+        Math.round(tgt[0] * 0.42 + 255 * 0.58),
+        Math.round(tgt[1] * 0.42 + 255 * 0.58),
+        Math.round(tgt[2] * 0.42 + 255 * 0.58),
+      ];
+    }
+    (function () {
+      var seenW = new Uint8Array(n);
+      function isStripeWhite(i) {
+        var o = i * 4;
+        if (d[o + 3] < 200) return false;
+        var lab = label[i];
+        if (lab !== 0 && lab !== MLAB.BOOTS) return false;
+        var r = d[o], g = d[o + 1], b = d[o + 2];
+        var y = 0.299 * r + 0.587 * g + 0.114 * b;
+        if (y < 200) return false;
+        var mx = r > g ? r : g; if (b > mx) mx = b;
+        var mn = r < g ? r : g; if (b < mn) mn = b;
+        if (mx - mn > 28) return false;
+        if (Math.abs(r - g) > 22 || Math.abs(g - b) > 28) return false;
+        return true;
+      }
+      var i, qi, id, x, y, dy, dx, ny, nx, nid;
+      for (i = 0; i < n; i++) {
+        if (seenW[i] || !isStripeWhite(i)) continue;
+        var q = [i];
+        seenW[i] = 1;
+        var pix = [i];
+        var touch = [0, 0, 0];
+        for (qi = 0; qi < q.length; qi++) {
+          id = q[qi]; x = id % w; y = (id / w) | 0;
+          for (dy = -1; dy <= 1; dy++) {
+            ny = y + dy; if (ny < 0 || ny >= h) continue;
+            for (dx = -1; dx <= 1; dx++) {
+              nx = x + dx; if (nx < 0 || nx >= w) continue;
+              nid = ny * w + nx;
+              if (label[nid] === MLAB.BOOTS || useLab[nid] === MLAB.BOOTS) {
+                var bf = useFig[nid] || figure[nid];
+                if (bf) touch[bf]++;
+              }
+              if (seenW[nid] || !isStripeWhite(nid)) continue;
+              seenW[nid] = 1;
+              q.push(nid);
+              pix.push(nid);
+            }
+          }
+        }
+        if (pix.length < 8 || pix.length > 500) continue;
+        var bfig = touch[1] >= touch[2] ? (touch[1] ? 1 : 0) : 2;
+        if (!bfig) continue;
+        var k;
+        for (k = 0; k < pix.length; k++) {
+          bootDetail[pix[k]] = 1;
+          useLab[pix[k]] = MLAB.BOOTS;
+          if (!useFig[pix[k]]) useFig[pix[k]] = bfig;
+        }
+        // 贴着白条的两圈不是色键的像素，是条上的棕斑，跟着条走浅色。
+        var ring, rk;
+        var edge = pix.slice();
+        for (ring = 0; ring < 2; ring++) {
+          var grown = [];
+          for (rk = 0; rk < edge.length; rk++) {
+            id = edge[rk]; x = id % w; y = (id / w) | 0;
+            for (dy = -1; dy <= 1; dy++) {
+              ny = y + dy; if (ny < 0 || ny >= h) continue;
+              for (dx = -1; dx <= 1; dx++) {
+                nx = x + dx; if (nx < 0 || nx >= w) continue;
+                nid = ny * w + nx;
+                if (bootDetail[nid] || flatBootKey(nid)) continue;
+                if (label[nid] !== MLAB.BOOTS && useLab[nid] !== MLAB.BOOTS) continue;
+                if (sourceInk(d[nid * 4], d[nid * 4 + 1], d[nid * 4 + 2])) continue;
+                bootDetail[nid] = 1;
+                if (!useFig[nid]) useFig[nid] = bfig;
+                grown.push(nid);
+              }
+            }
+          }
+          edge = grown;
+        }
+      }
+      // 没被涂上的浅品红，贴着鞋口是鞋带，贴着鞋底是鞋钉。
+      var bId = new Int16Array(n);
+      var bMin = [], bMax = [], bSide = [];
+      var seenB = new Uint8Array(n);
+      var bc = 0;
+      for (i = 0; i < n; i++) {
+        if (seenB[i] || label[i] !== MLAB.BOOTS) continue;
+        var bq = [i];
+        seenB[i] = 1;
+        var minY = h, maxY = 0, side = figure[i] || useFig[i] || 0, area = 0;
+        for (qi = 0; qi < bq.length; qi++) {
+          id = bq[qi]; area++;
+          y = (id / w) | 0;
+          if (y < minY) minY = y;
+          if (y > maxY) maxY = y;
+          x = id % w;
+          bId[id] = bc;
+          for (dy = -1; dy <= 1; dy++) {
+            ny = y + dy; if (ny < 0 || ny >= h) continue;
+            for (dx = -1; dx <= 1; dx++) {
+              nx = x + dx; if (nx < 0 || nx >= w) continue;
+              nid = ny * w + nx;
+              if (seenB[nid] || label[nid] !== MLAB.BOOTS) continue;
+              if ((figure[nid] || useFig[nid]) !== side && side) continue;
+              seenB[nid] = 1;
+              bq.push(nid);
+            }
+          }
+        }
+        if (area < 40) { bc++; bMin.push(0); bMax.push(0); bSide.push(0); continue; }
+        bMin.push(minY); bMax.push(maxY); bSide.push(side);
+        bc++;
+      }
+      function nearBoot(id0) {
+        var x0 = id0 % w, y0 = (id0 / w) | 0, rad;
+        for (rad = 1; rad <= 8; rad++) {
+          for (dy = -rad; dy <= rad; dy++) {
+            ny = y0 + dy; if (ny < 0 || ny >= h) continue;
+            for (dx = -rad; dx <= rad; dx++) {
+              if (Math.max(Math.abs(dx), Math.abs(dy)) !== rad) continue;
+              nx = x0 + dx; if (nx < 0 || nx >= w) continue;
+              nid = ny * w + nx;
+              if (label[nid] === MLAB.BOOTS) return nid;
+            }
+          }
+        }
+        return -1;
+      }
+      function isLacePink(i) {
+        var o = i * 4;
+        if (d[o + 3] < 180) return false;
+        if (label[i] !== 0) return false;
+        if (useLab[i] === MLAB.BOOTS || bootDetail[i]) return false;
+        var r = d[o], g = d[o + 1], b = d[o + 2];
+        if (!(r > 150 && g > 40 && r > g + 35 && b > 70 && g < 190)) return false;
+        if (r > 240 && g < 25 && b > 100 && b < 170) return false;
+        return true;
+      }
+      var seenP = new Uint8Array(n);
+      for (i = 0; i < n; i++) {
+        if (seenP[i] || !isLacePink(i)) continue;
+        var pq = [i];
+        seenP[i] = 1;
+        var pp = [i];
+        var skinT = false;
+        for (qi = 0; qi < pq.length; qi++) {
+          id = pq[qi]; x = id % w; y = (id / w) | 0;
+          for (dy = -1; dy <= 1; dy++) {
+            ny = y + dy; if (ny < 0 || ny >= h) continue;
+            for (dx = -1; dx <= 1; dx++) {
+              nx = x + dx; if (nx < 0 || nx >= w) continue;
+              nid = ny * w + nx;
+              var nl = label[nid];
+              if (nl === MLAB.SKIN || nl === MLAB.SKIN_LINE || nl === MLAB.MOUTH || nl === MLAB.TONGUE) skinT = true;
+              if (seenP[nid] || !isLacePink(nid)) continue;
+              seenP[nid] = 1;
+              pq.push(nid);
+              pp.push(nid);
+            }
+          }
+        }
+        if (skinT || pp.length < 2 || pp.length > 40) continue;
+        var nb = -1, pi;
+        for (pi = 0; pi < pp.length && nb < 0; pi++) nb = nearBoot(pp[pi]);
+        if (nb < 0) continue;
+        var comp = bId[nb];
+        if (!bSide[comp]) continue;
+        var span = bMax[comp] - bMin[comp];
+        if (span < 8) continue;
+        var sumY = 0;
+        for (pi = 0; pi < pp.length; pi++) sumY += (pp[pi] / w) | 0;
+        var rel = (sumY / pp.length - bMin[comp]) / span;
+        var mode = rel < 0.42 ? 1 : 2;
+        for (pi = 0; pi < pp.length; pi++) {
+          bootDetail[pp[pi]] = mode;
+          useLab[pp[pi]] = MLAB.BOOTS;
+          if (!useFig[pp[pi]]) useFig[pp[pi]] = bSide[comp];
+        }
+      }
+    })();
     for (p = 0; p < n; p++) {
       o = p * 4;
       lab = useLab[p];
@@ -3247,6 +3450,16 @@
       if (kind === MLAB.SKIN && sourceWhite(d[o], d[o + 1], d[o + 2])) continue;
       var tgt = targetRgb(kind, fig, p % w, (p / w) | 0);
       if (!tgt) continue;
+      if (kind === MLAB.BOOTS && bootDetail[p] === 1) {
+        var tint = lightBootTint(tgt);
+        d[o] = tint[0]; d[o + 1] = tint[1]; d[o + 2] = tint[2];
+        continue;
+      }
+      if (kind === MLAB.BOOTS && (bootDetail[p] === 2 || bootStudNeutral(d[o], d[o + 1], d[o + 2]))) {
+        var gv = bootGreyByte(d[o], d[o + 1], d[o + 2]);
+        d[o] = gv; d[o + 1] = gv; d[o + 2] = gv;
+        continue;
+      }
       var rgb = transfer(d[o], d[o + 1], d[o + 2], tgt, keyLab[sampleKey(kind, fig)]);
       d[o] = rgb[0]; d[o + 1] = rgb[1]; d[o + 2] = rgb[2];
     }
