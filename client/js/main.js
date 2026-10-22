@@ -326,15 +326,16 @@ if (DEBUG) window.addEventListener('error', function (e) { dbgErr = 'ERR: ' + (e
 
 // ---------------- 直接操控输入 ----------------
 // 桌面端：WASD 方向 / J或Shift 加速 / K 减速 / L或Tab 切换球员 / E 呼出指令菜单 / 空格 暂停
-// 移动端/Pad：透明虚拟手柄覆盖（左方向盘 + 右按键）
+// 移动端/Pad：透明虚拟手柄（左方向盘 + 右下确定/切换，减速在上方，菜单在右上角）
 var isTouch = ('ontouchstart' in window) || (navigator.maxTouchPoints > 0);
 var pad = { dx: 0, dy: 0, sprint: false, slow: false };
 var DPAD = { x: 140, y: 445, r: 95 };
+// 确定占原来加速键的主操作位，画大一点给拇指。减速和切换离开它一圈，避免连着误触。
+// 圆心距按命中半径（r+10）再留出约 66 画布像素。菜单不在这组里。
 var BTNS = [
-  { id: 'sprint', x: 1060, y: 400, r: 44, label: '加速' },
-  { id: 'slow',   x: 1170, y: 400, r: 44, label: '减速' },
-  { id: 'switch', x: 1060, y: 505, r: 44, label: '切换' },
-  { id: 'menu',   x: 1170, y: 505, r: 44, label: '菜单' },
+  { id: 'confirm', x: 1100, y: 430, r: 70, label: '确定' },
+  { id: 'switch',  x: 902,  y: 430, r: 42, label: '切换' },
+  { id: 'slow',    x: 990,  y: 265, r: 42, label: '减速' },
 ];
 var padTouchId = null;      // 方向盘上的触点 id
 var btnTouchIds = {};       // 触点 id -> 按键 id
@@ -509,22 +510,17 @@ function moveDpad(p) {
   setPad(+dx.toFixed(3), +(-dy).toFixed(3), pad.sprint, pad.slow);
 }
 function pressBtn(id) {
-  if (id === 'sprint') setPad(pad.dx, pad.dy, true, pad.slow);
-  else if (id === 'slow') setPad(pad.dx, pad.dy, pad.sprint, true);
+  if (id === 'confirm') { tapE(); return; } // 一次点按 = 一次 E，不按住连发
+  if (id === 'slow') setPad(pad.dx, pad.dy, pad.sprint, true);
   else if (id === 'switch') { sendInput({ switchPlayer: true }); toast('切换操控球员'); }
-  // ★ 手机主动决策（2026-10-09 用户：手机上无法提前选择）：持球时按"菜单"=
-  //   像 PC 按 E 一样主动呼出决策菜单（可提前选，不用等防守贴到 6 米）；
-  //   非持球时=暂停菜单
-  else if (id === 'menu') {
-    var owner = state && state.ball && state.ball.ownerId ? playerById(state.ball.ownerId) : null;
-    if (!headMenuOpen() && owner && owner.team === 'home' && state.controlledId === owner.id) {
-      sendInput({ menu: true });
-    } else togglePause();
-  }
 }
 function releaseBtn(id) {
-  if (id === 'sprint') setPad(pad.dx, pad.dy, false, pad.slow);
-  else if (id === 'slow') setPad(pad.dx, pad.dy, pad.sprint, false);
+  if (id === 'slow') setPad(pad.dx, pad.dy, pad.sprint, false);
+}
+// 点按合成一次不重复的 E：先按下再松开，菜单防抖（刚打开的 280ms、按住不松）照旧生效。
+function tapE() {
+  document.dispatchEvent(new KeyboardEvent('keydown', { key: 'e', code: 'KeyE', bubbles: true, cancelable: true }));
+  document.dispatchEvent(new KeyboardEvent('keyup', { key: 'e', code: 'KeyE', bubbles: true, cancelable: true }));
 }
 // ★ 头顶菜单打开时：方向盘切成菜单导航（上/下/左/右），右侧按键变成 确定/返回（复用桌面端键盘逻辑）
 function menuKeySynth(k) { headMenuKey({ key: k, preventDefault: function () {} }); }
@@ -546,10 +542,9 @@ function menuDpadStep(p) {
   if (dir !== menuDpadDir) { menuDpadDir = dir; menuKeySynth(dir); } // 进入新方向扇区才走一步
 }
 function menuBtn(id) {
-  // ★ 2026-10-14：加速键不再挪用为确定（用户要求），菜单里加速就是加速
-  if (id === 'slow') { if (headMenuOpen()) headMenuBack(); }      // 返回
-  else if (id === 'menu') togglePause();
-  else toast('请先完成头顶菜单选择');
+  if (id === 'confirm') { tapE(); return; } // 和电脑 E 同一条路：确认当前项
+  if (id === 'slow') { if (headMenuOpen()) headMenuBack(); return; } // 返回
+  toast('请先完成头顶菜单选择');
 }
 function menuBtnLabel(id, def) {
   if (!headMenuOpen()) return def;
@@ -1178,7 +1173,7 @@ function drawTitle() {
   addClick(bx, by, bw, bh, startMatch);
 
   text('电脑：WASD 移动 · J/Shift加速 K减速 · L切换球员 · E指令菜单/确定 · Q取消 · 空格暂停', W / 2, 672, 16, '#5f7099', 'center');
-  text('手机 / Pad：左虚拟方向盘移动 · 右侧按键加速/减速/切换/菜单', W / 2, 696, 16, '#5f7099', 'center');
+  text('手机 / Pad：左方向盘移动 · 右下「确定」等于 E · 减速/切换在旁边 · 右上角菜单', W / 2, 696, 16, '#5f7099', 'center');
 }
 
 // ---------------- 绘制：比赛 ----------------
@@ -1567,9 +1562,21 @@ function drawMinimap() {
 }
 
 function drawPauseButton() {
+  if (isTouch) { drawTouchMenuButton(); return; }
   var x = W - 120, y = 8, w = 106, h = 44;
   panel(x, y, w, h);
   text('⏸ 暂停', x + w / 2, y + h / 2, 20, '#fff', 'center', true);
+  addClick(x, y, w, h, function () { togglePause(); });
+}
+// 菜单离开右侧操作键，收到右上角。画小、半透明，和摇杆、确定都隔开。
+// 画布本身已经让出安全区，这里再离边一截。
+function drawTouchMenuButton() {
+  var w = 72, h = 30, x = W - w - 14, y = 8;
+  ctx.fillStyle = 'rgba(8,12,26,0.30)';
+  rr(x, y, w, h, 8); ctx.fill();
+  ctx.strokeStyle = 'rgba(255,255,255,0.28)';
+  ctx.lineWidth = 1.5; ctx.stroke();
+  text('菜单', x + w / 2, y + h / 2, 14, 'rgba(255,255,255,0.62)', 'center');
   addClick(x, y, w, h, function () { togglePause(); });
 }
 
@@ -1678,7 +1685,7 @@ var CMD_ICONS = { dribble: '💨', burst: '💨', pass: '➡️', protect: '🛡
 
 function drawIdleHint(x, y, w, h) {
   panel(x, y, w, h);
-  var msg = isTouch ? '拖左盘移动（绿圈球员）；持球遇防守时在球员头顶选指令；防守贴近对方持球者可上抢'
+  var msg = isTouch ? '拖左盘移动；点「确定」呼出或确认指令（和电脑的 E 一样）'
                     : 'WASD 移动（绿圈球员）；持球遇防守时在球员头顶选指令；防守贴近对方持球者可上抢';
   if (state) {
     if (state.restart && (state.phase === 'whistle' || state.phase === 'penalty')) {
@@ -1806,11 +1813,13 @@ function drawGamepad() {
   ctx.strokeStyle = 'rgba(255,255,255,0.35)'; ctx.lineWidth = 2; ctx.stroke();
   // 右：功能按键
   BTNS.forEach(function (b) {
-    var active = (b.id === 'sprint' && pad.sprint) || (b.id === 'slow' && pad.slow);
-    ctx.fillStyle = active ? 'rgba(120,255,160,0.28)' : 'rgba(255,255,255,0.08)';
+    var active = b.id === 'slow' && pad.slow;
+    var primary = b.id === 'confirm';
+    ctx.fillStyle = active ? 'rgba(120,255,160,0.28)' : (primary ? 'rgba(255,217,74,0.20)' : 'rgba(255,255,255,0.08)');
     ctx.beginPath(); ctx.arc(b.x, b.y, b.r, 0, Math.PI * 2); ctx.fill();
-    ctx.strokeStyle = 'rgba(255,255,255,0.28)'; ctx.lineWidth = 2; ctx.stroke();
-    text(menuBtnLabel(b.id, b.label), b.x, b.y + 1, 20, 'rgba(255,255,255,0.75)', 'center', true);
+    ctx.strokeStyle = primary ? 'rgba(255,226,140,0.72)' : 'rgba(255,255,255,0.28)';
+    ctx.lineWidth = primary ? 3 : 2; ctx.stroke();
+    text(menuBtnLabel(b.id, b.label), b.x, b.y + 1, primary ? 26 : 18, 'rgba(255,255,255,0.86)', 'center', true);
   });
 }
 
