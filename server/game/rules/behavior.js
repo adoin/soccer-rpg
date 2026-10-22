@@ -175,6 +175,7 @@ module.exports = {
   defensiveShape: defensiveShape,
   shapeAnchor: shapeAnchor, // ★ 2026-10-12 三层 AI：队形锚点
   attackTasks: attackTasks,
+  attackSupportTargets: attackSupportTargets,
   markTargets: markTargets,
   carrierAdjust: carrierAdjust,
   keeperTarget: keeperTarget,
@@ -501,4 +502,74 @@ function updateSwaps(match, team, pressing, carrierId) {
     used[p.id] = true;
     used[best.id] = true;
   });
+}
+
+// 控球推进时的接应：阵型还在，但前场必须跟着球走。
+// 中锋领在前面，边锋拉开，前腰和后腰给传球点，后卫整条线前提、留在球后面。
+function attackSupportTargets(match, carrier) {
+  if (!carrier) return {};
+  var shift = blockShift(match, carrier.team);
+  shift._ballY = match.ball.y;
+  var attackU = carrier.team === 'home' ? carrier.x : (FIELD_W - carrier.x);
+  var out = {};
+  match.players.forEach(function (p) {
+    if (p.team !== carrier.team || p.id === carrier.id || p.sentOff || p.pos === 'GK') return;
+    // 接应按本人角色跑，不跟临时补位换号，避免中锋被换去拖后。
+    var num = p.num;
+    var form = slotDef(p, num);
+    var slot = slotPoint(p, num, shift);
+    var line = form.line || 'DM';
+    var wide = Math.abs((form.y || FIELD_H / 2) - FIELD_H / 2) > 14;
+    var tx, ty, sprint = false, spMul = 0.8;
+    if (line === 'DF' || p.pos === 'DF') {
+      tx = slot.x;
+      ty = slot.y;
+      sprint = true;
+      spMul = 0.95;
+      p._task = 'cover';
+    } else if (line === 'ST' || p.pos === 'FW') {
+      var uSt = clamp(Math.max(slot.u, attackU + 8), LINE_U.ST.min, 100);
+      tx = carrier.team === 'home' ? uSt : FIELD_W - uSt;
+      ty = clamp((form.y || 34) * 0.55 + (FIELD_H / 2) * 0.45, 22, 46);
+      sprint = true;
+      spMul = 1;
+      p._task = 'run';
+    } else if (line === 'AM' && wide) {
+      var uW = clamp(Math.max(slot.u, attackU + 1), LINE_U.AM.min, 96);
+      tx = carrier.team === 'home' ? uW : FIELD_W - uW;
+      ty = (form.y || 34) < FIELD_H / 2 ? 13 : FIELD_H - 13;
+      sprint = true;
+      spMul = 1;
+      p._task = 'run';
+    } else if (line === 'AM') {
+      var side = (form.y || 34) >= FIELD_H / 2 ? 1 : -1;
+      var uA = clamp(attackU + 4, LINE_U.AM.min, 96);
+      tx = carrier.team === 'home' ? uA : FIELD_W - uA;
+      ty = clamp(carrier.y + side * 12, 10, FIELD_H - 10);
+      sprint = true;
+      spMul = 1;
+      p._task = 'support';
+    } else {
+      var uD = clamp(attackU - 12, LINE_U.DM.min, Math.min(86, Math.max(LINE_U.DM.min, attackU - 6)));
+      tx = carrier.team === 'home' ? uD : FIELD_W - uD;
+      ty = clamp((form.y || 34) + (carrier.y - FIELD_H / 2) * 0.25, 12, FIELD_H - 12);
+      sprint = true;
+      spMul = 1;
+      p._task = 'support';
+    }
+    var dx = tx - carrier.x, dy = ty - carrier.y;
+    var dd = Math.sqrt(dx * dx + dy * dy);
+    if (dd < 9 && dd > 0.01 && line !== 'DF' && p.pos !== 'DF') {
+      tx = carrier.x + dx / dd * 9.2;
+      ty = carrier.y + dy / dd * 9.2;
+    }
+    out[p.id] = {
+      x: clamp(tx, 3, FIELD_W - 3),
+      y: clamp(ty, 4, FIELD_H - 4),
+      sprint: sprint,
+      spMul: spMul,
+      line: line,
+    };
+  });
+  return out;
 }

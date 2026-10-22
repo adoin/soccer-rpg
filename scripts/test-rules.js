@@ -285,7 +285,7 @@ console.log('== 犯规 / 抢断 / 裁判 ==');
   var f = Foul.judgeFoul(m, P(m, 'a2'), P(m, 'h10'), {});
   f.penalty = true; f.card = 'yellow'; f.advantage = false;
   var act = m.applyFoulResult(f);
-  ok(m.phase === 'penalty' || m.phase === 'goal', '点球进入点球/进球阶段', m.phase);
+  ok(m.phase === 'penalty' || m.phase === 'decision' || m.phase === 'goal', '点球进入点球/选人/进球阶段', m.phase);
   ok(act.kind === 'penalty' || act.kind === 'goal', '点球产生结算事件', act.kind);
 })();
 

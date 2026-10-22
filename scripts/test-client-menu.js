@@ -163,6 +163,24 @@ try {
   check('突然加速发出', T.getUi().choosing === true);
 } catch (e) { check('突破二级菜单无异常', false); console.log('  threw: ' + e.message); }
 
+// ---- 4c. 射门进二级菜单：抽射 / 推射 ----
+try {
+  var decS = attackDecision();
+  decS.options[2].shots = [
+    { id: 'shot-driven', name: '抽射', cost: 7, rate: 40, enabled: true },
+    { id: 'shot-placed', name: '推射', cost: 6, rate: 55, enabled: true },
+  ];
+  T.getUi().choosing = false;
+  T.setState(baseState(decS));
+  T.openHeadMenu(decS);
+  T.getUi().hmenu.stack[0].sel = 2;
+  T.headMenuKey(key('Enter'));
+  check('射门进入射门层', T.hmTop().kind === 'shots');
+  T.headMenuKey(key('s'));
+  T.headMenuKey(key('Enter'));
+  check('推射发出', T.getUi().choosing === true);
+} catch (e) { check('射门二级菜单无异常', false); console.log('  threw: ' + e.message); }
+
 // ---- 5. 防守菜单确认无异常 ----
 try {
   var dec5 = {

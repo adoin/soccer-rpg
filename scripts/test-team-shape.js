@@ -91,7 +91,7 @@ console.log('== 任意球 / 点球 / 界外球 ==');
     spot: { x: 60, y: 34 }, card: 'none', penalty: false, advantage: false, severity: 40,
   };
   var act = m.applyFoulResult(f);
-  ok(m.phase === 'whistle' && act.kind === 'foul' && act.cut == null, '犯规停球且不盖住球场', m.phase + '/' + act.cut);
+  ok((m.phase === 'whistle' || m.phase === 'decision') && act.kind === 'foul' && act.cut == null, '犯规停球且不盖住球场', m.phase + '/' + act.cut);
   ok(m.restart && m.restart.label === '犯规 → 任意球', '横幅是犯规 → 任意球', m.restart && m.restart.label);
   ok(Math.abs(m.ball.x - 60) < 0.05 && Math.abs(m.ball.y - 34) < 0.05, '球放在犯规点', m.ball.x + ',' + m.ball.y);
   ok(Math.abs(P(m, 'h10').x - 60) < 0.05 && P(m, 'h10').id === m.ball.ownerId, '主罚者站在球上', P(m, 'h10').x);
@@ -152,7 +152,7 @@ console.log('== 任意球 / 点球 / 界外球 ==');
     severity: 70, severityLabel: '禁区内犯规',
   };
   var act = m.applyFoulResult(f);
-  ok(m.phase === 'penalty' && act.kind === 'penalty', '禁区内犯规进入点球', m.phase + '/' + act.kind);
+  ok((m.phase === 'penalty' || m.phase === 'decision') && act.kind === 'penalty', '禁区内犯规进入点球', m.phase + '/' + act.kind);
   ok(act.text === '🟨 黄牌！爆裂 直 禁区内犯规，放倒了 风间 隼。青鹰高校 获得点球。', '点球文案', act.text);
   ok(act.text.split('青鹰高校').length === 2 && act.text.indexOf('获得直接任意球') < 0, '点球队名只写一次', act.text);
   ok(m.restart && m.restart.label === '犯规 → 点球', '点球横幅', m.restart && m.restart.label);
@@ -321,6 +321,41 @@ console.log('== 临时补位，松开后换回 ==');
   set(m, 'h9', 60, 34); m.ball.x = 60; m.ball.y = 34;
   m.simulate(0.12);
   ok(!P(m, 'h2').swapWith && P(m, mate).cover === P(m, mate).num, '球交出去且没人盯防后换回', mate);
+})();
+
+console.log('== 带球时队友跟上 ==');
+(function () {
+  var m = newMatch(70);
+  m.players.forEach(function (p) {
+    if (p.team === 'home') { p.x = p.hx; p.y = p.hy; }
+    else { p.x = 96; p.y = p.hy; p.frozenUntil = 1e15; }
+  });
+  set(m, 'h10', 46, 34);
+  m.ball.ownerId = 'h10'; m.ball.x = 47; m.ball.y = 34;
+  m.control.playerId = 'h10';
+  m._lastCarrierId = 'h10';
+  var x9 = P(m, 'h9').x, x7 = P(m, 'h7').x, x11 = P(m, 'h11').x;
+  var dfs0 = m.players.filter(function (p) { return p.team === 'home' && p.pos === 'DF'; });
+  var dfx0 = dfs0.reduce(function (s, p) { return s + p.x; }, 0) / dfs0.length;
+  var i;
+  for (i = 0; i < 45; i++) {
+    m.setInput({ dx: 1, dy: 0, sprint: true });
+    if (m.phase !== 'play') break;
+    m.simulate(0.1);
+  }
+  var carrier = P(m, 'h10');
+  var dfs = m.players.filter(function (p) { return p.team === 'home' && p.pos === 'DF'; });
+  var dfx = dfs.reduce(function (s, p) { return s + p.x; }, 0) / dfs.length;
+  var lanes = m.players.filter(function (p) {
+    return p.team === 'home' && p.id !== 'h10' && p.pos !== 'GK' && p.pos !== 'DF' &&
+      dist(p, carrier) >= 8 && dist(p, carrier) <= 24;
+  });
+  ok(carrier.x > 62, '持球人向前推进', carrier.x.toFixed(1));
+  ok(P(m, 'h9').x > x9 + 8 && P(m, 'h9').x > carrier.x + 1, '中锋领在球的前面', P(m, 'h9').x.toFixed(1) + ' vs ' + carrier.x.toFixed(1));
+  ok(P(m, 'h7').y < 18 && P(m, 'h7').x > x7 + 8, '左边锋拉开并跟上', P(m, 'h7').x.toFixed(1) + ',' + P(m, 'h7').y.toFixed(1));
+  ok(P(m, 'h11').y > 50 && P(m, 'h11').x > x11 + 8, '右边锋拉开并跟上', P(m, 'h11').x.toFixed(1) + ',' + P(m, 'h11').y.toFixed(1));
+  ok(lanes.length >= 2, '中前场有人拉开给传球点', String(lanes.length));
+  ok(dfx > dfx0 + 6 && dfx < carrier.x - 8, '后卫线整体前提并留在球后', dfx.toFixed(1) + ' ball ' + carrier.x.toFixed(1));
 })();
 
 if (failures) {

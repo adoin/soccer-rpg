@@ -432,6 +432,10 @@ document.addEventListener('keydown', function (e) {
     return;
   }
   if (screen !== 'game') return;
+  if (state && state.decision && state.decision.kind === 'qte' && !e.repeat) {
+    var qk = (e.key || '').toLowerCase();
+    if (qk === 'e' || qk === 'enter' || qk === ' ') { confirmQte(); e.preventDefault(); return; }
+  }
   if (DEBUG) { var _lt = hmTop(); dbgKey = 'key=' + e.key + ' menu=' + (headMenuOpen() ? 'open' : 'shut') + ' top=' + (_lt ? (_lt.kind + '#' + _lt.sel) : 'none'); }
   if (headMenuOpen() && headMenuKey(e)) return; // 头顶菜单打开时接管键盘（方向键/回车/空格选，Esc 返回）
   var k = (e.key || '').toLowerCase();
@@ -632,7 +636,16 @@ function refresh() {
     state = r.state;
     takeSnapshot(); // ★ 快照插值：记录带时间戳的位置快照，渲染按墙钟匀速过渡
     var hasDec = !!(state && state.decision);
-    if (hasDec && !ui._hadDecision) ui.choosing = false; // 新决策到达：清掉旧标记
+    var decSig = '';
+    if (hasDec) {
+      var decIds = (state.decision.options || []).map(function (o) { return o.id; }).join(',');
+      decSig = (state.decision.kind || '') + '|' + state.decision.playerId + '|' + (state.decision.shotId || '') + '|' + decIds;
+    }
+    if (decSig !== ui._decSig) {
+      ui.choosing = false; // 新的一层菜单（选人 / 射门 / QTE）不能停在「判定中」
+      ui.hmenu = null;
+      ui._decSig = decSig;
+    }
     if (!hasDec) ui.choosing = false;
     // ★ 看门狗（2026-10-12 试玩：偶发"判定中…"永久卡死）：本地引擎指令毫秒级结算，
     //   5 秒还没清掉 choosing 必是状态错乱，强制恢复 + 提示，不让玩家只能刷新
@@ -708,6 +721,7 @@ function headMenuBack() { popHmLevel(); } // 头顶菜单内 Esc = 返回上一�
 
 function optionSub(o) {
   if (o.moves) return '选择动作';
+  if (o.shots) return '选择射门';
   if (o.skills) return '选择技能';
   return (o.rate != null ? o.rate + '% · ' : '') + o.cost + '体能';
 }
@@ -720,6 +734,7 @@ function commandItem(o) {
       if (ui.choosing) return;
       if (o.id === 'pass') { ui.hmenu.passOpt = o; initAim(ui.hmenu); pushHmLevel({ kind: 'aim', title: '落点', sel: 0 }); requestHmPreview(); }
       else if (o.moves && o.moves.length) pushHmLevel(moveLevel(o));
+      else if (o.shots && o.shots.length) pushHmLevel(shotLevel(o));
       else if (o.skills && o.skills.length) pushHmLevel(skillLevel(o));
       else sendCommand(o);
     }
@@ -736,6 +751,18 @@ function moveLevel(o) {
     });
   });
   return { kind: 'moves', title: o.name, items: items, sel: 1 };
+}
+function shotLevel(o) {
+  var items = [backItem()];
+  o.shots.forEach(function (sh) {
+    items.push({
+      label: (CMD_ICONS[sh.id] || '⚽') + ' ' + sh.name,
+      sub: (sh.rate != null ? sh.rate + '% · ' : '') + sh.cost + '体能',
+      enabled: sh.enabled !== false,
+      fn: function () { sendCommand(sh); }
+    });
+  });
+  return { kind: 'shots', title: o.name, items: items, sel: 1 };
 }
 function skillLevel(o) {
   var items = [backItem()];
@@ -863,9 +890,51 @@ function hmText(str, x, y, size, color, bold) {
   return ctx.measureText(str).width;
 }
 
+function qteMark(qte, now) {
+  var segs = (qte && qte.segments) || [0.6, 1.1, 0.3];
+  var segMs = (qte && qte.segMs) || 640;
+  var elapsed = Math.max(0, now - (ui.qteStart || now));
+  var idx = Math.floor(elapsed / segMs) % segs.length;
+  var u = (elapsed % segMs) / segMs;
+  var phase = (u * segs[idx]) % 2;
+  return phase <= 1 ? phase : 2 - phase;
+}
+function confirmQte() {
+  if (!state || !state.decision || state.decision.kind !== 'qte' || ui.choosing) return;
+  var mark = qteMark(state.decision.qte, Date.now());
+  sendCommand({ id: 'qte-hit', enabled: true, cost: 0 }, { mark: Math.round(mark * 1000) / 1000 });
+}
+function drawPenaltyQte(d) {
+  var key = (d.playerId || '') + ':' + (d.shotId || '') + ':' + ((d.qte && d.qte.segments) || []).join(',');
+  if (ui.qteKey !== key) { ui.qteKey = key; ui.qteStart = Date.now(); }
+  var mark = qteMark(d.qte, Date.now());
+  var bw = 520, bh = 36, bx = (W - bw) / 2, by = 470;
+  ctx.fillStyle = 'rgba(8,12,26,0.88)';
+  rr(bx - 16, by - 78, bw + 32, 150, 12); ctx.fill();
+  ctx.strokeStyle = 'rgba(255,217,74,0.85)'; ctx.lineWidth = 2;
+  rr(bx - 16, by - 78, bw + 32, 150, 12); ctx.stroke();
+  text('点球 · 光标靠近中间时按确定', W / 2, by - 48, 22, '#ffd94a', 'center', true);
+  ctx.fillStyle = 'rgba(255,255,255,0.12)';
+  rr(bx, by, bw, bh, 8); ctx.fill();
+  var sweet = bw * 0.12;
+  ctx.fillStyle = 'rgba(90,220,120,0.55)';
+  ctx.fillRect(bx + bw / 2 - sweet / 2, by, sweet, bh);
+  var mx = bx + mark * bw;
+  ctx.fillStyle = '#ffd94a';
+  ctx.beginPath();
+  ctx.moveTo(mx, by - 8);
+  ctx.lineTo(mx - 10, by - 22);
+  ctx.lineTo(mx + 10, by - 22);
+  ctx.closePath();
+  ctx.fill();
+  ctx.fillRect(mx - 3, by, 6, bh);
+  text('确定  =  E', W / 2, by + 58, 20, '#fff', 'center', true);
+}
+
 function drawHeadMenu() {
   var d = state.decision;
   if (!d) { ui.hmenu = null; return; }
+  if (d.kind === 'qte') { drawPenaltyQte(d); return; }
   if (!ui.hmenu || ui.hmenu.playerId !== d.playerId) openHeadMenu(d);
   var hm = ui.hmenu;
   if (ui.choosing) {
@@ -1671,17 +1740,20 @@ function drawPlayerCard(x, y, w, h) {
   text('Lv.' + p.level + '  ' + skill, x + 68, y + 66, 12, '#ffd94a', 'left');
 }
 
-var CMD_ICONS = { dribble: '💨', burst: '💨', pass: '➡️', protect: '🛡️', shoot: '⚽', special: '🔥', feint: '🌀', retreat: '↩️', tackle: '🦵', jockey: '🧱', 'def-skills': '🛡️', 'def-flying': '🛝', 'def-sweep': '🌀', 'def-shoulder': '💪', 'def-elbow': '🚧' };
+var CMD_ICONS = { dribble: '💨', burst: '💨', pass: '➡️', protect: '🛡️', shoot: '⚽', special: '🔥', feint: '🌀', retreat: '↩️', tackle: '🦵', jockey: '🧱', 'def-skills': '🛡️', 'def-flying': '🛝', 'def-sweep': '🌀', 'def-shoulder': '💪', 'def-elbow': '🚧', 'shot-driven': '💥', 'shot-placed': '🎯', 'shot-curl': '🌀' };
 
 function drawIdleHint(x, y, w, h) {
   panel(x, y, w, h);
   var msg = isTouch ? '拖左盘移动；点「确定」呼出或确认指令（和电脑的 E 一样）'
                     : 'WASD 移动（绿圈球员）；持球遇防守时在球员头顶选指令；防守贴近对方持球者可上抢';
   if (state) {
-    if (state.restart && (state.phase === 'whistle' || state.phase === 'penalty')) {
+    if (state.restart && (state.phase === 'whistle' || state.phase === 'penalty' || state.phase === 'decision')) {
       msg = state.restart.label || '定位球';
-      if (state.restart.team === 'home' && state.restart.kind !== 'goalkick' && state.restart.kind !== 'penalty') msg += ' · 按 E 传球或射门';
-      else if (state.restart.team === 'home' && state.restart.kind === 'penalty') msg += ' · 主罚';
+      if (state.decision && state.decision.kind === 'taker') msg += ' · 选主罚人，按确定';
+      else if (state.decision && state.decision.kind === 'qte') msg += ' · 光标居中时按确定';
+      else if (state.decision && state.decision.kind === 'penalty-shot') msg += ' · 选择射门';
+      else if (state.decision && state.decision.kind === 'setpiece') msg += ' · 传球或射门';
+      else if (state.restart.team === 'home' && state.restart.kind === 'goalkick') msg += ' · 门将开球';
     }
     else if (state.phase === 'kickoff') msg = '开球！';
     else if (state.phase === 'goal') msg = '⚽ 进球！';
@@ -1713,7 +1785,7 @@ function wrapText(str, x, y, maxW, size, color, maxLines) {
 // 定位球：场上画球点，画面上方留一条短横幅（犯规/越位 → 任意球，点球同理）。
 function drawRestartMark() {
   if (!state || !state.restart) return;
-  if (state.phase !== 'whistle' && state.phase !== 'penalty') return;
+  if (state.phase !== 'whistle' && state.phase !== 'penalty' && state.phase !== 'decision') return;
   var r = state.restart;
   var spot = project(r.x, r.y);
   ctx.save();

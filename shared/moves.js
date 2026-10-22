@@ -55,12 +55,56 @@
     return out;
   }
 
+  // 每人默认都会的两脚射门。抽射靠力量打穿，推射靠精度把球留在门框里。
+  var SHOTS = {
+    driven: {
+      id: 'shot-driven', name: '抽射', cost: 7, power: 1.22, accuracy: 0.62, beat: 0.16,
+      desc: '力量大，更容易打穿门将，也更容易打高或打偏。',
+    },
+    placed: {
+      id: 'shot-placed', name: '推射', cost: 6, power: 0.78, accuracy: 0.88, beat: -0.04,
+      desc: '精度高，不容易打飞或打偏，力量小。',
+    },
+  };
+  var EXTRA_SHOTS = {
+    curl: {
+      id: 'shot-curl', name: '弧线球', cost: 7, power: 0.92, accuracy: 0.8, beat: 0.1,
+      desc: '绕开门将和防守人。',
+    },
+  };
+
+  function shotMoves(player) {
+    var list = [SHOTS.driven, SHOTS.placed];
+    var known = (player && player.shots) || [];
+    known.forEach(function (id) {
+      if (EXTRA_SHOTS[id]) list.push(EXTRA_SHOTS[id]);
+    });
+    if (player && player.special && player.special.name && (player.pos === 'FW' || player.pos === 'MF')) {
+      list.push({
+        id: 'special', name: '必杀技·' + player.special.name, cost: 9,
+        power: 1.28, accuracy: 0.7, beat: 0.2,
+        desc: '专属射门，威力更大。',
+      });
+    }
+    return list;
+  }
+
+  function shotById(id, player) {
+    if (id === 'shoot') return SHOTS.driven;
+    var list = shotMoves(player || { shots: ['curl'], special: { name: 'x' }, pos: 'FW' });
+    for (var i = 0; i < list.length; i++) if (list[i].id === id) return list[i];
+    return null;
+  }
+
   return {
     CHALLENGE_RANGE: CHALLENGE_RANGE,
     BURST: BURST,
     FEINT: FEINT,
     DEF_SKILLS: DEF_SKILLS,
+    SHOTS: SHOTS,
     attackMoves: attackMoves,
     defSkillsOf: defSkillsOf,
+    shotMoves: shotMoves,
+    shotById: shotById,
   };
 });

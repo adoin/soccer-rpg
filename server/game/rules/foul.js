@@ -134,6 +134,7 @@ function judgeFoul(match, defender, victim, ctx) {
     penalty: penalty,
     advantage: advantage,
     strictLabel: strict.label,
+    live: true,
   };
 }
 

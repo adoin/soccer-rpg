@@ -83,8 +83,8 @@
     { num: 6,  name: '山田 光',  pos: 'MF', level: 8,  stats: base({ passing: 12, vision: 12, decisions: 12, pace: 12, acceleration: 11, tackling: 11, marking: 10, teamwork: 12, stamina: 12, composure: 11, aggression: 10 }), special: null },
     { num: 7,  name: '佐藤 疾风', pos: 'MF', level: 10, stats: base({ pace: 16, acceleration: 16, dribbling: 15, agility: 14, balance: 13, firstTouch: 13, technique: 13, passing: 12, vision: 12, offBall: 12, finishing: 12, longShots: 11, composure: 12, determination: 12 }), special: { name: '疾风突破射门' } },
     { num: 8,  name: '斋藤 心',  pos: 'MF', level: 8,  stats: base({ passing: 12, vision: 12, decisions: 13, tackling: 11, pace: 11, technique: 11, teamwork: 13, composure: 11, stamina: 11, aggression: 9 }), special: null },
-    { num: 9,  name: '木村 雷',  pos: 'FW', level: 11, stats: base({ finishing: 15, strength: 14, heading: 14, longShots: 13, jumping: 13, balance: 12, pace: 13, acceleration: 12, offBall: 13, anticipation: 13, composure: 12, bravery: 12, firstTouch: 12 }), special: { name: '雷光射门' } },
-    { num: 10, name: '风间 隼',  pos: 'MF', level: 12, stats: base({ pace: 17, acceleration: 16, dribbling: 16, finishing: 15, firstTouch: 15, anticipation: 15, offBall: 15, composure: 14, agility: 14, technique: 14, decisions: 14, determination: 14, vision: 13, balance: 13, longShots: 12, jumping: 12 }), special: { name: '疾风射门' } },
+    { num: 9,  name: '木村 雷',  pos: 'FW', level: 11, stats: base({ finishing: 15, strength: 14, heading: 14, longShots: 13, jumping: 13, balance: 12, pace: 13, acceleration: 12, offBall: 13, anticipation: 13, composure: 12, bravery: 12, firstTouch: 12 }), special: { name: '雷光射门' }, shots: ['curl'] },
+    { num: 10, name: '风间 隼',  pos: 'MF', level: 12, stats: base({ pace: 17, acceleration: 16, dribbling: 16, finishing: 15, firstTouch: 15, anticipation: 15, offBall: 15, composure: 14, agility: 14, technique: 14, decisions: 14, determination: 14, vision: 13, balance: 13, longShots: 12, jumping: 12 }), special: { name: '疾风射门' }, shots: ['curl'] },
     { num: 11, name: '中村 翼',  pos: 'MF', level: 10, stats: base({ finishing: 13, pace: 14, acceleration: 14, dribbling: 12, jumping: 14, heading: 13, offBall: 13, anticipation: 13, composure: 12, firstTouch: 12, longShots: 11, strength: 11 }), special: { name: '翔空射门' } },
   ];
 
@@ -130,6 +130,7 @@
           special: p.special ? { name: p.special.name } : null,
           // 每人都会突然加速。假动作和防守技能是学过才出现在菜单里的。
           moves: ({ 5: ['feint'], 7: ['feint'], 10: ['feint'], 11: ['feint'] })[p.num] || [],
+          shots: p.shots ? p.shots.slice() : [],
           defSkills: (slot && slot.pos === 'DF')
             ? ['flying', 'sweep', 'shoulder', 'elbow']
             : ((p.num === 6 || p.num === 8) ? ['sweep', 'shoulder'] : []),

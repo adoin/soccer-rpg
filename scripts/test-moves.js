@@ -92,7 +92,9 @@ console.log('== 防守技能 ==');
   m2.resolveDefSkill(m2.byId.h4, m2.byId.a10, Moves.DEF_SKILLS.flying);
   ok(m2.lastAction.cut === null && m2.ball.ownerId === 'a10', '够不着的飞铲不播分镜也不断球');
   ['flying', 'sweep', 'shoulder', 'elbow'].forEach(function (key) {
-    var mm = fresh(key);
+    var mm = fresh(9);
+    // 技能名不是数字种子，比赛会改用当前时间，断言会时好时坏。这里固定掷骰为成功断球。
+    mm.rng = function () { return 0; };
     var info = mm.debugPose(key === 'flying' ? 'fly' : key);
     var cut = Moves.DEF_SKILLS[key].cut;
     ok(info.cut === cut && info.owner === 'h4', key + ' 断球并播自己的分镜', info.cut);
