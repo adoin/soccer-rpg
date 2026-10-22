@@ -2953,6 +2953,23 @@
       if (d[o + 3] < 200) continue;
       if (sourceInk(d[o], d[o + 1], d[o + 2])) continue;
       if (sourceWhite(d[o], d[o + 1], d[o + 2])) continue;
+      var sr0 = d[o], sg0 = d[o + 1], sb0 = d[o + 2];
+      var smx = sr0 > sg0 ? sr0 : sg0; if (sb0 > smx) smx = sb0;
+      var smn = sr0 < sg0 ? sr0 : sg0; if (sb0 < smn) smn = sb0;
+      if (smx - smn <= 36) {
+        var skyish = false;
+        var kdx0, kdy0, knx0, kny0;
+        var sx0 = p % w, sy0 = (p / w) | 0;
+        for (kdy0 = -1; kdy0 <= 1 && !skyish; kdy0++) {
+          kny0 = sy0 + kdy0; if (kny0 < 0 || kny0 >= h) continue;
+          for (kdx0 = -1; kdx0 <= 1; kdx0++) {
+            knx0 = sx0 + kdx0; if (knx0 < 0 || knx0 >= w) continue;
+            var klab0 = label[kny0 * w + knx0];
+            if (klab0 === MLAB.SKY || klab0 === MLAB.GRASS || klab0 === MLAB.LINE || klab0 === MLAB.NET) skyish = true;
+          }
+        }
+        if (skyish) continue;
+      }
       var sx = p % w, sy = (p / w) | 0;
       var sv = [0, 0, 0];
       var sdy, sdx, sny, snx, snid;
@@ -3072,6 +3089,157 @@
     for (p = 0; p < n; p++) {
       if (!useFig[p] && regionKind(useLab[p])) useFig[p] = nearFig(p);
     }
+    // 离身体远、又贴着草地、白线、天空或球网的球衣块，是漏到场地上的。
+    // 色键改成旁边的地面色。白线、草地、天空和球网本身保持原色。
+    var bodyDist = new Int16Array(n);
+    var fieldDist = new Int16Array(n);
+    (function () {
+      var seenK = new Uint8Array(n);
+      var bigBody = new Uint8Array(n);
+      (function () {
+        var seenBdy = new Uint8Array(n);
+        var bi, bqi, bid, bx, by, bdy, bdx, bnx, bny, bnid;
+        for (bi = 0; bi < n; bi++) {
+          if (seenBdy[bi]) continue;
+          var bl = label[bi];
+          if (bl !== MLAB.SHIRT && bl !== MLAB.SHORTS && bl !== MLAB.SOCKS && bl !== MLAB.BOOTS
+            && bl !== MLAB.SKIN && bl !== MLAB.SKIN_LINE && bl !== MLAB.HAIR && bl !== MLAB.HAIR_LINE) continue;
+          var bside = figure[bi];
+          var bq = [bi];
+          seenBdy[bi] = 1;
+          var bpix = [bi];
+          for (bqi = 0; bqi < bq.length; bqi++) {
+            bid = bq[bqi]; bx = bid % w; by = (bid / w) | 0;
+            for (bdy = -1; bdy <= 1; bdy++) {
+              bny = by + bdy; if (bny < 0 || bny >= h) continue;
+              for (bdx = -1; bdx <= 1; bdx++) {
+                bnx = bx + bdx; if (bnx < 0 || bnx >= w) continue;
+                bnid = bny * w + bnx;
+                if (seenBdy[bnid] || label[bnid] !== bl || figure[bnid] !== bside) continue;
+                seenBdy[bnid] = 1;
+                bq.push(bnid);
+                bpix.push(bnid);
+              }
+            }
+          }
+          if (bpix.length < 40) continue;
+          for (bqi = 0; bqi < bpix.length; bqi++) bigBody[bpix[bqi]] = 1;
+        }
+      })();
+      var bfs = [], bqi2, bid2, bx2, by2, bdy2, bdx2, bny2, bnx2, bnid2;
+      for (var bi2 = 0; bi2 < n; bi2++) {
+        bodyDist[bi2] = 255;
+        fieldDist[bi2] = 255;
+        if (bigBody[bi2]) { bodyDist[bi2] = 0; bfs.push(bi2); }
+      }
+      for (bqi2 = 0; bqi2 < bfs.length; bqi2++) {
+        bid2 = bfs[bqi2];
+        if (bodyDist[bid2] >= 12) continue;
+        bx2 = bid2 % w; by2 = (bid2 / w) | 0;
+        for (bdy2 = -1; bdy2 <= 1; bdy2++) {
+          bny2 = by2 + bdy2; if (bny2 < 0 || bny2 >= h) continue;
+          for (bdx2 = -1; bdx2 <= 1; bdx2++) {
+            bnx2 = bx2 + bdx2; if (bnx2 < 0 || bnx2 >= w) continue;
+            bnid2 = bny2 * w + bnx2;
+            if (bodyDist[bnid2] <= bodyDist[bid2] + 1) continue;
+            bodyDist[bnid2] = bodyDist[bid2] + 1;
+            bfs.push(bnid2);
+          }
+        }
+      }
+      var fbs = [];
+      for (bi2 = 0; bi2 < n; bi2++) {
+        var flab = label[bi2];
+        if (flab === MLAB.GRASS || flab === MLAB.LINE || flab === MLAB.SKY || flab === MLAB.NET) {
+          fieldDist[bi2] = 0;
+          fbs.push(bi2);
+        }
+      }
+      for (bqi2 = 0; bqi2 < fbs.length; bqi2++) {
+        bid2 = fbs[bqi2];
+        if (fieldDist[bid2] >= 5) continue;
+        bx2 = bid2 % w; by2 = (bid2 / w) | 0;
+        for (bdy2 = -1; bdy2 <= 1; bdy2++) {
+          bny2 = by2 + bdy2; if (bny2 < 0 || bny2 >= h) continue;
+          for (bdx2 = -1; bdx2 <= 1; bdx2++) {
+            bnx2 = bx2 + bdx2; if (bnx2 < 0 || bnx2 >= w) continue;
+            bnid2 = bny2 * w + bnx2;
+            if (fieldDist[bnid2] <= fieldDist[bid2] + 1) continue;
+            fieldDist[bnid2] = fieldDist[bid2] + 1;
+            fbs.push(bnid2);
+          }
+        }
+      }
+      function flatKeyAt(i) {
+        var oo = i * 4;
+        return keyPart[d[oo] + ',' + d[oo + 1] + ',' + d[oo + 2]];
+      }
+      function neutralGround(r, g, b) {
+        var mx = r > g ? r : g; if (b > mx) mx = b;
+        var mn = r < g ? r : g; if (b < mn) mn = b;
+        if (mx < 28) return true;
+        return (mx - mn) / mx < 0.15;
+      }
+      function groundFill(id) {
+        var x = id % w, y = (id / w) | 0, rad, dy, dx, ny, nx, nid, oo, r, g, b;
+        for (rad = 1; rad <= 8; rad++) {
+          for (dy = -rad; dy <= rad; dy++) {
+            ny = y + dy; if (ny < 0 || ny >= h) continue;
+            for (dx = -rad; dx <= rad; dx++) {
+              if (Math.max(Math.abs(dx), Math.abs(dy)) !== rad) continue;
+              nx = x + dx; if (nx < 0 || nx >= w) continue;
+              nid = ny * w + nx;
+              oo = nid * 4;
+              if (d[oo + 3] < 40) continue;
+              r = d[oo]; g = d[oo + 1]; b = d[oo + 2];
+              if (keyPart[r + ',' + g + ',' + b]) continue;
+              if (sourceInk(r, g, b)) continue;
+              if (!neutralGround(r, g, b)) continue;
+              return [r, g, b];
+            }
+          }
+        }
+        return [255, 255, 255];
+      }
+      var i, kqi, kid, kx, ky, kdy, kdx, knx, kny, knid, ki;
+      for (i = 0; i < n; i++) {
+        if (seenK[i]) continue;
+        var kl = useLab[i];
+        if (kl !== MLAB.SHIRT && kl !== MLAB.SHORTS && kl !== MLAB.SOCKS && kl !== MLAB.BOOTS) continue;
+        var side = useFig[i] || figure[i];
+        var kq = [i];
+        seenK[i] = 1;
+        var kpix = [i];
+        for (kqi = 0; kqi < kq.length; kqi++) {
+          kid = kq[kqi];
+          kx = kid % w; ky = (kid / w) | 0;
+          for (kdy = -1; kdy <= 1; kdy++) {
+            kny = ky + kdy; if (kny < 0 || kny >= h) continue;
+            for (kdx = -1; kdx <= 1; kdx++) {
+              knx = kx + kdx; if (knx < 0 || knx >= w) continue;
+              knid = kny * w + knx;
+              if (seenK[knid] || useLab[knid] !== kl) continue;
+              if (side && (useFig[knid] || figure[knid]) !== side) continue;
+              seenK[knid] = 1;
+              kq.push(knid);
+              kpix.push(knid);
+            }
+          }
+        }
+        if (!side) continue;
+        for (ki = 0; ki < kpix.length; ki++) {
+          kid = kpix[ki];
+          if (!(bodyDist[kid] > 8 && fieldDist[kid] > 0 && fieldDist[kid] <= 5)) continue;
+          if (flatKeyAt(kid)) {
+            var fill = groundFill(kid);
+            var oo = kid * 4;
+            d[oo] = fill[0]; d[oo + 1] = fill[1]; d[oo + 2] = fill[2];
+          }
+          useLab[kid] = 0;
+          useFig[kid] = 0;
+        }
+      }
+    })();
     function blocked(i) {
       var lab = useLab[i];
       if (lab === MLAB.INK || lab === MLAB.SKY || lab === MLAB.GRASS || lab === MLAB.LINE || lab === MLAB.NET || lab === MLAB.BALL) return true;
@@ -3097,6 +3265,23 @@
             nx = x + dx; if (nx < 0 || nx >= w) continue;
             nid = ny * w + nx;
             if (regionKind(useLab[nid]) || blocked(nid)) continue;
+            // 离身体远、又落在草地白线天空球网旁边的像素，不吃进球衣。
+            if (bodyDist[nid] > 8 && fieldDist[nid] > 0 && fieldDist[nid] <= 5) continue;
+            // 贴着场地的低色度像素是抗锯齿，也不吃。
+            var fr = d[nid * 4], fg = d[nid * 4 + 1], fb = d[nid * 4 + 2];
+            var fmx = fr > fg ? fr : fg; if (fb > fmx) fmx = fb;
+            var fmn = fr < fg ? fr : fg; if (fb < fmn) fmn = fb;
+            var touchField = false;
+            var fdy, fdx, fny, fnx, flab;
+            for (fdy = -1; fdy <= 1 && !touchField; fdy++) {
+              fny = ny + fdy; if (fny < 0 || fny >= h) continue;
+              for (fdx = -1; fdx <= 1; fdx++) {
+                fnx = nx + fdx; if (fnx < 0 || fnx >= w) continue;
+                flab = label[fny * w + fnx];
+                if (flab === MLAB.GRASS || flab === MLAB.LINE || flab === MLAB.SKY || flab === MLAB.NET) touchField = true;
+              }
+            }
+            if (touchField && (fmx - fmn <= 36 || bodyDist[nid] > 8)) continue;
             addAt.push(nid);
             addLab.push(useLab[p]);
             addFig.push(useFig[p]);
@@ -3520,6 +3705,41 @@
         return true;
       }
     })();
+    // 鞋带、侧条扩到身体外面的场地上时，收回原色。身体上的浅色不动。
+    for (p = 0; p < n; p++) {
+      if (!(bodyDist[p] > 8 && fieldDist[p] > 0 && fieldDist[p] <= 5)) continue;
+      var strayKind = regionKind(useLab[p]);
+      if (!strayKind || strayKind === MLAB.SKIN || strayKind === MLAB.HAIR) continue;
+      o = p * 4;
+      if (keyPart[d[o] + ',' + d[o + 1] + ',' + d[o + 2]]) {
+        var gx = p % w, gy = (p / w) | 0, grad, gdy, gdx, gny, gnx, gnid, goo, gr, gg, gb, filled = false;
+        for (grad = 1; grad <= 8 && !filled; grad++) {
+          for (gdy = -grad; gdy <= grad && !filled; gdy++) {
+            gny = gy + gdy; if (gny < 0 || gny >= h) continue;
+            for (gdx = -grad; gdx <= grad; gdx++) {
+              if (Math.max(Math.abs(gdx), Math.abs(gdy)) !== grad) continue;
+              gnx = gx + gdx; if (gnx < 0 || gnx >= w) continue;
+              gnid = gny * w + gnx;
+              goo = gnid * 4;
+              if (d[goo + 3] < 40) continue;
+              gr = d[goo]; gg = d[goo + 1]; gb = d[goo + 2];
+              if (keyPart[gr + ',' + gg + ',' + gb]) continue;
+              if (sourceInk(gr, gg, gb)) continue;
+              var gmx = gr > gg ? gr : gg; if (gb > gmx) gmx = gb;
+              var gmn = gr < gg ? gr : gg; if (gb < gmn) gmn = gb;
+              if (gmx >= 28 && (gmx - gmn) / gmx >= 0.15) continue;
+              d[o] = gr; d[o + 1] = gg; d[o + 2] = gb;
+              filled = true;
+              break;
+            }
+          }
+        }
+        if (!filled) { d[o] = 255; d[o + 1] = 255; d[o + 2] = 255; }
+      }
+      bootDetail[p] = 0;
+      useLab[p] = 0;
+      useFig[p] = 0;
+    }
     for (p = 0; p < n; p++) {
       o = p * 4;
       lab = useLab[p];

@@ -256,6 +256,63 @@ poses.forEach(function (pose) {
     }
     return { blobs: blobs, where: where };
   }
+  // 人的轮廓：成块的身体。草地、白线、天空、球网，以及贴着它们、又不在轮廓里的像素，不能出现球衣色。
+  var onPlayer = new Uint8Array(nPix);
+  var nearField = new Uint8Array(nPix);
+  (function () {
+    var bodyLab = { 10: 1, 12: 1, 13: 1, 14: 1, 15: 1, 16: 1, 17: 1, 18: 1 };
+    var fieldLab = { 2: 1, 3: 1, 4: 1, 5: 1 };
+    var seen = new Uint8Array(nPix);
+    var sil = new Uint8Array(nPix);
+    var ww = base.width, hh = base.height;
+    var i, qi, id, x, y, dy, dx, nx, ny, nid;
+    for (i = 0; i < nPix; i++) {
+      if (seen[i] || !bodyLab[label[i]]) continue;
+      var q = [i];
+      seen[i] = 1;
+      var comp = [i];
+      var side0 = figure[i], lab0 = label[i];
+      for (qi = 0; qi < q.length; qi++) {
+        id = q[qi]; x = id % ww; y = (id / ww) | 0;
+        for (dy = -1; dy <= 1; dy++) {
+          ny = y + dy; if (ny < 0 || ny >= hh) continue;
+          for (dx = -1; dx <= 1; dx++) {
+            nx = x + dx; if (nx < 0 || nx >= ww) continue;
+            nid = ny * ww + nx;
+            if (seen[nid] || label[nid] !== lab0 || figure[nid] !== side0) continue;
+            seen[nid] = 1;
+            q.push(nid);
+            comp.push(nid);
+          }
+        }
+      }
+      if (comp.length < 40) continue;
+      for (qi = 0; qi < comp.length; qi++) sil[comp[qi]] = 1;
+    }
+    for (i = 0; i < nPix; i++) {
+      if (!sil[i]) continue;
+      x = i % ww; y = (i / ww) | 0;
+      for (dy = -8; dy <= 8; dy++) {
+        ny = y + dy; if (ny < 0 || ny >= hh) continue;
+        for (dx = -8; dx <= 8; dx++) {
+          nx = x + dx; if (nx < 0 || nx >= ww) continue;
+          onPlayer[ny * ww + nx] = 1;
+        }
+      }
+    }
+    for (i = 0; i < nPix; i++) {
+      if (!fieldLab[label[i]]) continue;
+      x = i % ww; y = (i / ww) | 0;
+      for (dy = -5; dy <= 5; dy++) {
+        ny = y + dy; if (ny < 0 || ny >= hh) continue;
+        for (dx = -5; dx <= 5; dx++) {
+          if (Math.max(Math.abs(dx), Math.abs(dy)) > 5) continue;
+          nx = x + dx; if (nx < 0 || nx >= ww) continue;
+          nearField[ny * ww + nx] = 1;
+        }
+      }
+    }
+  })();
   combos.forEach(function (combo, ci) {
     var tag = pose + '/' + combo.name;
     var data = new Uint8ClampedArray(base.data);
@@ -285,21 +342,22 @@ poses.forEach(function (pose) {
       for (var k = 0; k < KEYS.length; k++) if (same(px, KEYS[k])) keys++;
       var claim = mask.claim[idx];
       var part = mask.part[idx];
-      if (part === 1 && claim === 1) {
+      // 离身体远、落在场地上的小色块不是这身球衣。
+      if (onPlayer[idx] && part === 1 && claim === 1) {
         jerseyA++;
         var hitA = shadeOk(px, aColors[0]) || shadeOk(px, aColors[1]);
         if (!hitA) badA++;
         else if (same(px, aColors[0]) || same(px, aColors[1])) aSeen[px.join(',')] = 1;
-      } else if (part === 1 && claim === 2) {
+      } else if (onPlayer[idx] && part === 1 && claim === 2) {
         jerseyB++;
         var hitB = shadeOk(px, bColors[0]) || shadeOk(px, bColors[1]);
         if (!hitB) badB++;
         else if (same(px, bColors[0]) || same(px, bColors[1])) bSeen[px.join(',')] = 1;
-      } else if (part === 2 && claim === 1 && !shadeOk(px, aShort)) badAS++;
-      else if (part === 2 && claim === 2 && !shadeOk(px, bShort)) badBS++;
-      else if (part === 3 && claim === 1 && hsvOf(px[0], px[1], px[2]).s >= 0.12 && !shadeOk(px, aShoe)) badA++;
-      else if (part === 3 && claim === 2 && hsvOf(px[0], px[1], px[2]).s >= 0.12 && !shadeOk(px, bShoe)) badB++;
-      if (claim && part && part !== 3 && part !== 6 && data[p + 3] > 200 && nearWhite(px[0], px[1], px[2])) {
+      } else if (onPlayer[idx] && part === 2 && claim === 1 && !shadeOk(px, aShort)) badAS++;
+      else if (onPlayer[idx] && part === 2 && claim === 2 && !shadeOk(px, bShort)) badBS++;
+      else if (onPlayer[idx] && part === 3 && claim === 1 && hsvOf(px[0], px[1], px[2]).s >= 0.12 && !shadeOk(px, aShoe)) badA++;
+      else if (onPlayer[idx] && part === 3 && claim === 2 && hsvOf(px[0], px[1], px[2]).s >= 0.12 && !shadeOk(px, bShoe)) badB++;
+      if (onPlayer[idx] && claim && part && part !== 3 && part !== 6 && data[p + 3] > 200 && nearWhite(px[0], px[1], px[2])) {
         var allowed = aColors.concat(bColors, [aShort, bShort, aShoe, bShoe]).some(function (c) { return same(px, c); });
         var piece = part === 1 ? (claim === 1 ? aColors : bColors) : part === 2 ? [claim === 1 ? aShort : bShort] : part === 3 ? [claim === 1 ? aShoe : bShoe] : [];
         var lightPiece = piece.some(function (c) { return nearWhite(c[0], c[1], c[2]); });
@@ -575,6 +633,47 @@ poses.forEach(function (pose) {
       }
     }
     ok(keys === 0, tag + ' 没有剩余色键', String(keys));
+    var fieldLeak = 0, fieldWhere = '';
+    var kitHues = [];
+    [aColors[0], aColors[1], aShort, aShoe, bColors[0], bColors[1], bShort, bShoe].forEach(function (rgb) {
+      var hs = hsvOf(rgb[0], rgb[1], rgb[2]);
+      if (hs.s >= 0.18) kitHues.push(hs.h);
+    });
+    var skinHues = [];
+    [combo.a.skin, combo.b.skin].forEach(function (sid) {
+      var preset = kits.SKIN_PRESETS[sid] || kits.SKIN_PRESETS.fair;
+      var srgb = rgbOf(preset.color);
+      var shs = hsvOf(srgb[0], srgb[1], srgb[2]);
+      if (shs.s >= 0.15) skinHues.push(shs.h);
+    });
+    function hueDist(a, b) {
+      var d = Math.abs(a - b);
+      return d > 180 ? 360 - d : d;
+    }
+    for (var fi = 0; fi < nPix; fi++) {
+      if (onPlayer[fi] || !nearField[fi]) continue;
+      var fo = fi * 4;
+      if (data[fo] === base.data[fo] && data[fo + 1] === base.data[fo + 1] && data[fo + 2] === base.data[fo + 2]) continue;
+      if (data[fo + 3] < 40) continue;
+      var fhs = hsvOf(data[fo], data[fo + 1], data[fo + 2]);
+      if (fhs.v < 28 || fhs.s < 0.15) continue;
+      var bestKit = 999, bestSkin = 999, fhi, fdh;
+      for (fhi = 0; fhi < kitHues.length; fhi++) {
+        fdh = hueDist(fhs.h, kitHues[fhi]);
+        if (fdh < bestKit) bestKit = fdh;
+      }
+      if (bestKit >= 18) continue;
+      for (fhi = 0; fhi < skinHues.length; fhi++) {
+        fdh = hueDist(fhs.h, skinHues[fhi]);
+        if (fdh < bestSkin) bestSkin = fdh;
+      }
+      // 肤色挨着金靴、红靴时色相会擦到球衣色。更靠近肤色的不算漏色。
+      if (bestSkin <= bestKit) continue;
+      fieldLeak++;
+      if (!fieldWhere) fieldWhere = (fi % base.width) + ',' + ((fi / base.width) | 0) + ' ' + data[fo] + ',' + data[fo + 1] + ',' + data[fo + 2];
+      if (fieldLeak > 12) break;
+    }
+    ok(fieldLeak === 0, tag + ' 场地白线草地天空和网没有球衣色', fieldWhere || String(fieldLeak));
     ok(badA === 0 && badB === 0, tag + ' 球衣鞋是本人的颜色', badA + '/' + badB);
     ok(badAS === 0 && badBS === 0, tag + ' 短裤球袜是本人的颜色', badAS + '/' + badBS);
     ok(stray === 0, tag + ' 人里面没有多余的白', String(stray));
