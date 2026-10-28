@@ -396,9 +396,18 @@ function curViewW() {
   if (ui.hmenu && lvl && lvl.kind === 'aim') return 70;
   return 38;
 }
+// 底线外的草坪和围挡。镜头最远的那条边（透视最开）也不能看出这块范围。
+var SURROUND = 22;
+function cameraX() {
+  var viewW = curViewW();
+  var minCx = -SURROUND + viewW * 0.5;
+  var maxCx = C.FIELD.W + SURROUND - viewW * 1.5;
+  if (maxCx < minCx) return (C.FIELD.W - viewW) / 2;
+  return clamp(ballR.x - viewW * 0.45, minCx, maxCx);
+}
 function project(x, y) {
   var viewW = curViewW();
-  var cx = clamp(ballR.x - viewW * 0.45, -6, C.FIELD.W - viewW + 6);
+  var cx = cameraX();
   var depth = clamp(y / C.FIELD.H, 0, 1); // 0 近 1 远
   var persp = 0.5 + 0.5 * (1 - depth);
   var sx = W / 2 + ((x - cx - viewW / 2) / viewW) * W * persp;
@@ -824,7 +833,7 @@ function unproject(sx, sy) {
   var y = depth * C.FIELD.H;
   var persp = 0.5 + 0.5 * (1 - depth);
   var viewW = curViewW();
-  var cx = clamp(ballR.x - viewW * 0.45, -6, C.FIELD.W - viewW + 6);
+  var cx = cameraX();
   var x = cx + viewW / 2 + (sx - W / 2) / (W * persp) * viewW;
   return { x: x, y: y };
 }
@@ -969,10 +978,11 @@ function drawSetPieceMenu(lvl, d) {
   else if (lvl.title) title = lvl.title;
   var rowH = items.length > 8 ? 26 : 30;
   var headH = 40;
-  var w = 348;
+  var w = 360;
   var h = headH + items.length * rowH + 12;
-  var x = 242;
-  var y = 148;
+  // 事件条在 x=16..316。菜单贴在它右边，不盖住文案，也不碰上小地图。
+  var x = 332;
+  var y = 150;
   if (y + h > 548) y = Math.max(148, 548 - h);
   ctx.fillStyle = 'rgba(8,12,26,0.97)';
   rr(x, y, w, h, 10); ctx.fill();
@@ -1277,6 +1287,7 @@ function drawTitle() {
 // ---------------- 绘制：比赛 ----------------
 function drawGame(t) {
   drawBackground();
+  drawSurround();
   drawPitch();
   drawGoals();
   drawActors(t);
@@ -1315,6 +1326,27 @@ function drawBackground() {
     ctx.fillStyle = '#fff';
     ctx.font = 'bold 17px monospace'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
     ctx.fillText(a.t, i * bw + bw / 2, 131);
+  });
+}
+
+function drawSurround() {
+  // 先铺满地平线以下，截图里不会露出透明的白块。
+  ctx.fillStyle = '#163322';
+  ctx.fillRect(0, HORIZON, W, H - HORIZON);
+  var x0 = -SURROUND, x1 = C.FIELD.W + SURROUND;
+  var y0 = 0, y1 = C.FIELD.H;
+  var p0 = project(x0, y0), p1 = project(x1, y0), p2 = project(x1, y1), p3 = project(x0, y1);
+  ctx.fillStyle = '#245c34';
+  ctx.beginPath();
+  ctx.moveTo(p0.x, p0.y); ctx.lineTo(p1.x, p1.y); ctx.lineTo(p2.x, p2.y); ctx.lineTo(p3.x, p3.y);
+  ctx.closePath(); ctx.fill();
+  // 底线外再深一截，球门网落在这块草坪上，而不是画面外面。
+  ctx.fillStyle = '#1d4a2c';
+  [[-SURROUND, 0], [C.FIELD.W, C.FIELD.W + SURROUND]].forEach(function (seg) {
+    var a = project(seg[0], 0), b = project(seg[1], 0), c = project(seg[1], C.FIELD.H), d = project(seg[0], C.FIELD.H);
+    ctx.beginPath();
+    ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.lineTo(c.x, c.y); ctx.lineTo(d.x, d.y);
+    ctx.closePath(); ctx.fill();
   });
 }
 
@@ -1367,26 +1399,52 @@ function drawPitch() {
 }
 
 function drawGoals() {
-  // 简易球门：门柱 + 球网
+  // 两头都画门柱、横梁和球网。高度按球员精灵换算：人大约 1.85 米，球门 2.44 米，横梁要高出守门员。
+  var halfW = 3.66, depth = 2.2;
+  function lift(p, meters) { return { x: p.x, y: p.y - meters * 24.6 * p.s }; }
   [[0, -1], [C.FIELD.W, 1]].forEach(function (s) {
-    var gx = s[0], d = s[1];
-    var w = 7.32, dep = 2.5;
-    var p1 = project(gx, 34 - w / 2), p2 = project(gx, 34 + w / 2);
-    var p3 = project(gx + dep * d, 34 - w / 2), p4 = project(gx + dep * d, 34 + w / 2);
-    var top1 = { x: p1.x, y: p1.y - 26 * p1.s }, top2 = { x: p2.x, y: p2.y - 26 * p2.s };
-    ctx.strokeStyle = 'rgba(255,255,255,0.35)'; ctx.lineWidth = 1;
-    for (var i = 0; i <= 6; i++) {
-      var t = i / 6;
+    var gx = s[0], dir = s[1];
+    var yL = 34 - halfW, yR = 34 + halfW;
+    var g1 = project(gx, yL), g2 = project(gx, yR);
+    var b1 = project(gx + depth * dir, yL), b2 = project(gx + depth * dir, yR);
+    var gt1 = lift(g1, 2.44), gt2 = lift(g2, 2.44);
+    var bt1 = lift(b1, 2.2), bt2 = lift(b2, 2.2);
+    function mesh(a, b, c, d) {
       ctx.beginPath();
-      ctx.moveTo(p1.x + (p3.x - p1.x) * t, p1.y + (p3.y - p1.y) * t - 26 * p1.s * (1 - t * 0.3));
-      ctx.lineTo(p2.x + (p4.x - p2.x) * t, p2.y + (p4.y - p2.y) * t - 26 * p2.s * (1 - t * 0.3));
+      var i, t;
+      for (i = 0; i <= 6; i++) {
+        t = i / 6;
+        ctx.moveTo(a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t);
+        ctx.lineTo(d.x + (c.x - d.x) * t, d.y + (c.y - d.y) * t);
+      }
+      for (i = 0; i <= 4; i++) {
+        t = i / 4;
+        ctx.moveTo(a.x + (d.x - a.x) * t, a.y + (d.y - a.y) * t);
+        ctx.lineTo(b.x + (c.x - b.x) * t, b.y + (c.y - b.y) * t);
+      }
       ctx.stroke();
     }
-    ctx.strokeStyle = '#fff'; ctx.lineWidth = 3;
+    ctx.strokeStyle = 'rgba(236,242,248,0.72)';
+    ctx.lineWidth = 1.25;
+    mesh(bt1, bt2, b2, b1);
+    mesh(gt1, bt1, b1, g1);
+    mesh(gt2, bt2, b2, g2);
+    ctx.lineWidth = 5;
+    ctx.strokeStyle = 'rgba(8,16,24,0.55)';
     ctx.beginPath();
-    ctx.moveTo(top1.x, top1.y); ctx.lineTo(p1.x, p1.y);
-    ctx.moveTo(top2.x, top2.y); ctx.lineTo(p2.x, p2.y);
-    ctx.moveTo(top1.x, top1.y); ctx.lineTo(top2.x, top2.y);
+    ctx.moveTo(gt1.x, gt1.y); ctx.lineTo(g1.x, g1.y);
+    ctx.moveTo(gt2.x, gt2.y); ctx.lineTo(g2.x, g2.y);
+    ctx.moveTo(gt1.x, gt1.y); ctx.lineTo(gt2.x, gt2.y);
+    ctx.stroke();
+    ctx.strokeStyle = '#f7fbff';
+    ctx.lineWidth = 3.5;
+    ctx.beginPath();
+    ctx.moveTo(gt1.x, gt1.y); ctx.lineTo(g1.x, g1.y);
+    ctx.moveTo(gt2.x, gt2.y); ctx.lineTo(g2.x, g2.y);
+    ctx.moveTo(gt1.x, gt1.y); ctx.lineTo(gt2.x, gt2.y);
+    ctx.moveTo(gt1.x, gt1.y); ctx.lineTo(bt1.x, bt1.y);
+    ctx.moveTo(gt2.x, gt2.y); ctx.lineTo(bt2.x, bt2.y);
+    ctx.moveTo(bt1.x, bt1.y); ctx.lineTo(bt2.x, bt2.y);
     ctx.stroke();
   });
 }
@@ -1659,7 +1717,7 @@ function drawMinimap() {
   ctx.fillStyle = '#ffffff';
   ctx.beginPath(); ctx.arc(mx + state.ball.x * kx, my + state.ball.y * ky, 3, 0, Math.PI * 2); ctx.fill();
   var viewW = curViewW();
-  var cx = clamp(ballR.x - viewW * 0.45, -6, C.FIELD.W - viewW + 6);
+  var cx = cameraX();
   ctx.strokeStyle = 'rgba(255,255,255,0.8)'; ctx.lineWidth = 1.5;
   ctx.strokeRect(mx + cx * kx, my + 2, viewW * kx, mh - 4);
   ctx.restore();
@@ -1984,10 +2042,7 @@ function drawCutin() {
     text(a.text, W / 2, 308, 20, '#fff', 'center');
     return;
   }
-  // 选定位球时这块让位，避免压住菜单和小地图。
-  var dk = state.decision && state.decision.kind;
-  if (dk === 'taker' || dk === 'penalty-shot' || dk === 'setpiece' || dk === 'qte') return;
-  // 左侧事件条：记分牌下面、小地图对面。
+  // 左侧事件条：记分牌下面。选人菜单在它右边，两块不叠在一起。
   var x = 16, y = 168, w = 300, h = 168;
   var verdict = restartVerdict(a);
   var awarded = verdict !== (a.success ? '成功！' : '失败…');
