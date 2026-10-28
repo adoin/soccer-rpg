@@ -107,7 +107,7 @@ console.log('== 任意球 / 点球 / 界外球 ==');
   var wallYs = wall.map(function (q) { return q.y; });
   ok(wall.length < 2 || Math.max.apply(null, wallYs) - Math.min.apply(null, wallYs) > 2, '人墙横向排开', wall.map(function (q) { return q.y.toFixed(1); }).join(','));
   ok(controlledTeam(m) === 'home' && m.control.playerId === 'h10', '主队任意球由主队主罚者控制', m.control.playerId);
-  ok(act.text === '哨响！爆裂 直 犯规，青鹰高校 获得直接任意球。', '直接任意球文案', act.text);
+  ok(act.text === '哨响！爆裂 直人 犯规，青鹰高校 获得直接任意球。', '直接任意球文案', act.text);
   ok(act.text.split('青鹰高校').length === 2, '队名只出现一次', act.text);
 })();
 
@@ -161,7 +161,7 @@ console.log('== 任意球 / 点球 / 界外球 ==');
   };
   var act = m.applyFoulResult(f);
   ok((m.phase === 'penalty' || m.phase === 'decision') && act.kind === 'penalty', '禁区内犯规进入点球', m.phase + '/' + act.kind);
-  ok(act.text === '🟨 黄牌！爆裂 直 禁区内犯规，放倒了 风间 隼。青鹰高校 获得点球。', '点球文案', act.text);
+  ok(act.text === '🟨 黄牌！爆裂 直人 禁区内犯规，放倒了 风间 隼。青鹰高校 获得点球。', '点球文案', act.text);
   ok(act.text.split('青鹰高校').length === 2 && act.text.indexOf('获得直接任意球') < 0, '点球队名只写一次', act.text);
   ok(m.restart && m.restart.label === '犯规 → 点球', '点球横幅', m.restart && m.restart.label);
   ok(Math.abs(m.ball.x - 94) < 0.05 && Math.abs(m.ball.y - 34) < 0.05, '球在点球点', m.ball.x + ',' + m.ball.y);
@@ -203,14 +203,14 @@ console.log('== 任意球 / 点球 / 界外球 ==');
     severity: 90, severityLabel: '严重犯规',
   };
   var ra = red.applyFoulResult(rf);
-  ok(ra.text === '🟥 红牌！爆裂 直 严重犯规，被罚下场。青鹰高校 获得直接任意球。', '红牌文案', ra.text);
+  ok(ra.text === '🟥 红牌！爆裂 直人 严重犯规，被罚下场。青鹰高校 获得直接任意球。', '红牌文案', ra.text);
   ok(ra.text.split('青鹰高校').length === 2, '红牌队名只出现一次', ra.text);
   var adv = newMatch(48);
   adv.applyFoulResult({
     defender: P(adv, 'a4'), victim: P(adv, 'h10'), team: 'home',
     spot: { x: 50, y: 34 }, card: 'none', penalty: false, advantage: true, severity: 20,
   });
-  ok(adv.lastAction.text === '🟢 爆裂 直 犯规，但裁判示意进攻有利，比赛继续！', '有利文案', adv.lastAction.text);
+  ok(adv.lastAction.text === '🟢 爆裂 直人 犯规，但裁判示意进攻有利，比赛继续！', '有利文案', adv.lastAction.text);
   var cut = fs.readFileSync(require('path').join(__dirname, '../client/js/manga-cutin.js'), 'utf8');
   var parry = (cut.match(/'gk-parry':[^\n]+/) || [''])[0];
   var tip = (cut.match(/'gk-tip':[^\n]+/) || [''])[0];

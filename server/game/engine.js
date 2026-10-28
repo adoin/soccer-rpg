@@ -2231,14 +2231,15 @@ Match.prototype.openTakerMenu = function (kind) {
   if (!r || r.team !== 'home') return;
   var cands = this.takerCandidates('home', kind);
   if (!cands.length) return;
-  var self = this;
   var options = cands.map(function (p) {
+    var shoot = Math.round(FM.shoot(p) / 5);
+    var nerve = Math.round(FM.nerve(p) / 5);
     return {
       id: p.id,
       name: p.num + ' ' + p.name,
       cost: 0,
-      desc: p.pos + ' · 定位球 ' + Math.round(self.takerScore(p, kind)),
-      rate: Math.round(clamp(self.takerScore(p, kind) * 4, 1, 99)),
+      sub: '射门 ' + shoot + ' · 心理 ' + nerve,
+      desc: p.pos + ' · 射门 ' + shoot + ' · 心理 ' + nerve,
       enabled: true,
     };
   });

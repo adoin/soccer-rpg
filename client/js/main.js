@@ -727,10 +727,12 @@ function popHmLevel() { if (ui.hmenu && ui.hmenu.stack.length > 1) ui.hmenu.stac
 function headMenuBack() { popHmLevel(); } // 头顶菜单内 Esc = 返回上一步（第一级无返回，必须选）
 
 function optionSub(o) {
+  if (o.sub) return o.sub;
   if (o.moves) return '选择动作';
   if (o.shots) return '选择射门';
   if (o.skills) return '选择技能';
-  return (o.rate != null ? o.rate + '% · ' : '') + o.cost + '体能';
+  if (o.rate == null && (o.cost == null || o.cost === 0)) return '';
+  return (o.rate != null ? o.rate + '% · ' : '') + (o.cost != null ? o.cost + '体能' : '');
 }
 function commandItem(o) {
   return {
@@ -963,8 +965,48 @@ function drawHeadMenu() {
   var lvl = hmTop();
   if (lvl.kind === 'aim') drawHmAim(hm, lvl, pr, cx, headY);
   else if (lvl.kind === 'confirm') drawHmConfirm(hm, lvl, pr, cx, headY);
+  else if (d.kind === 'taker' || d.kind === 'penalty-shot' || d.kind === 'setpiece') drawSetPieceMenu(lvl, d);
   else drawHmList(lvl, pr, cx, headY);
   drawHmLanding(hm);
+}
+
+// 定位球选人 / 射门：固定一块不透明面板，不跟球员头顶走，也不压记分牌和小地图。
+function drawSetPieceMenu(lvl, d) {
+  var items = lvl.items || [];
+  var title = '定位球';
+  if (d.kind === 'taker') title = '选择主罚';
+  else if (d.kind === 'penalty-shot' || lvl.kind === 'shots') title = '选择射门';
+  else if (lvl.title) title = lvl.title;
+  var rowH = items.length > 8 ? 26 : 30;
+  var headH = 40;
+  var w = 348;
+  var h = headH + items.length * rowH + 12;
+  var x = 242;
+  var y = 148;
+  if (y + h > 548) y = Math.max(148, 548 - h);
+  ctx.fillStyle = 'rgba(8,12,26,0.97)';
+  rr(x, y, w, h, 10); ctx.fill();
+  ctx.strokeStyle = '#ffd94a'; ctx.lineWidth = 2;
+  rr(x, y, w, h, 10); ctx.stroke();
+  text(title, x + 16, y + 22, 18, '#ffd94a', 'left', true);
+  text('确定 = E', x + w - 14, y + 22, 13, '#9fb4dd', 'right');
+  items.forEach(function (it, i) {
+    var ry = y + headH + i * rowH;
+    if (i === lvl.sel) {
+      ctx.fillStyle = 'rgba(255,217,74,0.18)';
+      ctx.fillRect(x + 8, ry + 2, w - 16, rowH - 4);
+    }
+    var color = !it.enabled ? '#5a6584' : it.back ? '#9fb4dd' : (i === lvl.sel ? '#ffd94a' : '#ffffff');
+    var label = String(it.label || '').replace(/^[•·]\s*/, '');
+    text((i === lvl.sel ? '▶ ' : '') + label, x + 14, ry + rowH / 2, 15, color, 'left', true);
+    if (it.sub) text(it.sub, x + w - 12, ry + rowH / 2, 13, it.enabled ? '#d5e2ff' : '#4a5468', 'right');
+    (function (item, idx) {
+      addClick(x + 8, ry, w - 16, rowH, function () {
+        if (!item.enabled) { toast('体能不足或该球员无法使用'); return; }
+        lvl.sel = idx; item.fn();
+      });
+    })(it, i);
+  });
 }
 
 function drawHmList(lvl, pr, cx, headY) {
@@ -1946,13 +1988,31 @@ function drawCutin() {
     text(a.text, W / 2, 308, 20, '#fff', 'center');
     return;
   }
-  // 右侧演出面板（仿效果图）
-  var x = 950, y = 150, w = 316, h = 210;
-  panel(x, y, w, h, a.success ? '#2b5fe3' : '#8a2b2b');
-  text(a.label, x + 18, y + 30, 26, '#fff', 'left', true);
-  text(a.success ? '成功！' : '失败…', x + 18, y + 62, 20, a.success ? '#7fd0ff' : '#ff9a9a', 'left', true);
-  wrapText(a.text, x + 18, y + 92, w - 36, 14, '#e8eeff', 3);
-  text(a.playerName, x + 18, y + h - 24, 15, '#ffd94a', 'left');
+  // 选定位球时这块让位，避免压住菜单和小地图。
+  var dk = state.decision && state.decision.kind;
+  if (dk === 'taker' || dk === 'penalty-shot' || dk === 'setpiece' || dk === 'qte') return;
+  // 左侧事件条：记分牌下面、小地图对面。
+  var x = 16, y = 168, w = 300, h = 168;
+  var verdict = restartVerdict(a);
+  var awarded = verdict !== (a.success ? '成功！' : '失败…');
+  var good = a.success || (awarded && a.team === 'home') || a.kind === 'advantage';
+  panel(x, y, w, h, good ? '#2b5fe3' : '#8a2b2b');
+  text(a.label, x + 16, y + 26, 22, '#fff', 'left', true);
+  text(verdict, x + 16, y + 56, 16, good ? '#7fd0ff' : '#ff9a9a', 'left', true);
+  wrapText(a.text, x + 16, y + 84, w - 32, 14, '#e8eeff', 3);
+  text(a.playerName, x + 16, y + h - 18, 14, '#ffd94a', 'left');
+}
+
+function restartVerdict(a) {
+  var ours = a.team === 'home';
+  if (a.kind === 'foul') return ours ? '对方犯规，我方主罚' : '我方犯规，对方获得定位球';
+  if (a.kind === 'penalty') return ours ? '我方获得点球' : '对方获得点球';
+  if (a.kind === 'offside') return ours ? '对方越位，我方主罚' : '我方越位，对方获得任意球';
+  if (a.kind === 'corner') return ours ? '我方获得角球' : '对方获得角球';
+  if (a.kind === 'throwin') return ours ? '我方获得界外球' : '对方获得界外球';
+  if (a.kind === 'goalkick') return ours ? '我方获得球门球' : '对方获得球门球';
+  if (a.kind === 'advantage') return '进攻有利，比赛继续';
+  return a.success ? '成功！' : '失败…';
 }
 
 // ★ 全屏结算演出：暗场 + 像素风拼贴特写 + 标题 + 文字解说

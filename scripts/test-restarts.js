@@ -186,6 +186,7 @@ console.log('== 点球选人、射门、QTE ==');
   f.advantage = false; f.card = 'none';
   m.applyFoulResult(f);
   ok(m.decision && m.decision.kind === 'taker' && m.decision.options.length >= 8, '点球列出本队球员', m.decision && m.decision.options.length);
+  ok(m.decision.options[0].sub && m.decision.options[0].sub.indexOf('射门') >= 0 && m.decision.options[0].sub.indexOf('心理') >= 0 && m.decision.options[0].sub.indexOf('体能') < 0, '主罚名单写射门和心理', m.decision.options[0].sub);
   var best = m.decision.options[0].id;
   m.applyCommand(m.decision.playerId, best);
   ok(m.decision && m.decision.kind === 'penalty-shot', '选完主罚列出射门', m.decision && m.decision.kind);
