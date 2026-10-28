@@ -1531,7 +1531,13 @@ function drawActors(t) {
   // 带球时球贴在面朝方向前方约 0.5 米，朝向用八向离散方向，不跟本帧速度。
   // 只有球真正离脚飞行时（传球/射门/解围）才绘制轨迹残影。
   var bbx = ballR.x, bby = ballR.y, ballOwned = false;
-  for (var boi = 0; boi < state.players.length; boi++) {
+  // 定位球已经摆好：球画在发球点上，不跟主罚者的脚走。主罚者站在球后面。
+  var placedRestart = state.restart && state.ball && state.ball.ownerId
+    && (state.phase === 'whistle' || state.phase === 'penalty' || state.phase === 'decision');
+  if (placedRestart) {
+    bbx = state.ball.x; bby = state.ball.y;
+  }
+  for (var boi = 0; !placedRestart && boi < state.players.length; boi++) {
     if (state.players[boi].hasBall) {
       var owner = state.players[boi];
       ballOwned = true;

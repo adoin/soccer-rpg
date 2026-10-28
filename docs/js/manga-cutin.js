@@ -55,6 +55,8 @@ var MANGA_CUTS = {
     trail: { start: [0.36, 0.66], end: [0.79, 0.72] } },
   'shot-wide':    { pose: 'shot_wide', sfx: '偏出！', shake: 4, a: 'shooter', b: 'keeper',
     trail: { start: [0.68, 0.52], end: [0.08, 0.41] } },
+  'shot-over':    { pose: 'gk_tip_over', sfx: '高出！', shake: 6, a: 'shooter', b: 'keeper',
+    trail: { start: [0.24, 0.58], impact: [0.48, 0.30], end: [0.50, 0.12], split: true } },
   'shoot-miss':   { pose: 'shot_wide', sfx: '偏出！', shake: 4, a: 'shooter', b: 'keeper',
     trail: { start: [0.68, 0.52], end: [0.08, 0.41] } },
   'hit-post':     { pose: 'hit_post', sfx: '中柱！', shake: 10, a: 'shooter', b: 'keeper',

@@ -309,23 +309,23 @@ var ui = {
 };
 var clickables = [];        // 本帧可点击区域（绘制时重建）
 var frameNo = 0;
-// ★ 调试开关：?debug=1 时在左上角显示按键/菜单/异常诊断（平时完全隐藏）
+// ★ 调试开关：?debug=1 打开自动开赛和比赛句柄。诊断条会挡住记分牌，
+//   只有再加 hud=1 才画。正式对局和普通试玩都看不到它。
 var DEBUG = /[?&]debug=1/.test(location.search);
+var DEBUG_HUD = DEBUG && /[?&]hud=1/.test(location.search);
 var dbgKey = '', dbgErr = '';
 if (DEBUG) window.addEventListener('error', function (e) { dbgErr = 'ERR: ' + (e.message || e.type); });
 
 // ---------------- 直接操控输入 ----------------
 // 桌面端：WASD 方向 / J或Shift 加速 / K 减速 / L或Tab 切换球员 / E 呼出指令菜单 / 空格 暂停
-// 移动端/Pad：透明虚拟手柄（左方向盘 + 右下确定/切换，减速在上方，菜单在右上角）
+// 移动端/Pad：左方向盘 + 右下确定/切换。减速只留在键盘 K，屏幕上不放。
 var isTouch = ('ontouchstart' in window) || (navigator.maxTouchPoints > 0);
 var pad = { dx: 0, dy: 0, sprint: false, slow: false };
 var DPAD = { x: 140, y: 445, r: 95 };
-// 确定占原来加速键的主操作位，画大一点给拇指。减速和切换离开它一圈，避免连着误触。
-// 圆心距按命中半径（r+10）再留出约 66 画布像素。菜单不在这组里。
+// 确定占主操作位，画大一点给拇指。切换离开它一圈。菜单在右上角，不在这组里。
 var BTNS = [
   { id: 'confirm', x: 1100, y: 430, r: 70, label: '确定' },
   { id: 'switch',  x: 902,  y: 430, r: 42, label: '切换' },
-  { id: 'slow',    x: 990,  y: 265, r: 42, label: '减速' },
 ];
 var padTouchId = null;      // 方向盘上的触点 id
 var btnTouchIds = {};       // 触点 id -> 按键 id
@@ -537,12 +537,9 @@ function menuDpadStep(p) {
 }
 function menuBtn(id) {
   if (id === 'confirm') { tapE(); return; } // 和电脑 E 同一条路：确认当前项
-  if (id === 'slow') { if (headMenuOpen()) headMenuBack(); return; } // 返回
   toast('请先完成头顶菜单选择');
 }
 function menuBtnLabel(id, def) {
-  if (!headMenuOpen()) return def;
-  if (id === 'slow') return '返回';
   return def;
 }
 cv.addEventListener('touchstart', function (e) {
@@ -720,10 +717,12 @@ function popHmLevel() { if (ui.hmenu && ui.hmenu.stack.length > 1) ui.hmenu.stac
 function headMenuBack() { popHmLevel(); } // 头顶菜单内 Esc = 返回上一步（第一级无返回，必须选）
 
 function optionSub(o) {
+  if (o.sub) return o.sub;
   if (o.moves) return '选择动作';
   if (o.shots) return '选择射门';
   if (o.skills) return '选择技能';
-  return (o.rate != null ? o.rate + '% · ' : '') + o.cost + '体能';
+  if (o.rate == null && (o.cost == null || o.cost === 0)) return '';
+  return (o.rate != null ? o.rate + '% · ' : '') + (o.cost != null ? o.cost + '体能' : '');
 }
 function commandItem(o) {
   return {
@@ -956,8 +955,48 @@ function drawHeadMenu() {
   var lvl = hmTop();
   if (lvl.kind === 'aim') drawHmAim(hm, lvl, pr, cx, headY);
   else if (lvl.kind === 'confirm') drawHmConfirm(hm, lvl, pr, cx, headY);
+  else if (d.kind === 'taker' || d.kind === 'penalty-shot' || d.kind === 'setpiece') drawSetPieceMenu(lvl, d);
   else drawHmList(lvl, pr, cx, headY);
   drawHmLanding(hm);
+}
+
+// 定位球选人 / 射门：固定一块不透明面板，不跟球员头顶走，也不压记分牌和小地图。
+function drawSetPieceMenu(lvl, d) {
+  var items = lvl.items || [];
+  var title = '定位球';
+  if (d.kind === 'taker') title = '选择主罚';
+  else if (d.kind === 'penalty-shot' || lvl.kind === 'shots') title = '选择射门';
+  else if (lvl.title) title = lvl.title;
+  var rowH = items.length > 8 ? 26 : 30;
+  var headH = 40;
+  var w = 348;
+  var h = headH + items.length * rowH + 12;
+  var x = 242;
+  var y = 148;
+  if (y + h > 548) y = Math.max(148, 548 - h);
+  ctx.fillStyle = 'rgba(8,12,26,0.97)';
+  rr(x, y, w, h, 10); ctx.fill();
+  ctx.strokeStyle = '#ffd94a'; ctx.lineWidth = 2;
+  rr(x, y, w, h, 10); ctx.stroke();
+  text(title, x + 16, y + 22, 18, '#ffd94a', 'left', true);
+  text('确定 = E', x + w - 14, y + 22, 13, '#9fb4dd', 'right');
+  items.forEach(function (it, i) {
+    var ry = y + headH + i * rowH;
+    if (i === lvl.sel) {
+      ctx.fillStyle = 'rgba(255,217,74,0.18)';
+      ctx.fillRect(x + 8, ry + 2, w - 16, rowH - 4);
+    }
+    var color = !it.enabled ? '#5a6584' : it.back ? '#9fb4dd' : (i === lvl.sel ? '#ffd94a' : '#ffffff');
+    var label = String(it.label || '').replace(/^[•·]\s*/, '');
+    text((i === lvl.sel ? '▶ ' : '') + label, x + 14, ry + rowH / 2, 15, color, 'left', true);
+    if (it.sub) text(it.sub, x + w - 12, ry + rowH / 2, 13, it.enabled ? '#d5e2ff' : '#4a5468', 'right');
+    (function (item, idx) {
+      addClick(x + 8, ry, w - 16, rowH, function () {
+        if (!item.enabled) { toast('体能不足或该球员无法使用'); return; }
+        lvl.sel = idx; item.fn();
+      });
+    })(it, i);
+  });
 }
 
 function drawHmList(lvl, pr, cx, headY) {
@@ -1232,7 +1271,7 @@ function drawTitle() {
   addClick(bx, by, bw, bh, startMatch);
 
   text('电脑：WASD 移动 · J/Shift加速 K减速 · L切换球员 · E指令菜单/确定 · Q取消 · 空格暂停', W / 2, 672, 16, '#5f7099', 'center');
-  text('手机 / Pad：左方向盘移动 · 右下「确定」等于 E · 减速/切换在旁边 · 右上角菜单', W / 2, 696, 16, '#5f7099', 'center');
+  text('手机 / Pad：左方向盘移动 · 右下「确定」等于 E · 「切换」在旁边 · 右上角菜单', W / 2, 696, 16, '#5f7099', 'center');
 }
 
 // ---------------- 绘制：比赛 ----------------
@@ -1482,7 +1521,13 @@ function drawActors(t) {
   // 带球时球贴在面朝方向前方约 0.5 米，朝向用八向离散方向，不跟本帧速度。
   // 只有球真正离脚飞行时（传球/射门/解围）才绘制轨迹残影。
   var bbx = ballR.x, bby = ballR.y, ballOwned = false;
-  for (var boi = 0; boi < state.players.length; boi++) {
+  // 定位球已经摆好：球画在发球点上，不跟主罚者的脚走。主罚者站在球后面。
+  var placedRestart = state.restart && state.ball && state.ball.ownerId
+    && (state.phase === 'whistle' || state.phase === 'penalty' || state.phase === 'decision');
+  if (placedRestart) {
+    bbx = state.ball.x; bby = state.ball.y;
+  }
+  for (var boi = 0; !placedRestart && boi < state.players.length; boi++) {
     if (state.players[boi].hasBall) {
       var owner = state.players[boi];
       ballOwned = true;
@@ -1631,12 +1676,16 @@ function drawPauseButton() {
 // 画布本身已经让出安全区，这里再离边一截。
 function drawTouchMenuButton() {
   var w = 72, h = 30, x = W - w - 14, y = 8;
-  ctx.fillStyle = 'rgba(8,12,26,0.30)';
+  var back = headMenuOpen() && ui.hmenu.stack.length > 1;
+  ctx.fillStyle = back ? 'rgba(8,12,26,0.72)' : 'rgba(8,12,26,0.30)';
   rr(x, y, w, h, 8); ctx.fill();
   ctx.strokeStyle = 'rgba(255,255,255,0.28)';
   ctx.lineWidth = 1.5; ctx.stroke();
-  text('菜单', x + w / 2, y + h / 2, 14, 'rgba(255,255,255,0.62)', 'center');
-  addClick(x, y, w, h, function () { togglePause(); });
+  text(back ? '返回' : '菜单', x + w / 2, y + h / 2, 14, back ? '#fff' : 'rgba(255,255,255,0.62)', 'center');
+  addClick(x, y, w, h, function () {
+    if (headMenuOpen() && ui.hmenu.stack.length > 1) headMenuBack();
+    else togglePause();
+  });
 }
 
 function drawPauseMenu() {
@@ -1935,13 +1984,31 @@ function drawCutin() {
     text(a.text, W / 2, 308, 20, '#fff', 'center');
     return;
   }
-  // 右侧演出面板（仿效果图）
-  var x = 950, y = 150, w = 316, h = 210;
-  panel(x, y, w, h, a.success ? '#2b5fe3' : '#8a2b2b');
-  text(a.label, x + 18, y + 30, 26, '#fff', 'left', true);
-  text(a.success ? '成功！' : '失败…', x + 18, y + 62, 20, a.success ? '#7fd0ff' : '#ff9a9a', 'left', true);
-  wrapText(a.text, x + 18, y + 92, w - 36, 14, '#e8eeff', 3);
-  text(a.playerName, x + 18, y + h - 24, 15, '#ffd94a', 'left');
+  // 选定位球时这块让位，避免压住菜单和小地图。
+  var dk = state.decision && state.decision.kind;
+  if (dk === 'taker' || dk === 'penalty-shot' || dk === 'setpiece' || dk === 'qte') return;
+  // 左侧事件条：记分牌下面、小地图对面。
+  var x = 16, y = 168, w = 300, h = 168;
+  var verdict = restartVerdict(a);
+  var awarded = verdict !== (a.success ? '成功！' : '失败…');
+  var good = a.success || (awarded && a.team === 'home') || a.kind === 'advantage';
+  panel(x, y, w, h, good ? '#2b5fe3' : '#8a2b2b');
+  text(a.label, x + 16, y + 26, 22, '#fff', 'left', true);
+  text(verdict, x + 16, y + 56, 16, good ? '#7fd0ff' : '#ff9a9a', 'left', true);
+  wrapText(a.text, x + 16, y + 84, w - 32, 14, '#e8eeff', 3);
+  text(a.playerName, x + 16, y + h - 18, 14, '#ffd94a', 'left');
+}
+
+function restartVerdict(a) {
+  var ours = a.team === 'home';
+  if (a.kind === 'foul') return ours ? '对方犯规，我方主罚' : '我方犯规，对方获得定位球';
+  if (a.kind === 'penalty') return ours ? '我方获得点球' : '对方获得点球';
+  if (a.kind === 'offside') return ours ? '对方越位，我方主罚' : '我方越位，对方获得任意球';
+  if (a.kind === 'corner') return ours ? '我方获得角球' : '对方获得角球';
+  if (a.kind === 'throwin') return ours ? '我方获得界外球' : '对方获得界外球';
+  if (a.kind === 'goalkick') return ours ? '我方获得球门球' : '对方获得球门球';
+  if (a.kind === 'advantage') return '进攻有利，比赛继续';
+  return a.success ? '成功！' : '失败…';
 }
 
 // ★ 全屏结算演出：暗场 + 像素风拼贴特写 + 标题 + 文字解说
@@ -2078,7 +2145,8 @@ function frame(t) {
     frameInner(t);
   } catch (err) {
     dbgErr = 'ERR: ' + ((err && err.message) || err);
-    try { // 兜底：即使主绘制崩了，也要把错误画出来
+    if (typeof console !== 'undefined') console.error(err);
+    if (DEBUG_HUD) try {
       ctx.fillStyle = 'rgba(0,0,0,0.7)'; ctx.fillRect(8, 8, 460, 30);
       ctx.fillStyle = '#ff6b6b'; ctx.font = '14px monospace'; ctx.textAlign = 'left'; ctx.textBaseline = 'top';
       ctx.fillText(dbgErr, 14, 12);
@@ -2100,7 +2168,7 @@ function frameInner(t) {
     }
   }
   drawToast();
-  if (DEBUG && !/[?&]hud=0/.test(location.search)) { // 左上角诊断行：按键 / 菜单栈 / 异常
+  if (DEBUG_HUD) { // 左上角诊断行：只有 ?debug=1&hud=1 才画
     var _dlt = hmTop();
     ctx.font = '14px monospace'; ctx.textAlign = 'left'; ctx.textBaseline = 'top';
     ctx.fillStyle = 'rgba(0,0,0,0.7)'; ctx.fillRect(8, 8, 460, 88);
