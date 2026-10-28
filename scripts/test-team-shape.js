@@ -94,11 +94,18 @@ console.log('== 任意球 / 点球 / 界外球 ==');
   ok((m.phase === 'whistle' || m.phase === 'decision') && act.kind === 'foul' && act.cut == null, '犯规停球且不盖住球场', m.phase + '/' + act.cut);
   ok(m.restart && m.restart.label === '犯规 → 任意球', '横幅是犯规 → 任意球', m.restart && m.restart.label);
   ok(Math.abs(m.ball.x - 60) < 0.05 && Math.abs(m.ball.y - 34) < 0.05, '球放在犯规点', m.ball.x + ',' + m.ball.y);
-  ok(Math.abs(P(m, 'h10').x - 60) < 0.05 && P(m, 'h10').id === m.ball.ownerId, '主罚者站在球上', P(m, 'h10').x);
+  var fkTaker = P(m, 'h10');
+  ok(fkTaker.id === m.ball.ownerId && fkTaker.x < 58.5 && fkTaker.x > 54, '主罚者站在球后', fkTaker.x.toFixed(2));
   var close = m.players.filter(function (q) {
     return q.team === 'away' && !q.sentOff && dist(q, { x: 60, y: 34 }) < 9.1;
   });
   ok(close.length === 0, '对方退出 9.15 米', close.length + '人太近');
+  var wall = m.players.filter(function (q) {
+    return q.team === 'away' && !q.sentOff && Math.abs(dist(q, { x: 60, y: 34 }) - 9.15) < 0.4 && q.x > 66;
+  });
+  ok(wall.length >= 3, '任意球有人墙，站在球和球门之间', wall.length + '人');
+  var wallYs = wall.map(function (q) { return q.y; });
+  ok(wall.length < 2 || Math.max.apply(null, wallYs) - Math.min.apply(null, wallYs) > 2, '人墙横向排开', wall.map(function (q) { return q.y.toFixed(1); }).join(','));
   ok(controlledTeam(m) === 'home' && m.control.playerId === 'h10', '主队任意球由主队主罚者控制', m.control.playerId);
   ok(act.text === '哨响！爆裂 直 犯规，青鹰高校 获得直接任意球。', '直接任意球文案', act.text);
   ok(act.text.split('青鹰高校').length === 2, '队名只出现一次', act.text);
@@ -115,7 +122,8 @@ console.log('== 任意球 / 点球 / 界外球 ==');
   };
   m.applyFoulResult(f);
   ok(m.ball.ownerId && m.byId[m.ball.ownerId].team === 'away', '客队任意球由客队主罚', m.ball.ownerId);
-  ok(Math.abs(m.byId[m.ball.ownerId].x - 40) < 0.05, '客队主罚者站在犯规点');
+  var awayTaker = m.byId[m.ball.ownerId];
+  ok(awayTaker && awayTaker.team === 'away' && awayTaker.x > 41.2 && awayTaker.x < 45, '客队主罚者站在球后', awayTaker && awayTaker.x);
   ok(controlledTeam(m) === 'home', '客队定位球时人仍控制主队', m.control.playerId);
   ok(m.lastAction.text === '哨响！松本 勇 犯规，烈风学院 获得直接任意球。', '客队直接任意球文案', m.lastAction.text);
   ok(m.lastAction.text.split('烈风学院').length === 2, '客队队名只出现一次', m.lastAction.text);
@@ -132,7 +140,7 @@ console.log('== 任意球 / 点球 / 界外球 ==');
   ok(Math.abs(m.ball.x - 82) < 0.05 && Math.abs(m.ball.y - 30) < 0.05, '球放在越位点', m.ball.x + ',' + m.ball.y);
   var taker = m.byId[m.ball.ownerId];
   ok(taker && taker.team === 'away' && taker.pos !== 'GK', '防守方外场球员主罚', taker && taker.id);
-  ok(Math.abs(taker.x - 82) < 0.05 && Math.abs(taker.y - 30) < 0.05, '主罚者站在越位点');
+  ok(taker.x > 83 && taker.x < 87, '主罚者站在越位点后面', taker.x.toFixed(2) + ',' + taker.y.toFixed(2));
   var close = m.players.filter(function (q) {
     return q.team === 'home' && !q.sentOff && dist(q, { x: 82, y: 30 }) < 9.1;
   });
@@ -157,9 +165,9 @@ console.log('== 任意球 / 点球 / 界外球 ==');
   ok(act.text.split('青鹰高校').length === 2 && act.text.indexOf('获得直接任意球') < 0, '点球队名只写一次', act.text);
   ok(m.restart && m.restart.label === '犯规 → 点球', '点球横幅', m.restart && m.restart.label);
   ok(Math.abs(m.ball.x - 94) < 0.05 && Math.abs(m.ball.y - 34) < 0.05, '球在点球点', m.ball.x + ',' + m.ball.y);
-  ok(m.ball.ownerId === 'h10' && Math.abs(P(m, 'h10').x - 94) < 0.05, '主罚者站在点球点');
+  ok(m.ball.ownerId === 'h10' && P(m, 'h10').x < 92.5 && P(m, 'h10').x > 89, '主罚者站在球后', P(m, 'h10').x.toFixed(2));
   var gk = P(m, 'a1');
-  ok(gk.x > 100, '门将站在球门线上', gk.x);
+  ok(gk.x > 104.4 && Math.abs(gk.y - 34) < 1, '门将站在球门线上', gk.x.toFixed(2) + ',' + gk.y.toFixed(2));
   var wall = m.players.filter(function (q) {
     if (q.sentOff || q.id === 'h10' || q.id === 'a1') return false;
     var inBox = q.x > 105 - 16.5 && Math.abs(q.y - 34) <= 20.2;
@@ -356,6 +364,37 @@ console.log('== 带球时队友跟上 ==');
   ok(P(m, 'h11').y > 50 && P(m, 'h11').x > x11 + 8, '右边锋拉开并跟上', P(m, 'h11').x.toFixed(1) + ',' + P(m, 'h11').y.toFixed(1));
   ok(lanes.length >= 2, '中前场有人拉开给传球点', String(lanes.length));
   ok(dfx > dfx0 + 6 && dfx < carrier.x - 8, '后卫线整体前提并留在球后', dfx.toFixed(1) + ' ball ' + carrier.x.toFixed(1));
+})();
+
+console.log('== 防守不排成一列 ==');
+(function () {
+  var m = newMatch(80);
+  m.ball.ownerId = 'h10';
+  m.ball.x = 90; m.ball.y = 34;
+  var t = Behavior.blockTargets(m, 'away');
+  var ys = [], xs = [];
+  Object.keys(t).forEach(function (id) {
+    if (m.byId[id].pos === 'GK') return;
+    ys.push(t[id].y); xs.push(t[id].x);
+  });
+  var ySpan = Math.max.apply(null, ys) - Math.min.apply(null, ys);
+  var xSpan = Math.max.apply(null, xs) - Math.min.apply(null, xs);
+  ok(ySpan > 30, '客队防守横向拉开', ySpan.toFixed(1));
+  ok(xSpan > 8, '客队防守有纵深', xSpan.toFixed(1));
+  var m2 = newMatch(81);
+  m2.ball.x = 106; m2.ball.y = 12; m2.ball.lastTouchTeam = 'away';
+  m2.whistleOutOfBounds();
+  var cornerTaker = m2.byId[m2.ball.ownerId];
+  var boxAtk = m2.players.filter(function (q) {
+    return q.team === 'home' && q.id !== cornerTaker.id && q.x > 105 - 16.5 && Math.abs(q.y - 34) <= 20.2;
+  });
+  ok(boxAtk.length >= 3, '角球有进攻球员进禁区', boxAtk.length);
+  ok(P(m2, 'a1').x > 104.4, '角球时客队门将在门线上', P(m2, 'a1').x.toFixed(2));
+  var nearFlag = m2.players.filter(function (q) {
+    if (q.team === 'home' || q.sentOff) return false;
+    return dist(q, { x: m2.ball.x, y: m2.ball.y }) < 9.14;
+  });
+  ok(nearFlag.length === 0, '角球对方离开角旗 9.15 米', nearFlag.length);
 })();
 
 if (failures) {

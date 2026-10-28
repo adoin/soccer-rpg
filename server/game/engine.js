@@ -1749,6 +1749,12 @@ Match.prototype.resolveAction = function (p, commandId, rate, params) {
       var isSpecial = commandId === 'special' || (shotDef && shotDef.id === 'special');
       var keeper = this.byId[p.team === 'home' ? 'a1' : 'h1'];
       var label = (shotDef && shotDef.name) || (isSpecial && p.special ? p.special.name : '射门');
+      // 定位球先摆在球后面。出脚时回到球上，射门距离和飞行都从罚球点算。
+      if (this.restart && (this.restart.kind === 'penalty' || this.restart.kind === 'foul' || this.restart.kind === 'offside' || this.restart.kind === 'corner')) {
+        p.x = this.restart.x;
+        p.y = this.restart.y;
+        p._vx = 0; p._vy = 0;
+      }
       // ★ 射门瞬间：越位位置球员遮挡门将视线 / 挡在射门线路上 → 直接吹越位
       var osShot = Offside.judgeShot(this, p);
       if (osShot.type === 'offside') {
@@ -1989,6 +1995,199 @@ Match.prototype.pushCircle = function (x, y, team, minDist) {
   });
 };
 
+// 把一名球员放到场地坐标上，并停掉惯性。edge 是允许贴近边线的距离，门将要站到球门线上。
+Match.prototype.placeFeet = function (p, x, y, edge) {
+  if (!p || p.sentOff) return;
+  var e = edge == null ? 0.7 : edge;
+  p.x = clamp(x, e, FIELD.W - e);
+  p.y = clamp(y, e, FIELD.H - e);
+  p._vx = 0;
+  p._vy = 0;
+};
+
+// 夹到边线后如果钻进了最小距离，再沿空着的轴推出去。
+Match.prototype.keepOffSpot = function (p, x, y, minDist) {
+  if (!p || p.sentOff) return;
+  var dx = p.x - x, dy = p.y - y;
+  var dd = Math.sqrt(dx * dx + dy * dy);
+  if (dd >= minDist) return;
+  if (dd < 0.02) { dx = 0; dy = 1; dd = 1; }
+  this.placeFeet(p, x + dx / dd * minDist, y + dy / dd * minDist);
+  dx = p.x - x; dy = p.y - y;
+  dd = Math.sqrt(dx * dx + dy * dy);
+  if (dd >= minDist - 0.02) return;
+  var roomY = Math.sqrt(Math.max(0.04, minDist * minDist - dx * dx));
+  this.placeFeet(p, p.x, y + (dy >= 0 ? roomY : -roomY));
+  dx = p.x - x; dy = p.y - y;
+  dd = Math.sqrt(dx * dx + dy * dy);
+  if (dd >= minDist - 0.02) return;
+  var roomX = Math.sqrt(Math.max(0.04, minDist * minDist - dy * dy));
+  this.placeFeet(p, x + (dx >= 0 ? roomX : -roomX), p.y);
+};
+
+// 定位球整队重摆。球的坐标由调用方放下，这里只摆人。
+// 点球：球在 11 米点，主罚者在球后，门将在球门线上，其余人退出禁区和弧顶。
+// 任意球：人墙在 9.15 米处，越靠近球门人越多；主罚者在球后。
+// 角球：主罚者在旗下，进攻队员进禁区，防守队员盯人并离开角旗 9.15 米。
+// 界外球：主罚者踩边线，队友接应，对方退开 2 米。
+Match.prototype.stageRestart = function (kind, team, x, y, taker) {
+  var self = this;
+  var opp = team === 'home' ? 'away' : 'home';
+  var dir = team === 'home' ? 1 : -1;
+  var goalX = team === 'home' ? FIELD.W : 0;
+  if (kind === 'penalty') {
+    x = goalX - dir * 11;
+    y = FIELD.H / 2;
+  }
+  var ourGk = null, theirGk = null;
+  var ours = [], theirs = [];
+  this.players.forEach(function (p) {
+    if (p.sentOff) return;
+    if (taker && p.id === taker.id) return;
+    if (p.pos === 'GK' && p.team === team) { ourGk = p; return; }
+    if (p.pos === 'GK' && p.team === opp) { theirGk = p; return; }
+    if (p.team === team) ours.push(p);
+    else theirs.push(p);
+  });
+  ours.sort(function (a, b) { return a.num - b.num; });
+  theirs.sort(function (a, b) {
+    var rank = { DF: 0, MF: 1, FW: 2 };
+    var d = (rank[a.pos] == null ? 2 : rank[a.pos]) - (rank[b.pos] == null ? 2 : rank[b.pos]);
+    if (d) return d;
+    return a.num - b.num;
+  });
+
+  if (kind === 'penalty') {
+    if (taker) this.placeFeet(taker, x - dir * 3.1, y + 1.1);
+    if (theirGk) this.placeFeet(theirGk, goalX - dir * 0.25, y, 0.15);
+    if (ourGk) this.placeFeet(ourGk, team === 'home' ? 2.2 : FIELD.W - 2.2, FIELD.H / 2);
+    var line = x - dir * 11.4;
+    var ys = [8, 14, 20, 27, 41, 48, 55, 61];
+    ours.forEach(function (p, i) {
+      self.placeFeet(p, line - dir * (0.4 + (i % 3) * 1.3), ys[i % ys.length]);
+    });
+    theirs.forEach(function (p, i) {
+      self.placeFeet(p, line - dir * (3.6 + (i % 2) * 1.6), ys[(i + 3) % ys.length]);
+    });
+    this.players.forEach(function (p) {
+      if (p.sentOff) return;
+      if (taker && p.id === taker.id) return;
+      if (theirGk && p.id === theirGk.id) return;
+      var inBox = dir > 0
+        ? (p.x > FIELD.W - 16.5 && Math.abs(p.y - FIELD.H / 2) <= 20.2)
+        : (p.x < 16.5 && Math.abs(p.y - FIELD.H / 2) <= 20.2);
+      if (inBox) self.placeFeet(p, x - dir * 12.2, p.y);
+      self.keepOffSpot(p, x, y, 9.2);
+    });
+    if (taker) this.placeFeet(taker, x - dir * 3.1, y + 1.1);
+    if (theirGk) this.placeFeet(theirGk, goalX - dir * 0.25, y, 0.15);
+    return;
+  }
+
+  if (kind === 'corner') {
+    if (taker) this.placeFeet(taker, x, y);
+    var nearTop = y < FIELD.H / 2;
+    if (theirGk) this.placeFeet(theirGk, goalX - dir * 0.25, FIELD.H / 2, 0.15);
+    if (ourGk) this.placeFeet(ourGk, team === 'home' ? 4 : FIELD.W - 4, FIELD.H / 2);
+    var atk = [
+      [goalX - dir * 6, nearTop ? 29 : 39],
+      [goalX - dir * 8, nearTop ? 36 : 32],
+      [goalX - dir * 11, 34],
+      [goalX - dir * 10, nearTop ? 23 : 45],
+      [goalX - dir * 14, nearTop ? 42 : 26],
+      [goalX - dir * 17, 34],
+      [goalX - dir * 20, nearTop ? 18 : 50],
+      [goalX - dir * 23, nearTop ? 28 : 40],
+      [goalX - dir * 26, 34],
+      [goalX - dir * 30, nearTop ? 46 : 22],
+    ];
+    ours.forEach(function (p, i) {
+      var s = atk[i % atk.length];
+      self.placeFeet(p, s[0], s[1]);
+    });
+    theirs.forEach(function (p, i) {
+      var s = atk[i % atk.length];
+      self.placeFeet(p, s[0] - dir * 1.8, clamp(s[1] + (i % 2 ? 2.2 : -2.2), 8, 60));
+    });
+    this.players.forEach(function (p) {
+      if (p.sentOff || (taker && p.id === taker.id)) return;
+      self.keepOffSpot(p, x, y, 9.2);
+    });
+    if (taker) this.placeFeet(taker, x, y);
+    if (theirGk) this.placeFeet(theirGk, goalX - dir * 0.25, FIELD.H / 2, 0.15);
+    return;
+  }
+
+  if (kind === 'throwin') {
+    if (taker) this.placeFeet(taker, x, y, 0.4);
+    var inward = y < FIELD.H / 2 ? 1 : -1;
+    var offers = [
+      [x + dir * 7, y + inward * 7],
+      [x + dir * 13, y + inward * 12],
+      [x - dir * 6, y + inward * 9],
+      [x + dir * 4, y + inward * 16],
+      [x + dir * 18, 34],
+      [x - dir * 12, clamp(y + inward * 18, 10, 58)],
+      [x + dir * 22, clamp(y + inward * 22, 12, 56)],
+      [x - dir * 16, 34],
+      [x + dir * 28, clamp(34 + inward * 8, 12, 56)],
+      [clamp(x, 18, FIELD.W - 18), 34],
+    ];
+    ours.forEach(function (p, i) {
+      var s = offers[i % offers.length];
+      self.placeFeet(p, s[0], s[1]);
+    });
+    theirs.forEach(function (p, i) {
+      var s = offers[i % offers.length];
+      self.placeFeet(p, s[0] - dir * 2.4, s[1] + inward * 2.6);
+    });
+    if (ourGk) this.placeFeet(ourGk, team === 'home' ? 5 : FIELD.W - 5, FIELD.H / 2);
+    if (theirGk) this.placeFeet(theirGk, team === 'home' ? FIELD.W - 1.2 : 1.2, FIELD.H / 2, 0.15);
+    this.players.forEach(function (p) {
+      if (p.sentOff || p.team === team) return;
+      self.keepOffSpot(p, x, y, 2.15);
+    });
+    if (taker) this.placeFeet(taker, x, y, 0.4);
+    return;
+  }
+
+  if (taker) this.placeFeet(taker, x - dir * 2.6, y + (y > FIELD.H / 2 ? -1.15 : 1.15));
+  var gdx = goalX - x, gdy = FIELD.H / 2 - y;
+  var glen = Math.sqrt(gdx * gdx + gdy * gdy) || 1;
+  var ux = gdx / glen, uy = gdy / glen;
+  var nWall = glen < 24 ? 5 : glen < 34 ? 4 : 3;
+  if (nWall > theirs.length) nWall = theirs.length;
+  if (nWall < 2 && theirs.length >= 2) nWall = 2;
+  var gap = 1.25;
+  var wi;
+  for (wi = 0; wi < nWall; wi++) {
+    var off = (wi - (nWall - 1) / 2) * gap;
+    this.placeFeet(theirs[wi], x + ux * 9.15 + (-uy) * off, y + uy * 9.15 + ux * off);
+    this.keepOffSpot(theirs[wi], x, y, 9.15);
+  }
+  var wallIds = {};
+  for (wi = 0; wi < nWall; wi++) wallIds[theirs[wi].id] = true;
+  theirs.filter(function (p) { return !wallIds[p.id]; }).forEach(function (p, i) {
+    var depth = 5 + (i % 3) * 4;
+    var spread = ((i % 5) - 2) * 6.5;
+    self.placeFeet(p, x + ux * (9.15 + depth) + (-uy) * spread, y + uy * (9.15 + depth) + ux * spread);
+    self.keepOffSpot(p, x, y, 9.2);
+  });
+  ours.forEach(function (p, i) {
+    var col = i % 4;
+    var row = Math.floor(i / 4);
+    self.placeFeet(
+      p,
+      x - dir * (4.2 + row * 6.5) + (col - 1.5) * 1.2,
+      clamp(y + (col - 1.5) * 7.5, 6, FIELD.H - 6)
+    );
+  });
+  if (theirGk) this.placeFeet(theirGk, goalX - dir * 0.25, clamp(FIELD.H / 2 + (y - FIELD.H / 2) * 0.25, 28, 40), 0.15);
+  if (ourGk) this.placeFeet(ourGk, team === 'home' ? 3 : FIELD.W - 3, FIELD.H / 2);
+  theirs.forEach(function (p) { self.keepOffSpot(p, x, y, 9.15); });
+  if (taker) this.placeFeet(taker, x - dir * 2.6, y + (y > FIELD.H / 2 ? -1.15 : 1.15));
+};
+
 // 主队的点球、任意球、角球先选主罚人。客队由 AI 选，不进这个菜单。
 Match.prototype.maybeOpenRestartMenu = function () {
   var r = this.restart;
@@ -2061,17 +2260,14 @@ Match.prototype.chooseSetPieceTaker = function (id) {
   if (!p || !r || p.team !== r.team || p.sentOff || p.pos === 'GK') {
     return { ok: false, error: '不能由这个人主罚' };
   }
-  p.x = r.x; p.y = r.y; p._vx = 0; p._vy = 0;
+  r.takerId = p.id;
+  this.control.playerId = p.id;
+  this.control.activeStamp = this.now;
+  this.stageRestart(kind, r.team, r.x, r.y, p);
   this.ball.ownerId = p.id;
   this.ball.x = r.x; this.ball.y = r.y;
   this.ball.vx = 0; this.ball.vy = 0; this.ball.vz = 0; this.ball.z = 0;
   this.ball.lastTouchTeam = p.team; this.ball.lastTouchId = p.id;
-  r.takerId = p.id;
-  this.control.playerId = p.id;
-  this.control.activeStamp = this.now;
-  this.pushCircle(r.x, r.y, p.team === 'home' ? 'away' : 'home', kind === 'corner' ? 9.15 : (kind === 'penalty' ? 9.15 : 9.15));
-  p.x = r.x; p.y = r.y;
-  this.ball.x = r.x; this.ball.y = r.y;
   if (kind === 'penalty') this.openPenaltyShots(p);
   else this.openRestartActions(p, kind);
   return { ok: true, result: { kind: 'taker', playerName: p.name, success: true } };
@@ -2211,14 +2407,12 @@ Match.prototype.whistleOffside = function (os, passer) {
   var sy = clamp(os.spot.y, 2, FIELD.H - 2);
   var taker = this.nearestOutfield(defendingTeam, sx, sy);
   if (!taker) { this.phase = 'play'; return { type: 'playon' }; }
-  taker.x = sx; taker.y = sy; taker._vx = 0; taker._vy = 0;
   this.ball.ownerId = taker.id;
   this.ball.x = sx; this.ball.y = sy;
   this.ball.vx = 0; this.ball.vy = 0; this.ball.vz = 0; this.ball.z = 0;
   this.ball.lastTouchTeam = defendingTeam; this.ball.lastTouchId = taker.id;
   this.ball.restartExempt = null;
-  // 越位方退到 9.15 米外。主罚者已经站在点上，不推主罚方。
-  this.pushCircle(sx, sy, passer.team, 9.15);
+  this.stageRestart('offside', defendingTeam, sx, sy, taker);
   this.enterStoppage('whistle', 2200, taker.id);
   this.markRestart({ kind: 'offside', team: defendingTeam, x: sx, y: sy, taker: taker, label: '越位 → 任意球', indirect: true });
   var teamName = defendingTeam === 'home' ? T.HOME_NAME : T.AWAY_NAME;
@@ -2283,20 +2477,11 @@ Match.prototype.whistleThrowIn = function (team, bx, by) {
     if (d < bd) { bd = d; taker = q; }
   });
   if (!taker) { this.phase = 'play'; return; }
-  taker.x = sx; taker.y = sy;
   this.ball.ownerId = taker.id;
   this.ball.x = sx; this.ball.y = sy; this.ball.vx = 0; this.ball.vy = 0; this.ball.z = 0;
-  this.ball.restartExempt = { takerId: taker.id, x: sx, y: sy }; // ★ 界外球直接发出不越位
+  this.ball.restartExempt = { takerId: taker.id, x: sx, y: sy };
   this.ball.lastTouchTeam = team; this.ball.lastTouchId = taker.id;
-  // ★ 对方退 2 米（Law 15 真实规则；之前漏了）
-  this.players.forEach(function (q) {
-    if (q.team === team || q.sentOff) return;
-    var dd = Math.sqrt((q.x - sx) * (q.x - sx) + (q.y - sy) * (q.y - sy));
-    if (dd < 2 && dd > 0.001) {
-      q.x = sx + (q.x - sx) / dd * 2;
-      q.y = sy + (q.y - sy) / dd * 2;
-    } else if (dd <= 0.001) { q.x = sx + 2; }
-  });
+  this.stageRestart('throwin', team, sx, sy, taker);
   this.enterStoppage('whistle', 1400, taker.id);
   this.markRestart({ kind: 'throwin', team: team, x: sx, y: sy, taker: taker, label: '界外球' });
   var teamName = team === 'home' ? T.HOME_NAME : T.AWAY_NAME;
@@ -2351,21 +2536,12 @@ Match.prototype.whistleCorner = function (team) {
     if (d < bd) { bd = d; taker = q; }
   });
   if (!taker) { this.phase = 'play'; return; }
-  taker.x = cx; taker.y = cy;
   this.ball.ownerId = taker.id;
   this.ball.x = cx; this.ball.y = cy;
   this.ball.vx = 0; this.ball.vy = 0; this.ball.z = 0;
-  this.ball.restartExempt = { takerId: taker.id, x: cx, y: cy }; // ★ 角球直接发出不越位
+  this.ball.restartExempt = { takerId: taker.id, x: cx, y: cy };
   this.ball.lastTouchTeam = team; this.ball.lastTouchId = taker.id;
-  // 对方退 9.15 米（真实规则）
-  this.players.forEach(function (q) {
-    if (q.team === team || q.sentOff) return;
-    var dd = Math.sqrt((q.x - cx) * (q.x - cx) + (q.y - cy) * (q.y - cy));
-    if (dd < 9.15 && dd > 0.001) {
-      q.x = cx + (q.x - cx) / dd * 9.15;
-      q.y = cy + (q.y - cy) / dd * 9.15;
-    } else if (dd <= 0.001) { q.x = cx + 9.15; }
-  });
+  this.stageRestart('corner', team, cx, cy, taker);
   this.enterStoppage('whistle', 1800, taker.id);
   this.markRestart({ kind: 'corner', team: team, x: cx, y: cy, taker: taker, label: '角球' });
   this.maybeOpenRestartMenu();
@@ -2476,13 +2652,12 @@ Match.prototype.applyFoulResult = function (foul) {
     taker = this.nearestOutfield(foul.team, fbx, fby);
   }
   if (!taker) { this.phase = 'play'; return this.lastAction; }
-  taker.x = fbx; taker.y = fby; taker._vx = 0; taker._vy = 0;
   this.ball.ownerId = taker.id;
   this.ball.x = fbx; this.ball.y = fby;
   this.ball.vx = 0; this.ball.vy = 0; this.ball.vz = 0; this.ball.z = 0;
   this.ball.lastTouchTeam = foul.team; this.ball.lastTouchId = taker.id;
   this.ball.restartExempt = null;
-  this.pushCircle(fbx, fby, foul.defender.team, 9.15);
+  this.stageRestart('foul', foul.team, fbx, fby, taker);
   this.enterStoppage('whistle', 2400, taker.id);
   this.markRestart({ kind: 'foul', team: foul.team, x: fbx, y: fby, taker: taker, label: '犯规 → 任意球' });
   this.maybeOpenRestartMenu();
@@ -2510,39 +2685,13 @@ Match.prototype.setupPenalty = function (foul, prefixText) {
   if (!taker || taker.sentOff || taker.team !== team || taker.pos === 'GK') {
     taker = this.nearestOutfield(team, spotX, spotY);
   }
-  var keeperTeam = team === 'home' ? 'away' : 'home';
-  var keeper = null;
-  this.players.forEach(function (q) {
-    if (q.team === keeperTeam && q.pos === 'GK' && !q.sentOff) keeper = q;
-  });
-  if (taker) {
-    taker.x = spotX; taker.y = spotY; taker._vx = 0; taker._vy = 0;
-    this.ball.ownerId = taker.id;
-    this.ball.lastTouchTeam = team; this.ball.lastTouchId = taker.id;
-  }
+  if (!taker) { this.phase = 'play'; return this.lastAction; }
+  this.ball.ownerId = taker.id;
+  this.ball.lastTouchTeam = team; this.ball.lastTouchId = taker.id;
   this.ball.x = spotX; this.ball.y = spotY;
   this.ball.vx = 0; this.ball.vy = 0; this.ball.vz = 0; this.ball.z = 0;
   this.ball.restartExempt = null;
-  if (keeper) {
-    keeper.x = team === 'home' ? FIELD.W - 1 : 1;
-    keeper.y = spotY;
-    keeper._vx = 0; keeper._vy = 0;
-  }
-  var boxX = team === 'home' ? FIELD.W - 16.5 : 16.5;
-  this.players.forEach(function (q) {
-    if (q.sentOff) return;
-    if (taker && q.id === taker.id) return;
-    if (keeper && q.id === keeper.id) return;
-    if (team === 'home' ? q.x > boxX : q.x < boxX) q.x = team === 'home' ? boxX - 1.2 : boxX + 1.2;
-  });
-  var opp = team === 'home' ? 'away' : 'home';
-  this.pushCircle(spotX, spotY, opp, 9.15);
-  this.pushCircle(spotX, spotY, team, 9.15);
-  if (taker) { taker.x = spotX; taker.y = spotY; }
-  if (keeper) {
-    keeper.x = team === 'home' ? FIELD.W - 1 : 1;
-    keeper.y = spotY;
-  }
+  this.stageRestart('penalty', team, spotX, spotY, taker);
   this.enterStoppage('penalty', 1800, taker ? taker.id : null, {
     kick: 'penalty', foul: foul, prefixText: prefixText || '',
   });
