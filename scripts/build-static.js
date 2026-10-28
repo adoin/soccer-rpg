@@ -228,6 +228,7 @@ html = html
   .replace('src="js/sprites.js"', 'src="js/sprites.js?v=' + ver + '"')
   .replace('src="js/manga-cutin.js"', 'src="js/manga-cutin.js?v=' + ver + '"')
   .replace('src="js/main.js"', 'src="js/main.js?v=' + ver + '"')
+  .replace('href="css/style.css"', 'href="css/style.css?v=' + ver + '"')
   .replace(
     '<!-- 客户端 -->',
     '<!-- 纯前端试玩版：引擎跑在浏览器里（正式版走服务器，见 README） -->\n' +
