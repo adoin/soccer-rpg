@@ -316,6 +316,8 @@ var ui = {
   mentality: 'balanced',
   choosing: false,          // 已发送指令、等待服务器确认
   exitArm: 0,               // 退出二次确认
+  tutorialUntil: 0,         // 开场操作说明只显示几秒
+  hintClosed: false,        // 玩家手动关掉提示
 };
 var clickables = [];        // 本帧可点击区域（绘制时重建）
 var frameNo = 0;
@@ -633,6 +635,8 @@ function startMatch() {
     padTouchId = null; btnTouchIds = {};
     for (var k in keys) keys[k] = false;
     ui.pauseOpen = false; ui.overlay = null; ui.choosing = false; ui.exitArm = 0;
+    ui.tutorialUntil = Date.now() + 4500;
+    ui.hintClosed = false;
     refresh();
     // ★ 状态轮询从 300ms 提到 120ms（与服务器 tick 对齐）：直接操控时按键→画面的延迟明显缩短
     if (ui.refreshTimer) clearInterval(ui.refreshTimer);
@@ -1591,7 +1595,7 @@ function drawActors(t) {
   var bbx = ballR.x, bby = ballR.y, ballOwned = false;
   // 定位球已经摆好：球画在发球点上，不跟主罚者的脚走。主罚者站在球后面。
   var placedRestart = state.restart && state.ball && state.ball.ownerId
-    && (state.phase === 'whistle' || state.phase === 'penalty' || state.phase === 'decision');
+    && (state.phase === 'whistle' || state.phase === 'penalty' || state.phase === 'decision' || state.restart.held);
   if (placedRestart) {
     bbx = state.ball.x; bby = state.ball.y;
   }
@@ -1859,26 +1863,39 @@ function drawPlayerCard(x, y, w, h) {
 
 var CMD_ICONS = { dribble: '💨', burst: '💨', pass: '➡️', protect: '🛡️', shoot: '⚽', special: '🔥', feint: '🌀', retreat: '↩️', tackle: '🦵', jockey: '🧱', 'def-skills': '🛡️', 'def-flying': '🛝', 'def-sweep': '🌀', 'def-shoulder': '💪', 'def-elbow': '🚧', 'shot-driven': '💥', 'shot-placed': '🎯', 'shot-curl': '🌀' };
 
-function drawIdleHint(x, y, w, h) {
-  panel(x, y, w, h);
-  var msg = isTouch ? '拖左盘移动；点「确定」呼出或确认指令（和电脑的 E 一样）'
-                    : 'WASD 移动（绿圈球员）；持球遇防守时在球员头顶选指令；防守贴近对方持球者可上抢';
-  if (state) {
-    if (state.restart && (state.phase === 'whistle' || state.phase === 'penalty' || state.phase === 'decision')) {
-      msg = state.restart.label || '定位球';
-      if (state.decision && state.decision.kind === 'taker') msg += ' · 选主罚人，按确定';
-      else if (state.decision && state.decision.kind === 'qte') msg += ' · 光标居中时按确定';
-      else if (state.decision && state.decision.kind === 'penalty-shot') msg += ' · 选择射门';
-      else if (state.decision && state.decision.kind === 'setpiece') msg += ' · 传球或射门';
-      else if (state.restart.team === 'home' && state.restart.kind === 'goalkick') msg += ' · 门将开球';
-    }
-    else if (state.phase === 'kickoff') msg = '开球！';
-    else if (state.phase === 'goal') msg = '⚽ 进球！';
-    else if (state.phase === 'halftime') msg = '中场休息…';
-    else if (state.paused) msg = '已暂停';
-    else if (state.controlActive === false) msg = '绿圈球员正由 AI 接管——动一下方向键拿回控制';
+function hintMessage() {
+  if (ui.hintClosed) return null;
+  if (!state) return null;
+  var restarting = state.restart && (state.phase === 'whistle' || state.phase === 'penalty' || state.phase === 'decision' || state.restart.held);
+  if (restarting) {
+    var msg = state.restart.label || '定位球';
+    if (state.decision && state.decision.kind === 'taker') msg += ' · 选主罚人，按确定';
+    else if (state.decision && state.decision.kind === 'qte') msg += ' · 光标居中时按确定';
+    else if (state.decision && state.decision.kind === 'penalty-shot') msg += ' · 选择射门';
+    else if (state.decision && state.decision.kind === 'setpiece') msg += ' · 传球或射门';
+    else if (state.restart.held && state.restart.kind === 'goalkick') msg += ' · 对方退出禁区后才能开出';
+    else if (state.restart.team === 'home' && state.restart.kind === 'goalkick') msg += ' · 门将开球';
+    return msg;
   }
-  text(msg, x + w / 2, y + h / 2, 17, '#9fb4dd', 'center');
+  if (state.phase === 'kickoff') return '开球！';
+  if (state.phase === 'goal') return '⚽ 进球！';
+  if (state.phase === 'halftime') return '中场休息…';
+  if (state.paused) return '已暂停';
+  if (state.controlActive === false) return '动一下方向键，拿回绿圈球员';
+  if (Date.now() < ui.tutorialUntil) {
+    return isTouch ? '左盘移动，点「确定」等于 E。这条提示马上会消失。'
+                   : 'WASD 移动绿圈球员，E 选指令。这条提示马上会消失。';
+  }
+  return null;
+}
+
+function drawIdleHint(x, y, w, h) {
+  var msg = hintMessage();
+  if (!msg) return;
+  panel(x, y, w, h);
+  text(msg, x + 16, y + h / 2, 16, '#9fb4dd', 'left');
+  text('×', x + w - 18, y + h / 2, 18, '#ffd94a', 'center', true);
+  addClick(x, y, w, h, function () { ui.hintClosed = true; ui.tutorialUntil = 0; });
 }
 
 function wrapText(str, x, y, maxW, size, color, maxLines) {
@@ -1902,7 +1919,7 @@ function wrapText(str, x, y, maxW, size, color, maxLines) {
 // 定位球：场上画球点，画面上方留一条短横幅（犯规/越位 → 任意球，点球同理）。
 function drawRestartMark() {
   if (!state || !state.restart) return;
-  if (state.phase !== 'whistle' && state.phase !== 'penalty' && state.phase !== 'decision') return;
+  if (state.phase !== 'whistle' && state.phase !== 'penalty' && state.phase !== 'decision' && !(state.restart && state.restart.held)) return;
   var r = state.restart;
   var spot = project(r.x, r.y);
   ctx.save();
