@@ -267,6 +267,8 @@ console.log('== 任意球菜单、远射、打飞 ==');
   ok(m.restart && m.restart.kind === 'goalkick' && m.restart.team === 'away', '高出横梁是客队球门球', m.restart && (m.restart.kind + '/' + m.restart.team));
   ok(m.ball.ownerId === 'a1' && m.ball.x > 90, '球门球在客队门口', m.ball.ownerId + '@' + m.ball.x.toFixed(1));
   ok(m.lastAction && m.lastAction.cut === 'shot-over', '演出是高出', m.lastAction && m.lastAction.cut);
+  ok(m.lastAction.roles && m.lastAction.roles.shooter && m.lastAction.roles.shooter.hair === 'blonde', '高出演出带上射手头发', m.lastAction.roles && m.lastAction.roles.shooter && m.lastAction.roles.shooter.hair);
+  ok(m.lastAction.roles.shooter.kit && m.lastAction.roles.shooter.kit.pattern === 'sash', '高出演出带上射手球衣');
 })();
 
 (function () {
@@ -277,6 +279,7 @@ console.log('== 任意球菜单、远射、打飞 ==');
   var guard = 0;
   while (m.phase === 'shotflight' && guard++ < 400) m.tick();
   ok(m.restart && m.restart.kind === 'goalkick' && m.restart.team === 'away', '打偏也是客队球门球', m.phase + '/' + (m.restart && m.restart.kind));
+  ok(m.lastAction && m.lastAction.cut === 'shot-wide' && m.lastAction.roles && m.lastAction.roles.shooter && m.lastAction.roles.shooter.kit && m.lastAction.roles.shooter.kit.pattern === 'sash', '偏出演出带上射手球衣', m.lastAction && m.lastAction.cut);
 })();
 
 (function () {

@@ -217,6 +217,7 @@ console.log('== 任意球 / 点球 / 界外球 ==');
   ok(parry.indexOf("sfx: '扑出底线！'") >= 0, '底线扑救横幅是扑出底线', parry);
   ok(tip.indexOf("sfx: '托出！'") >= 0, '托出横幅只留给高出', tip);
   ok(cut.split('托出！').length === 2, '托出！只出现在 gk-tip', cut.split('托出！').length - 1);
+  ok(cut.indexOf("'shot-over'") >= 0 && /'shot-over':[\s\S]{0,180}gk_tip_over/.test(cut), '高出分镜走托出横梁并上色');
   var eng = fs.readFileSync(require('path').join(__dirname, '../server/game/engine.js'), 'utf8');
   ok(eng.indexOf('把球扑出底线！') >= 0 && eng.indexOf('把球托出横梁，球出了底线！') >= 0, '解说区分扑出底线和托出横梁');
 })();

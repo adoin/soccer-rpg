@@ -442,6 +442,8 @@ Match.prototype.finishShotFlight = function () {
       this.lastAction.text = missText + (this.restart && this.restart.label ? (' ' + this.restart.label + '。') : '');
       this.lastAction.playerName = shooter.name;
       this.lastAction.team = sf.team;
+      this.lastAction.success = false;
+      this.lastAction.roles = shotRoles;
     }
     return;
   } else {
@@ -451,6 +453,10 @@ Match.prototype.finishShotFlight = function () {
       this.lastAction.cut = 'shoot-miss';
       this.lastAction.kind = 'shoot';
       this.lastAction.text = shooter.name + ' 的' + sf.label + '偏出了球门……';
+      this.lastAction.playerName = shooter.name;
+      this.lastAction.team = sf.team;
+      this.lastAction.success = false;
+      this.lastAction.roles = shotRoles;
     }
     return;
   }
@@ -2732,6 +2738,9 @@ Match.prototype.resolvePenalty = function (foul, prefixText) {
   var shotDef = Moves.shotById('shot-placed', shooter);
   var model = this.shotChance(shooter, keeper, shotDef, { penalty: true, qte: 0.58 });
   var call = prefixText + ' ' + shooter.name + ' 主罚点球……';
+  var penRoles = this.roleLooks({
+    shooter: shooter, scorer: shooter, keeper: keeper, striker: shooter,
+  });
   var roll = this.rng();
   if (roll > model.pOn) {
     this.whistleGoalKick(keeperTeam);
@@ -2742,6 +2751,7 @@ Match.prototype.resolvePenalty = function (foul, prefixText) {
       this.lastAction.team = shooter.team;
       this.lastAction.success = false;
       this.lastAction.cut = 'shoot-miss';
+      this.lastAction.roles = penRoles;
       this.lastAction.text = call + '偏出了球门！' + (this.restart ? this.restart.label : '');
     }
     return this.lastAction;
@@ -2755,7 +2765,7 @@ Match.prototype.resolvePenalty = function (foul, prefixText) {
     this.phase = 'play';
     this.setAction({
       kind: 'penalty', label: '点球罚失', playerName: shooter.name, team: shooter.team,
-      success: false, cut: 'shoot-save',
+      success: false, cut: 'shoot-save', roles: penRoles,
       text: call + '被门将 ' + (keeper ? keeper.name : '') + ' 扑出！',
       until: Date.now() + 2000,
     });
@@ -2766,6 +2776,7 @@ Match.prototype.resolvePenalty = function (foul, prefixText) {
   ga2.label = '点球命中';
   ga2.text = call + '球进了！' + shooter.name + ' 顶住压力罚入点球！';
   ga2.cut = 'shoot-goal';
+  ga2.roles = penRoles;
   return ga2;
 };
 
