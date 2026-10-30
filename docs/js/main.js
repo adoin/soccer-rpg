@@ -319,18 +319,28 @@ var dbgKey = '', dbgErr = '';
 if (DEBUG) window.addEventListener('error', function (e) { dbgErr = 'ERR: ' + (e.message || e.type); });
 
 // ---------------- 直接操控输入 ----------------
-// 桌面端：WASD 方向 / J或Shift 加速 / K 减速 / L或Tab 切换球员 / E 呼出指令菜单 / 空格 暂停
-// 移动端/Pad：左方向盘 + 右下确定/切换。减速只留在键盘 K，屏幕上不放。
+// 桌面端：WASD 方向 / J或Shift 加速 / K 减速 / L或Tab 切换球员 / E 呼出指令菜单 / 空格 暂停 / Q 取消
+// 触屏：左摇杆 = 同一路方向输入（360°），右侧虚拟键和键盘一一对应。不放加速，也不放减速 K。
+// touch-keys-v1
 var isTouch = ('ontouchstart' in window) || (navigator.maxTouchPoints > 0);
 var pad = { dx: 0, dy: 0, sprint: false, slow: false };
-var DPAD = { x: 140, y: 445, r: 95 };
-// 确定占主操作位，画大一点给拇指。切换离开它一圈。菜单在右上角，不在这组里。
-var BTNS = [
-  { id: 'confirm', x: 1100, y: 430, r: 70, label: '确定' },
-  { id: 'switch',  x: 902,  y: 430, r: 42, label: '切换' },
+// 摇杆在左下：事件条到底是 y=336，球员卡从 y=556 开始，摇杆落在这道缝里。
+var STICK = { x: 170, y: 448, r: 84 };
+// 右侧按键同样躲开小地图（底边约 y=190）、球员卡和事件条。
+var VKEYS = [
+  { id: 'up', key: 'w', code: 'KeyW', label: '上', keyLabel: 'W', x: 1206, y: 250, r: 40 },
+  { id: 'cancel', key: 'q', code: 'KeyQ', label: '取消', keyLabel: 'Q', x: 1206, y: 352, r: 42 },
+  { id: 'down', key: 's', code: 'KeyS', label: '下', keyLabel: 'S', x: 1206, y: 454, r: 40 },
+  { id: 'confirm', key: 'e', code: 'KeyE', label: '确定', keyLabel: 'E', x: 1084, y: 352, r: 56 },
+  { id: 'switch', key: 'l', code: 'KeyL', label: '切换', keyLabel: 'L', x: 1084, y: 478, r: 38 },
 ];
-var padTouchId = null;      // 方向盘上的触点 id
-var btnTouchIds = {};       // 触点 id -> 按键 id
+var MENU_BTN = { x: 1192, y: 10, w: 72, h: 30 };
+// 摇杆向量和按键触点分开记。键盘没按 WASD 时，摇杆方向不会被其它键清掉。
+var stickVec = { dx: 0, dy: 0, on: false };
+var contacts = {};
+var idMap = {};
+var recentDown = [];
+var keyLockUntil = {};
 function sendInput(extra) {
   if (screen !== 'game' || !matchId) return;
   var body = { dx: +pad.dx.toFixed(3), dy: +pad.dy.toFixed(3), sprint: pad.sprint, slow: pad.slow };
@@ -422,9 +432,10 @@ function project(x, y) {
 cv.addEventListener('click', function (e) {
   // ★ 全屏特写显示时：点任意位置只关闭特写（根治特写排队，2026-10-11）
   if (screen === 'game' && typeof showingCutscene === 'function' && showingCutscene()) { skipCutscene(); return; }
-  var rect = cv.getBoundingClientRect();
-  var mx = (e.clientX - rect.left) * (W / rect.width);
-  var my = (e.clientY - rect.top) * (H / rect.height);
+  var pt = canvasPoint(e.clientX, e.clientY);
+  var mx = pt.x, my = pt.y;
+  // 虚拟键和摇杆走指针/触摸，不把同一次点击再交给底下的界面。
+  if (isTouch && screen === 'game' && (hitVKey(pt) || hitStick(pt))) return;
   for (var i = clickables.length - 1; i >= 0; i--) {
     var c = clickables[i];
     if (mx >= c.x && mx <= c.x + c.w && my >= c.y && my <= c.y + c.h) {
@@ -481,127 +492,245 @@ document.addEventListener('keyup', function (e) {
 window.addEventListener('blur', function () {
   // 失焦松开所有键，避免球员一直跑
   for (var k in keys) keys[k] = false;
+  for (var k2 in keysDown) keysDown[k2] = false;
+  contacts = {};
+  idMap = {};
+  stickVec.on = false; stickVec.dx = 0; stickVec.dy = 0;
   setPad(0, 0, false, false);
 });
 var keys = {};
 var keysDown = {};
 function updatePadFromKeys() {
-  // 场地坐标：+x 朝对方球门（右），+y 朝屏幕上方
+  // 场地坐标：+x 朝对方球门（右），+y 朝屏幕上方。Shift 也加速（和 J 一样）。
+  // 键盘方向优先。没有 WASD 时保留摇杆的模拟量，避免点一下「确定」把摇杆清零。
   var dx = (keys['d'] ? 1 : 0) - (keys['a'] ? 1 : 0);
   var dy = (keys['w'] ? 1 : 0) - (keys['s'] ? 1 : 0);
-  setPad(dx, dy, !!(keys['j'] || keys['shift']), !!keys['k']); // ★ Shift 也加速（和 J 一样）
+  var sprint = !!(keys['j'] || keys['shift']);
+  var slow = !!keys['k'];
+  if (dx || dy) setPad(dx, dy, sprint, slow);
+  else if (stickVec.on) setPad(stickVec.dx, stickVec.dy, sprint, slow);
+  else setPad(0, 0, sprint, slow);
 }
 
-// ---- 触屏虚拟手柄 ----
+// ---- 触屏：摇杆 + 与键盘一一对应的虚拟键 ----
+// 指针和触摸两套都听。iOS/Android 上同一次手指会先后派发，按位置并到同一个触点，避免连发。
+// 拖摇杆时 preventDefault，配合 touch-action:none，页面不滚动、不缩放。
 
+cv.style.touchAction = 'none';
 
-function touchPos(t) {
+function canvasPoint(clientX, clientY) {
   var rect = cv.getBoundingClientRect();
-  return { x: (t.clientX - rect.left) * (W / rect.width), y: (t.clientY - rect.top) * (H / rect.height) };
+  var rw = rect.width || W, rh = rect.height || H;
+  // object-fit: contain 时画面在元素里居中，不能按元素外框直接换算。
+  var scale = Math.min(rw / W, rh / H);
+  if (!(scale > 0)) scale = 1;
+  var offX = (rw - W * scale) / 2;
+  var offY = (rh - H * scale) / 2;
+  return {
+    x: (clientX - rect.left - offX) / scale,
+    y: (clientY - rect.top - offY) / scale,
+  };
 }
-function hitBtn(p) {
-  for (var i = 0; i < BTNS.length; i++) {
-    var b = BTNS[i];
-    if (Math.hypot(p.x - b.x, p.y - b.y) <= b.r + 10) return b;
+function portraitLock() {
+  try {
+    return !!(window.matchMedia && window.matchMedia('(orientation: portrait) and (max-width: 900px)').matches);
+  } catch (err) { return false; }
+}
+function hitVKey(p) {
+  var best = null, bestD = 1e9;
+  for (var i = 0; i < VKEYS.length; i++) {
+    var b = VKEYS[i];
+    var d = Math.hypot(p.x - b.x, p.y - b.y);
+    if (d <= b.r + 8 && d < bestD) { best = b; bestD = d; }
   }
-  return null;
+  return best;
 }
-function moveDpad(p) {
-  var dx = (p.x - DPAD.x) / DPAD.r, dy = (p.y - DPAD.y) / DPAD.r;
+function hitStick(p) {
+  return Math.hypot(p.x - STICK.x, p.y - STICK.y) <= STICK.r + 24;
+}
+function stickOwned() {
+  for (var k in contacts) if (contacts[k].role === 'stick') return true;
+  return false;
+}
+// 指针 id 和触摸 id 各有一套数字，不能混在一个表里，否则第二根手指会撞上第一根的指针。
+function lookupId(ns, id) {
+  var key = ns + ':' + id;
+  return idMap[key] != null ? idMap[key] : key;
+}
+function beginId(ns, id, p) {
+  var key = ns + ':' + id;
+  if (idMap[key] != null) return idMap[key];
+  var now = Date.now();
+  for (var i = recentDown.length - 1; i >= 0; i--) {
+    var r = recentDown[i];
+    if (now - r.t > 70) continue;
+    if (Math.hypot(p.x - r.x, p.y - r.y) < 16) {
+      idMap[key] = r.id;
+      return r.id;
+    }
+  }
+  idMap[key] = key;
+  recentDown.push({ id: key, x: p.x, y: p.y, t: now });
+  if (recentDown.length > 8) recentDown.shift();
+  return key;
+}
+function applyStick(p) {
+  var dx = (p.x - STICK.x) / STICK.r;
+  var dy = (p.y - STICK.y) / STICK.r;
   var len = Math.hypot(dx, dy);
-  if (len < 0.25) { setPad(0, 0, pad.sprint, pad.slow); return; } // 死区
-  if (len > 1) { dx /= len; dy /= len; }
-  // canvas 纵轴向下，场地 +y 朝上，故取反
-  setPad(+dx.toFixed(3), +(-dy).toFixed(3), pad.sprint, pad.slow);
+  if (len < 0.18) { dx = 0; dy = 0; }
+  else if (len > 1) { dx /= len; dy /= len; }
+  stickVec.on = true;
+  stickVec.dx = Math.round(dx * 1000) / 1000;
+  stickVec.dy = Math.round(-dy * 1000) / 1000; // 画布向下，场地 +y 朝上
+  updatePadFromKeys();
 }
-function pressBtn(id) {
-  if (id === 'confirm') { tapE(); return; } // 一次点按 = 一次 E，不按住连发
-  if (id === 'slow') setPad(pad.dx, pad.dy, pad.sprint, true);
-  else if (id === 'switch') { sendInput({ switchPlayer: true }); toast('切换操控球员'); }
+function releaseStick() {
+  stickVec.on = false;
+  stickVec.dx = 0;
+  stickVec.dy = 0;
+  updatePadFromKeys();
 }
-function releaseBtn(id) {
-  if (id === 'slow') setPad(pad.dx, pad.dy, pad.sprint, false);
+function endContact(ns, rawId) {
+  var id = lookupId(ns, rawId);
+  var c = contacts[id];
+  if (!c) return;
+  delete contacts[id];
+  if (c.role === 'stick') releaseStick();
 }
-// 点按合成一次不重复的 E：先按下再松开，菜单防抖（刚打开的 280ms、按住不松）照旧生效。
-function tapE() {
-  document.dispatchEvent(new KeyboardEvent('keydown', { key: 'e', code: 'KeyE', bubbles: true, cancelable: true }));
-  document.dispatchEvent(new KeyboardEvent('keyup', { key: 'e', code: 'KeyE', bubbles: true, cancelable: true }));
+function clearContacts() {
+  contacts = {};
+  idMap = {};
+  recentDown = [];
+  releaseStick();
 }
-// ★ 头顶菜单打开时：方向盘切成菜单导航（上/下/左/右），右侧按键变成 确定/返回（复用桌面端键盘逻辑）
-function menuKeySynth(k) { headMenuKey({ key: k, preventDefault: function () {} }); }
-var menuDpadDir = null;
-function menuDpadStep(p) {
-  var dx = p.x - DPAD.x, dy = p.y - DPAD.y;
-  if (Math.hypot(dx, dy) < DPAD.r * 0.22) { menuDpadDir = null; return; } // 死区
-  var lvl0 = hmTop();
-  // ★ 落点层：方向盘推动光标（按住连推，touchmove 持续触发）
-  if (lvl0 && lvl0.kind === 'aim' && ui.hmenu) {
-    var ax = Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? 1.4 : -1.4) : 0;
-    var ay = Math.abs(dy) >= Math.abs(dx) ? (dy > 0 ? -1.4 : 1.4) : 0; // 屏幕下为正 → 场地 -y
-    if (ax || ay) nudgeAim(ax, ay);
-    return;
-  }
-  var dir = Math.abs(dx) > Math.abs(dy)
-    ? (dx > 0 ? 'ArrowRight' : 'ArrowLeft')
-    : (dy > 0 ? 'ArrowDown' : 'ArrowUp');
-  if (dir !== menuDpadDir) { menuDpadDir = dir; menuKeySynth(dir); } // 进入新方向扇区才走一步
+// 虚拟键走和实体键盘同一条 keydown/keyup。按住不连发；280ms 内的连点丢掉。
+function synthTap(key, code) {
+  var now = Date.now();
+  if (now < (keyLockUntil[key] || 0)) return;
+  keyLockUntil[key] = now + 280;
+  document.dispatchEvent(new KeyboardEvent('keydown', { key: key, code: code, bubbles: true, cancelable: true }));
+  document.dispatchEvent(new KeyboardEvent('keyup', { key: key, code: code, bubbles: true, cancelable: true }));
 }
-function menuBtn(id) {
-  if (id === 'confirm') { tapE(); return; } // 和电脑 E 同一条路：确认当前项
-  toast('请先完成头顶菜单选择');
-}
-function menuBtnLabel(id, def) {
-  return def;
-}
-cv.addEventListener('touchstart', function (e) {
-  if (!isTouch || screen !== 'game') return;
-  if (ui.pauseOpen || ui.overlay) return; // 暂停/覆盖层打开时手柄让路，保证可点
-  // ★ 全屏特写显示时：触摸任意位置只关闭特写（手机端等价跳过，2026-10-11）
+function handleDown(ns, rawId, p, nativeEvent) {
+  if (!isTouch || screen !== 'game' || portraitLock()) return false;
   if (typeof showingCutscene === 'function' && showingCutscene() && !headMenuOpen()) {
-    skipCutscene(); e.preventDefault(); return;
+    skipCutscene();
+    if (nativeEvent && nativeEvent.cancelable) nativeEvent.preventDefault();
+    return true;
   }
-  var menuMode = headMenuOpen(); // 头顶菜单打开：方向盘=菜单导航，按键=确定/返回；其他触点放行以便直接点选菜单项
+  if (ui.pauseOpen || ui.overlay) return false;
+  var id = beginId(ns, rawId, p);
+  if (contacts[id]) {
+    if (ns === 't') contacts[id].touchId = rawId;
+    if (nativeEvent && nativeEvent.cancelable) nativeEvent.preventDefault();
+    return true;
+  }
+  var key = hitVKey(p);
+  if (key) {
+    contacts[id] = { role: 'key', id: key.id, touchId: ns === 't' ? rawId : null };
+    if (nativeEvent && nativeEvent.cancelable) nativeEvent.preventDefault();
+    if (nativeEvent && nativeEvent.pointerId != null) {
+      try { cv.setPointerCapture(nativeEvent.pointerId); } catch (err) {}
+    }
+    synthTap(key.key, key.code);
+    return true;
+  }
+  if (!stickOwned() && hitStick(p)) {
+    contacts[id] = { role: 'stick', touchId: ns === 't' ? rawId : null };
+    if (nativeEvent && nativeEvent.cancelable) nativeEvent.preventDefault();
+    if (nativeEvent && nativeEvent.pointerId != null) {
+      try { cv.setPointerCapture(nativeEvent.pointerId); } catch (err) {}
+    }
+    applyStick(p);
+    return true;
+  }
+  var lvl = (typeof hmTop === 'function') ? hmTop() : null;
+  if (headMenuOpen() && lvl && lvl.kind === 'aim' && p.y > 0 && p.y < 556 && p.x > 0 && p.x < W) {
+    setAimFromScreen(p.x, p.y);
+    if (nativeEvent && nativeEvent.cancelable) nativeEvent.preventDefault();
+    return true;
+  }
+  return false;
+}
+function onPointerDown(e) {
+  if (!e || e.pointerType === 'mouse') return;
+  handleDown('p', e.pointerId, canvasPoint(e.clientX, e.clientY), e);
+}
+function onPointerMove(e) {
+  if (!e || e.pointerType === 'mouse') return;
+  var c = contacts[lookupId('p', e.pointerId)];
+  if (!c) return;
+  if (e.cancelable) e.preventDefault();
+  if (c.role === 'stick') applyStick(canvasPoint(e.clientX, e.clientY));
+}
+function onPointerUp(e) {
+  if (!e || e.pointerType === 'mouse') return;
+  // 手机上松手以 touchend / touchcancel 为准，避免指针 id 对不上时把摇杆清掉。
+  if ('ontouchstart' in window) return;
+  endContact('p', e.pointerId);
+}
+function onTouchStart(e) {
   var used = false;
   for (var i = 0; i < e.changedTouches.length; i++) {
-    var t = e.changedTouches[i], p = touchPos(t), tid = t.identifier;
-    var b = hitBtn(p);
-    if (b) {
-      if (menuMode) menuBtn(b.id);
-      else { btnTouchIds[tid] = b.id; pressBtn(b.id); }
-      used = true;
-    }
-    else if (padTouchId === null && Math.hypot(p.x - DPAD.x, p.y - DPAD.y) <= DPAD.r + 30) {
-      padTouchId = tid;
-      if (menuMode) { menuDpadDir = null; menuDpadStep(p); }
-      else moveDpad(p);
-      used = true;
-    }
-    // ★ 落点层：点场上任意位置直接放置落点光标（按钮/方向盘优先）
-    else if (menuMode && hmTop() && hmTop().kind === 'aim' && p.y < 556) {
-      setAimFromScreen(p.x, p.y);
-      used = true;
-    }
+    var t = e.changedTouches[i];
+    if (handleDown('t', t.identifier, canvasPoint(t.clientX, t.clientY), e)) used = true;
   }
-  if (used) e.preventDefault();
-}, { passive: false });
-cv.addEventListener('touchmove', function (e) {
+  if (used && e.cancelable) e.preventDefault();
+}
+function onTouchMove(e) {
+  if ((stickVec.on || stickOwned()) && e.cancelable) e.preventDefault();
+  var moved = false;
   for (var i = 0; i < e.changedTouches.length; i++) {
     var t = e.changedTouches[i];
-    if (t.identifier === padTouchId) {
-      if (headMenuOpen()) menuDpadStep(touchPos(t)); else moveDpad(touchPos(t));
-      e.preventDefault();
+    var c = contacts[lookupId('t', t.identifier)];
+    if (c && c.role === 'stick') {
+      if (e.cancelable) e.preventDefault();
+      applyStick(canvasPoint(t.clientX, t.clientY));
+      moved = true;
     }
   }
-}, { passive: false });
-function touchEnd(e) {
-  for (var i = 0; i < e.changedTouches.length; i++) {
-    var tid = e.changedTouches[i].identifier;
-    if (tid === padTouchId) { padTouchId = null; menuDpadDir = null; setPad(0, 0, pad.sprint, pad.slow); }
-    if (btnTouchIds[tid]) { releaseBtn(btnTouchIds[tid]); delete btnTouchIds[tid]; }
+  // 指针已经在拖、触摸 id 还没对上时，落在摇杆附近的 touchmove 继续驱动。
+  if (!moved && stickVec.on) {
+    for (var j = 0; j < e.changedTouches.length; j++) {
+      var t2 = e.changedTouches[j];
+      if (contacts[lookupId('t', t2.identifier)]) continue;
+      var p2 = canvasPoint(t2.clientX, t2.clientY);
+      if (Math.hypot(p2.x - STICK.x, p2.y - STICK.y) < STICK.r + 180) {
+        if (e.cancelable) e.preventDefault();
+        applyStick(p2);
+      }
+    }
   }
 }
-cv.addEventListener('touchend', touchEnd);
-cv.addEventListener('touchcancel', touchEnd);
+function onTouchEnd(e) {
+  var ended = [];
+  for (var i = 0; i < e.changedTouches.length; i++) ended.push(e.changedTouches[i].identifier);
+  for (var n = 0; n < ended.length; n++) endContact('t', ended[n]);
+  if (e.touches.length) return;
+  if (!stickOwned()) { releaseStick(); return; }
+  // 浏览器已经没有手指。摇杆若就是这根结束的手指，归零。
+  // 只松开按键时，有的实现会把剩余手指列表报成空的，摇杆要留着。
+  var stick = null;
+  for (var k in contacts) if (contacts[k].role === 'stick') stick = contacts[k];
+  if (!stick || stick.touchId == null) { releaseStick(); return; }
+  for (var m = 0; m < ended.length; m++) if (ended[m] === stick.touchId) { releaseStick(); return; }
+}
+function onTouchCancel(e) {
+  onTouchEnd(e);
+  clearContacts();
+}
+document.addEventListener('pointerdown', onPointerDown, { passive: false, capture: true });
+document.addEventListener('pointermove', onPointerMove, { passive: false, capture: true });
+document.addEventListener('pointerup', onPointerUp, { passive: false, capture: true });
+document.addEventListener('pointercancel', onPointerUp, { passive: false, capture: true });
+document.addEventListener('touchstart', onTouchStart, { passive: false, capture: true });
+document.addEventListener('touchmove', onTouchMove, { passive: false, capture: true });
+document.addEventListener('touchend', onTouchEnd, { passive: false, capture: true });
+document.addEventListener('touchcancel', onTouchCancel, { passive: false, capture: true });
+['gesturestart', 'gesturechange', 'gestureend'].forEach(function (type) {
+  document.addEventListener(type, function (e) { if (e.cancelable) e.preventDefault(); }, { passive: false });
+});
 function addClick(x, y, w, h, action) {
   clickables.push({ x: x, y: y, w: w, h: h, action: action });
 }
@@ -622,7 +751,8 @@ function startMatch() {
     ballTrail = []; snapPrev = null; snapCurr = null; animClock = {};
     selectedHomeIdx = 9;
     pad.dx = 0; pad.dy = 0; pad.sprint = false; pad.slow = false;
-    padTouchId = null; btnTouchIds = {};
+    stickVec.on = false; stickVec.dx = 0; stickVec.dy = 0;
+    contacts = {}; idMap = {}; recentDown = [];
     for (var k in keys) keys[k] = false;
     ui.pauseOpen = false; ui.overlay = null; ui.choosing = false; ui.exitArm = 0;
     ui.tutorialUntil = Date.now() + 4500;
@@ -1285,7 +1415,7 @@ function drawTitle() {
   addClick(bx, by, bw, bh, startMatch);
 
   text('电脑：WASD 移动 · J/Shift加速 K减速 · L切换球员 · E指令菜单/确定 · Q取消 · 空格暂停', W / 2, 672, 16, '#5f7099', 'center');
-  text('手机 / Pad：左方向盘移动 · 右下「确定」等于 E · 「切换」在旁边 · 右上角菜单', W / 2, 696, 16, '#5f7099', 'center');
+  text('手机：左摇杆移动 · 确定E 取消Q 上W 下S 切换L · 右上角菜单 · 减速只在键盘K', W / 2, 696, 15, '#5f7099', 'center');
 }
 
 // ---------------- 绘制：比赛 ----------------
@@ -1734,20 +1864,16 @@ function drawPauseButton() {
   text('⏸ 暂停', x + w / 2, y + h / 2, 20, '#fff', 'center', true);
   addClick(x, y, w, h, function () { togglePause(); });
 }
-// 菜单离开右侧操作键，收到右上角。画小、半透明，和摇杆、确定都隔开。
-// 画布本身已经让出安全区，这里再离边一截。
+// 菜单单独放在右上角，离开摇杆和右侧按键。返回/取消是 Q，这里只开关暂停菜单。
 function drawTouchMenuButton() {
-  var w = 72, h = 30, x = W - w - 14, y = 8;
-  var back = headMenuOpen() && ui.hmenu.stack.length > 1;
-  ctx.fillStyle = back ? 'rgba(8,12,26,0.72)' : 'rgba(8,12,26,0.30)';
+  var w = MENU_BTN.w, h = MENU_BTN.h, x = W - w - 16, y = MENU_BTN.y;
+  MENU_BTN.x = x; MENU_BTN.y = y;
+  ctx.fillStyle = 'rgba(8,12,26,0.40)';
   rr(x, y, w, h, 8); ctx.fill();
-  ctx.strokeStyle = 'rgba(255,255,255,0.28)';
+  ctx.strokeStyle = 'rgba(255,255,255,0.35)';
   ctx.lineWidth = 1.5; ctx.stroke();
-  text(back ? '返回' : '菜单', x + w / 2, y + h / 2, 14, back ? '#fff' : 'rgba(255,255,255,0.62)', 'center');
-  addClick(x, y, w, h, function () {
-    if (headMenuOpen() && ui.hmenu.stack.length > 1) headMenuBack();
-    else togglePause();
-  });
+  text('菜单', x + w / 2, y + h / 2, 14, 'rgba(255,255,255,0.82)', 'center');
+  addClick(x, y, w, h, function () { togglePause(); });
 }
 
 function drawPauseMenu() {
@@ -1871,9 +1997,9 @@ function hintMessage() {
   if (state.phase === 'goal') return '⚽ 进球！';
   if (state.phase === 'halftime') return '中场休息…';
   if (state.paused) return '已暂停';
-  if (state.controlActive === false) return '动一下方向键，拿回绿圈球员';
+  // 开场说明到点自己消失，不靠玩家点掉，也不会改成一条一直挂着的提示。
   if (Date.now() < ui.tutorialUntil) {
-    return isTouch ? '左盘移动，点「确定」等于 E。这条提示马上会消失。'
+    return isTouch ? '拖摇杆移动，右侧按键同键盘。这条提示马上会消失。'
                    : 'WASD 移动绿圈球员，E 选指令。这条提示马上会消失。';
   }
   return null;
@@ -1981,31 +2107,30 @@ function drawRoster(x, y, w, h) {
 // ---------------- 透明虚拟手柄（移动端 / Pad） ----------------
 function drawGamepad() {
   if (screen !== 'game') return;
-  // 左：方向盘
-  ctx.fillStyle = 'rgba(255,255,255,0.08)';
-  ctx.beginPath(); ctx.arc(DPAD.x, DPAD.y, DPAD.r, 0, Math.PI * 2); ctx.fill();
-  ctx.strokeStyle = 'rgba(255,255,255,0.28)'; ctx.lineWidth = 2; ctx.stroke();
-  // 四方向刻度
-  ctx.fillStyle = 'rgba(255,255,255,0.30)';
-  [[0, -1], [0, 1], [-1, 0], [1, 0]].forEach(function (d) {
-    ctx.beginPath();
-    ctx.arc(DPAD.x + d[0] * (DPAD.r - 14), DPAD.y + d[1] * (DPAD.r - 14), 5, 0, Math.PI * 2);
-    ctx.fill();
-  });
-  // 摇杆头（跟随输入）
-  var kx = DPAD.x + pad.dx * DPAD.r * 0.55, ky = DPAD.y - pad.dy * DPAD.r * 0.55;
-  ctx.fillStyle = 'rgba(255,255,255,0.22)';
-  ctx.beginPath(); ctx.arc(kx, ky, 34, 0, Math.PI * 2); ctx.fill();
-  ctx.strokeStyle = 'rgba(255,255,255,0.35)'; ctx.lineWidth = 2; ctx.stroke();
-  // 右：功能按键
-  BTNS.forEach(function (b) {
-    var active = b.id === 'slow' && pad.slow;
+  ctx.fillStyle = stickVec.on ? 'rgba(6,10,20,0.55)' : 'rgba(6,10,20,0.40)';
+  ctx.beginPath(); ctx.arc(STICK.x, STICK.y, STICK.r, 0, Math.PI * 2); ctx.fill();
+  ctx.strokeStyle = 'rgba(255,255,255,0.55)'; ctx.lineWidth = 3; ctx.stroke();
+  ctx.strokeStyle = 'rgba(255,255,255,0.28)'; ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(STICK.x - 18, STICK.y); ctx.lineTo(STICK.x + 18, STICK.y);
+  ctx.moveTo(STICK.x, STICK.y - 18); ctx.lineTo(STICK.x, STICK.y + 18);
+  ctx.stroke();
+  text('WASD', STICK.x, STICK.y + 48, 14, '#ffd94a', 'center', true);
+  var kx = STICK.x + pad.dx * STICK.r * 0.62;
+  var ky = STICK.y - pad.dy * STICK.r * 0.62;
+  ctx.fillStyle = 'rgba(255,255,255,0.38)';
+  ctx.beginPath(); ctx.arc(kx, ky, 32, 0, Math.PI * 2); ctx.fill();
+  ctx.strokeStyle = 'rgba(255,255,255,0.75)'; ctx.lineWidth = 3; ctx.stroke();
+  VKEYS.forEach(function (b) {
     var primary = b.id === 'confirm';
-    ctx.fillStyle = active ? 'rgba(120,255,160,0.28)' : (primary ? 'rgba(255,217,74,0.20)' : 'rgba(255,255,255,0.08)');
+    var held = false;
+    for (var ck in contacts) if (contacts[ck].role === 'key' && contacts[ck].id === b.id) held = true;
+    ctx.fillStyle = held ? 'rgba(255,217,74,0.45)' : (primary ? 'rgba(255,217,74,0.24)' : 'rgba(6,10,20,0.46)');
     ctx.beginPath(); ctx.arc(b.x, b.y, b.r, 0, Math.PI * 2); ctx.fill();
-    ctx.strokeStyle = primary ? 'rgba(255,226,140,0.72)' : 'rgba(255,255,255,0.28)';
+    ctx.strokeStyle = primary ? 'rgba(255,226,140,0.9)' : 'rgba(255,255,255,0.55)';
     ctx.lineWidth = primary ? 3 : 2; ctx.stroke();
-    text(menuBtnLabel(b.id, b.label), b.x, b.y + 1, primary ? 26 : 18, 'rgba(255,255,255,0.86)', 'center', true);
+    text(b.label, b.x, b.y - (primary ? 10 : 8), primary ? 22 : 16, '#ffffff', 'center', true);
+    text(b.keyLabel, b.x, b.y + (primary ? 16 : 12), primary ? 16 : 13, '#ffd94a', 'center', true);
   });
 }
 
@@ -2271,6 +2396,31 @@ Object.defineProperty(window, 'W', { get: function () { return W; } });
 Object.defineProperty(window, 'H', { get: function () { return H; } });
 Object.defineProperty(window, 'state', { get: function () { return state; } });
 Object.defineProperty(window, 'isTouch', { get: function () { return isTouch; } });
+window.__touchLayout = function () {
+  return {
+    stick: { x: STICK.x, y: STICK.y, r: STICK.r },
+    keys: VKEYS.map(function (b) {
+      return { id: b.id, key: b.key, label: b.label, keyLabel: b.keyLabel, x: b.x, y: b.y, r: b.r };
+    }),
+    menu: { x: MENU_BTN.x, y: MENU_BTN.y, w: MENU_BTN.w, h: MENU_BTN.h },
+  };
+};
+if (DEBUG) {
+  window.__touchState = function () {
+    var lvl = (typeof hmTop === 'function') ? hmTop() : null;
+    return {
+      menu: typeof headMenuOpen === 'function' ? headMenuOpen() : false,
+      kind: lvl ? lvl.kind : null,
+      sel: lvl ? lvl.sel : null,
+      stack: ui.hmenu && ui.hmenu.stack ? ui.hmenu.stack.map(function (l) { return l.kind + '#' + l.sel; }).join('>') : '',
+      phase: state ? state.phase : null,
+      dec: state && state.decision ? (state.decision.kind || 'command') : null,
+      hint: typeof hintMessage === 'function' ? hintMessage() : null,
+      pad: { dx: pad.dx, dy: pad.dy },
+      stick: { dx: stickVec.dx, dy: stickVec.dy, on: stickVec.on },
+    };
+  };
+}
 window.text = text;
 window.cutActionId = cutActionId;
 
