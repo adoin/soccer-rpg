@@ -183,7 +183,7 @@ console.log('== 任意球 / 点球 / 界外球 ==');
 (function () {
   var m = newMatch(44);
   m.whistleThrowIn('home', 50, -1);
-  ok(m.lastAction.kind === 'throwin' && Math.abs(m.ball.y - 2) < 0.01, '界外球仍落在边线', m.ball.y);
+  ok(m.lastAction.kind === 'throwin' && Math.abs(m.ball.y) < 0.01, '界外球落在边线上', m.ball.y);
   ok(m.restart && m.restart.label === '界外球', '界外球有重启状态', m.restart && m.restart.label);
   var m2 = newMatch(45);
   m2.ball.x = 106; m2.ball.y = 20; m2.ball.lastTouchTeam = 'away';

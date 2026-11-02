@@ -212,7 +212,8 @@ eq('深肤没有把鞋涂掉', px(cell, 22, 58)[0] > 160);
 })();
 
 var made = teams.makeTeams();
-eq('10 号是斜带金鞋', made.home[9] && made.home.filter(function (p) { return p.num === 10; })[0].kit.pattern === 'sash');
+eq('外场不穿个人球衣', made.home.filter(function (p) { return p.num === 10; })[0].kit === null);
+eq('门将有独立球衣', made.home.filter(function (p) { return p.num === 1; })[0].kit && made.home.filter(function (p) { return p.num === 1; })[0].kit.primary === '#f0c020');
 eq('没有单独配置的球员 kit 为空', made.home.filter(function (p) { return p.num === 3; })[0].kit === null);
 eq('球员带发型预设', made.home.filter(function (p) { return p.num === 10; })[0].hair === 'blonde');
 

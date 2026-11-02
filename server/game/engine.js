@@ -36,6 +36,7 @@ var GK = require('./rules/gk');
 var Moves = require('../../shared/moves');
 
 var FIELD = C.FIELD;
+var PITCH = C.PITCH;
 
 // ★ 全屏结算演出时长（墙钟 ms）：演出是客户端遮罩，引擎不停表，
 //   被晃倒之类的计时状态必须盖住这段时间，否则演出播完状态就过期、用户看不到
@@ -218,20 +219,31 @@ Match.prototype.resetPositions = function (kickoffTeam) {
   this.restart = null;
   this._lastCarrierId = null;
   this.ball.x = FIELD.W / 2; this.ball.y = FIELD.H / 2;
-  // ★ 开球规则：非开球方球员必须在 9.15 米开外（之前客队前锋按阵型站在 5 米处，
-  //   保护期一过决策菜单立刻弹出劫持键盘，用户还没带两步球）
+  // 开球：双方都在本方半场。非开球方退出中圈（9.15 米）。开球队员站在中圈内、本方半场一侧。
   var bx = this.ball.x, by = this.ball.y;
+  var arc = PITCH.centreRadius;
   this.players.forEach(function (p) {
-    if ((kickoffTeam === 'home' ? p.team !== 'home' : p.team !== 'away')) {
-      var d = Math.sqrt(Math.pow(p.x - bx, 2) + Math.pow(p.y - by, 2));
-      if (d < 9.15 && d > 0.001) {
-        p.x = bx + (p.x - bx) / d * 9.15;
-        p.y = by + (p.y - by) / d * 9.15;
-      } else if (d <= 0.001) { p.x = bx + 9.15; }
+    if (p.sentOff) return;
+    if (p.team === 'home' && p.x > FIELD.W / 2) p.x = FIELD.W / 2 - 0.6;
+    if (p.team === 'away' && p.x < FIELD.W / 2) p.x = FIELD.W / 2 + 0.6;
+    var kicking = p.team === kickoffTeam;
+    if (kicking) return;
+    var d = Math.sqrt(Math.pow(p.x - bx, 2) + Math.pow(p.y - by, 2));
+    if (d < arc && d > 0.001) {
+      p.x = bx + (p.x - bx) / d * arc;
+      p.y = by + (p.y - by) / d * arc;
+    } else if (d <= 0.001) {
+      p.x = p.team === 'home' ? bx - arc : bx + arc;
     }
+    if (p.team === 'home' && p.x > FIELD.W / 2) p.x = FIELD.W / 2 - 0.6;
+    if (p.team === 'away' && p.x < FIELD.W / 2) p.x = FIELD.W / 2 + 0.6;
   });
-  // 开球球员：开球方的 10 号
+  // 开球球员：开球方的 10 号，站在球旁、本方半场
   var kicker = this.byId[(kickoffTeam === 'home' ? 'h' : 'a') + '10'];
+  if (kicker) {
+    kicker.x = kickoffTeam === 'home' ? FIELD.W / 2 - 0.8 : FIELD.W / 2 + 0.8;
+    kicker.y = FIELD.H / 2;
+  }
   this.ball.ownerId = kicker.id;
   this.phase = 'kickoff';
   this.phaseUntil = this.now + 1500;
@@ -1112,8 +1124,8 @@ Match.prototype.simulate = function (dt) {
     // ★ 自由球：三维积分（滚动摩擦 / 弹跳），不再落地瞬停。
     //   双方最近 3 人追球；领球承诺的接球人即使不在这 3 人里也继续跑会合点。
     Ball.step(this.ball, dt, 'grass');
-    if (this.ball.x < 1 || this.ball.x > FIELD.W - 1 ||
-        this.ball.y < 1 || this.ball.y > FIELD.H - 1) {
+    if (this.ball.x < 0 || this.ball.x > FIELD.W ||
+        this.ball.y < 0 || this.ball.y > FIELD.H) {
       this.whistleOutOfBounds();
       return;
     }
@@ -1317,8 +1329,8 @@ Match.prototype.simulate = function (dt) {
   this.ball.z = 0; this.ball.vz = 0; this.ball.vx = 0; this.ball.vy = 0;
   // ★ 带球出界也吹哨（之前只查自由球；持球者贴线时球恒定位于界外却无哨）
   //   lastTouchTeam 在得球/拾取时已同步，此处直接判罚归因正确
-  if (this.ball.x < 1 || this.ball.x > FIELD.W - 1 ||
-      this.ball.y < 1 || this.ball.y > FIELD.H - 1) {
+  if (this.ball.x < 0 || this.ball.x > FIELD.W ||
+      this.ball.y < 0 || this.ball.y > FIELD.H) {
     this.whistleOutOfBounds();
     return;
   }
@@ -1338,7 +1350,7 @@ Match.prototype.simulate = function (dt) {
     var near = this.nearestOpponent(carrier);
     var traveled = dist(carrier, this.lastDecisionPos);
     if (this.isPressured(carrier, near) || traveled > 24) {
-      this.enterDecision(carrier);
+      this.enterDecision(carrier, false);
       return;
     }
   }
@@ -1374,16 +1386,31 @@ Match.prototype.tryManualDecision = function () {
   if (this.now < (this._menuLockUntil || 0)) return;
   var carrier = this.carrier();
   if (!carrier || carrier.team !== 'home' || carrier.id !== this.control.playerId) return;
-  this.enterDecision(carrier);
+  this.enterDecision(carrier, true);
 };
 
-Match.prototype.enterDecision = function (carrier) {
+// voluntary：玩家自己按 E / 确定打开的。这种可以取消，回到自由跑动，不消耗、不停表。
+// 压迫、防守对决、定位球选人、点球 QTE 不是 voluntary，不能取消。
+Match.prototype.enterDecision = function (carrier, voluntary) {
   this.phase = 'decision';
   this.decision = {
     playerId: carrier.id,
     options: this.buildOptions(carrier),
+    voluntary: !!voluntary,
   };
   this.lastDecisionPos = { x: carrier.x, y: carrier.y };
+};
+
+Match.prototype.cancelVoluntaryDecision = function () {
+  if (this.phase !== 'decision' || !this.decision || !this.decision.voluntary) {
+    return { ok: false };
+  }
+  this.decision = null;
+  this.phase = 'play';
+  this.paused = false;
+  this._menuLockUntil = this.now + 400;
+  this.nextDecisionAt = Math.max(this.nextDecisionAt || 0, this.now + 1200);
+  return { ok: true, cancelled: true };
 };
 
 // ★ 防守决策：玩家操控的防守球员贴近对方持球者时触发（对称于进攻决策）。
@@ -2102,6 +2129,20 @@ Match.prototype.stageRestart = function (kind, team, x, y, taker) {
     if (taker) this.placeFeet(taker, x - dir * 3.1, y + 1.1);
     if (theirGk) this.placeFeet(theirGk, goalX - dir * 0.25, y, 0.15);
     this.separatePlayers();
+    this.players.forEach(function (p) {
+      if (p.sentOff) return;
+      if (taker && p.id === taker.id) return;
+      if (theirGk && p.id === theirGk.id) return;
+      if (dir > 0 && p.x > x - 0.35) self.placeFeet(p, x - 10.2, p.y);
+      if (dir < 0 && p.x < x + 0.35) self.placeFeet(p, x + 10.2, p.y);
+      var inBox = dir > 0
+        ? (p.x > FIELD.W - PITCH.penaltyDepth && Math.abs(p.y - FIELD.H / 2) <= PITCH.penaltyHalf)
+        : (p.x < PITCH.penaltyDepth && Math.abs(p.y - FIELD.H / 2) <= PITCH.penaltyHalf);
+      if (inBox) self.placeFeet(p, x - dir * 12.2, p.y);
+      self.keepOffSpot(p, x, y, PITCH.arcRadius);
+    });
+    if (taker) this.placeFeet(taker, x - dir * 3.1, y + 1.1);
+    if (theirGk) this.placeFeet(theirGk, goalX - dir * 0.15, y, 0);
     return;
   }
 
@@ -2171,6 +2212,7 @@ Match.prototype.stageRestart = function (kind, team, x, y, taker) {
     });
     if (taker) this.placeFeet(taker, x, y, 0.4);
     this.separatePlayers();
+    if (taker) this.placeFeet(taker, clamp(x, 1, FIELD.W - 1), y < FIELD.H / 2 ? 0 : FIELD.H, 0);
     return;
   }
 
@@ -2178,9 +2220,9 @@ Match.prototype.stageRestart = function (kind, team, x, y, taker) {
   var gdx = goalX - x, gdy = FIELD.H / 2 - y;
   var glen = Math.sqrt(gdx * gdx + gdy * gdy) || 1;
   var ux = gdx / glen, uy = gdy / glen;
-  var nWall = glen < 24 ? 5 : glen < 34 ? 4 : 3;
+  var nWall = glen <= 46 ? (glen < 24 ? 5 : glen < 34 ? 4 : 3) : 0;
   if (nWall > theirs.length) nWall = theirs.length;
-  if (nWall < 2 && theirs.length >= 2) nWall = 2;
+  if (nWall > 0 && nWall < 2 && theirs.length >= 2) nWall = 2;
   var gap = 1.25;
   var wi;
   for (wi = 0; wi < nWall; wi++) {
@@ -2312,6 +2354,19 @@ Match.prototype.openRestartActions = function (p, kind) {
   var indirect = kind === 'offside' || !!(this.restart && this.restart.indirect);
   var passOpt = null;
   this.buildOptions(p).forEach(function (o) { if (o.id === 'pass') passOpt = o; });
+  if (kind === 'corner' && passOpt) {
+    this.phase = 'decision';
+    this.decision = {
+      kind: 'setpiece',
+      setpiece: 'corner',
+      playerId: p.id,
+      options: [
+        Object.assign({}, passOpt, { name: '传球' }),
+        Object.assign({}, passOpt, { name: '传中', presetHeight: 'high' }),
+      ],
+    };
+    return;
+  }
   var shots = this.shotMenuOptions(p, { freeKick: true, indirect: indirect });
   var far = this.distToGoal(p) > 28;
   var shoot = {
@@ -2464,13 +2519,19 @@ Match.prototype.whistleOutOfBounds = function () {
   var bx = this.ball.x, by = this.ball.y;
   var lastTeam = this.ball.lastTouchTeam || (bx < FIELD.W / 2 ? 'away' : 'home');
   var gy = FIELD.H / 2, goalHalf = 3.66;
-  var outL = bx < 1, outR = bx > FIELD.W - 1;
+  var outL = bx < 0, outR = bx > FIELD.W;
 
   if (outL || outR) {
     // 右端 (x=W)：主队进攻方向、客队球门；左端 (x=0)：客队进攻方向、主队球门
     var attackTeam = outR ? 'home' : 'away';
     var defendTeam = outR ? 'away' : 'home';
-    if (Math.abs(by - gy) <= goalHalf) {
+    if (Math.abs(by - gy) <= PITCH.goalHalf) {
+      // 界外球不能直接进球：进对方门改球门球，进本方门改角球。
+      var ex = this.ball.restartExempt;
+      if (ex && ex.kind === 'throwin' && this.isRestartExempt(this.byId[ex.takerId])) {
+        if (lastTeam === attackTeam) return this.whistleGoalKick(defendTeam);
+        return this.whistleCorner(attackTeam);
+      }
       // ★ 滚入球门 → 进球（自由球，非射门飞行；乌龙也算进攻方得分）
       var scorer = this.byId[this.ball.lastTouchId];
       if (!scorer || scorer.team !== attackTeam || scorer.sentOff) {
@@ -2523,17 +2584,23 @@ Match.prototype.separatePlayers = function () {
 };
 
 Match.prototype.inPenaltyArea = function (x, y, defending) {
-  if (y < FIELD.H / 2 - 20.16 || y > FIELD.H / 2 + 20.16) return false;
-  if (defending === 'home') return x < 16.5;
-  return x > FIELD.W - 16.5;
+  if (Math.abs(y - FIELD.H / 2) > PITCH.penaltyHalf) return false;
+  if (defending === 'home') return x < PITCH.penaltyDepth;
+  return x > FIELD.W - PITCH.penaltyDepth;
+};
+
+Match.prototype.inGoalArea = function (x, y, team) {
+  if (Math.abs(y - FIELD.H / 2) > PITCH.goalAreaHalf) return false;
+  if (team === 'home') return x < PITCH.goalAreaDepth;
+  return x > FIELD.W - PITCH.goalAreaDepth;
 };
 
 // 球已经离开死球限制，定位球可以结束。
 Match.prototype.restartReleased = function () {
   var r = this.restart;
   if (!r) return true;
-  if (r.kind === 'goalkick') return !this.inPenaltyArea(this.ball.x, this.ball.y, r.team);
-  var need = r.kind === 'throwin' ? 2.2 : 9.2;
+  if (r.kind === 'goalkick') return !r.held;
+  var need = r.kind === 'throwin' ? PITCH.throwDist : PITCH.wallDist;
   var dx = this.ball.x - r.x, dy = this.ball.y - r.y;
   return Math.sqrt(dx * dx + dy * dy) > need;
 };
@@ -2563,7 +2630,11 @@ Match.prototype.holdRestart = function () {
     return;
   }
   var opp = r.team === 'home' ? 'away' : 'home';
-  if (r.kind === 'throwin') this.pushCircle(r.x, r.y, opp, 2.05);
+  if (r.kind === 'throwin') {
+    var thrower = this.byId[r.takerId];
+    if (thrower) this.placeFeet(thrower, r.x, r.y < FIELD.H / 2 ? 0 : FIELD.H, 0);
+    this.pushCircle(r.x, r.y, opp, PITCH.throwDist);
+  }
   else if (r.kind === 'corner' || r.kind === 'foul' || r.kind === 'offside') this.pushCircle(r.x, r.y, opp, 9.15);
   else if (r.kind === 'penalty') {
     this.players.forEach(function (p) {
@@ -2586,6 +2657,8 @@ Match.prototype.releaseGoalKick = function () {
   var r = this.restart;
   if (!r || r.kind !== 'goalkick' || r.released) return;
   r.released = true;
+  r.held = false;
+  this.restart = null;
   var dir = r.team === 'home' ? 1 : -1;
   this.ball.ownerId = null;
   this.ball.vx = dir * 18;
@@ -2598,8 +2671,8 @@ Match.prototype.releaseGoalKick = function () {
 
 // ★ 界外球（Law 15）：出界点掷，最近的非门将球员执行；掷出的一下不越位（Law 11）
 Match.prototype.whistleThrowIn = function (team, bx, by) {
-  var sx = clamp(bx, 2, FIELD.W - 2);
-  var sy = by < 1 ? 2 : FIELD.H - 2;
+  var sx = clamp(bx, 1, FIELD.W - 1);
+  var sy = by < FIELD.H / 2 ? 0 : FIELD.H;
   var taker = null, bd = 1e9;
   this.players.forEach(function (q) {
     if (q.team !== team || q.sentOff || q.pos === 'GK') return;
@@ -2609,7 +2682,7 @@ Match.prototype.whistleThrowIn = function (team, bx, by) {
   if (!taker) { this.phase = 'play'; return; }
   this.ball.ownerId = taker.id;
   this.ball.x = sx; this.ball.y = sy; this.ball.vx = 0; this.ball.vy = 0; this.ball.z = 0;
-  this.ball.restartExempt = { takerId: taker.id, x: sx, y: sy };
+  this.ball.restartExempt = { takerId: taker.id, x: sx, y: sy, kind: 'throwin' };
   this.ball.lastTouchTeam = team; this.ball.lastTouchId = taker.id;
   this.stageRestart('throwin', team, sx, sy, taker);
   this.enterStoppage('whistle', 1400, taker.id);
@@ -2629,13 +2702,13 @@ Match.prototype.whistleGoalKick = function (team) {
     if (q.team === team && q.pos === 'GK' && !q.sentOff) keeper = q;
   });
   if (!keeper) { this.phase = 'play'; return; }
-  var gx = team === 'home' ? 4.2 : FIELD.W - 4.2;
+  var gx = team === 'home' ? PITCH.goalAreaDepth * 0.72 : FIELD.W - PITCH.goalAreaDepth * 0.72;
   var gy = FIELD.H / 2;
   this.placeFeet(keeper, team === 'home' ? 2.4 : FIELD.W - 2.4, gy, 0.15);
   this.ball.ownerId = keeper.id;
   this.ball.x = gx; this.ball.y = gy;
   this.ball.vx = 0; this.ball.vy = 0; this.ball.z = 0;
-  this.ball.restartExempt = { takerId: keeper.id, x: gx, y: gy };
+  this.ball.restartExempt = { takerId: keeper.id, x: gx, y: gy, kind: 'goalkick' };
   this.ball.lastTouchTeam = team; this.ball.lastTouchId = keeper.id;
   var edge = team === 'home' ? 18.4 : FIELD.W - 18.4;
   var sign = team === 'home' ? 1 : -1;
@@ -2675,8 +2748,9 @@ Match.prototype.whistleGoalKick = function (team) {
 // ★ 角球（Law 17）：就近角球弧，最近的非门将球员主罚；对方退 9.15 米；直接发出不越位（Law 11）
 Match.prototype.whistleCorner = function (team) {
   var bx = this.ball.x, by = this.ball.y;
-  var cx = bx > FIELD.W / 2 ? FIELD.W - 2 : 2;
-  var cy = by < FIELD.H / 2 ? 2 : FIELD.H - 2;
+  var inset = PITCH.cornerRadius * 0.62;
+  var cx = bx > FIELD.W / 2 ? FIELD.W - inset : inset;
+  var cy = by < FIELD.H / 2 ? inset : FIELD.H - inset;
   var taker = null, bd = 1e9;
   this.players.forEach(function (q) {
     if (q.team !== team || q.sentOff || q.pos === 'GK') return;
@@ -2687,7 +2761,7 @@ Match.prototype.whistleCorner = function (team) {
   this.ball.ownerId = taker.id;
   this.ball.x = cx; this.ball.y = cy;
   this.ball.vx = 0; this.ball.vy = 0; this.ball.z = 0;
-  this.ball.restartExempt = { takerId: taker.id, x: cx, y: cy };
+  this.ball.restartExempt = { takerId: taker.id, x: cx, y: cy, kind: 'corner' };
   this.ball.lastTouchTeam = team; this.ball.lastTouchId = taker.id;
   this.stageRestart('corner', team, cx, cy, taker);
   this.enterStoppage('whistle', 1800, taker.id);
@@ -3064,7 +3138,8 @@ Match.prototype.setInput = function (data) {
   c.dx = dz(data.dx); c.dy = dz(data.dy);
   c.sprint = !!data.sprint; c.slow = !!data.slow;
   c.stamp = this.now;
-  if (data.menu) this.tryManualDecision(); // ★ E 键手动呼出决策菜单（行进间主动传球/射门）
+  if (data.cancelMenu) this.cancelVoluntaryDecision();
+  if (data.menu && this.phase === 'play') this.tryManualDecision(); // ★ E 键手动呼出决策菜单
   if (c.dx !== 0 || c.dy !== 0 || c.sprint || c.slow) c.activeStamp = this.now;
   var cur = this.byId[c.playerId];
   var wantSwitch = !!data.switchPlayer;
@@ -3191,6 +3266,7 @@ Match.prototype.serialize = function () {
       playerId: this.decision.playerId,
       playerName: this.byId[this.decision.playerId] ? this.byId[this.decision.playerId].name : '',
       kind: this.decision.kind || 'command',
+      voluntary: !!this.decision.voluntary,
       setpiece: this.decision.setpiece || null,
       shotId: this.decision.shotId || null,
       qte: this.decision.qte || null,

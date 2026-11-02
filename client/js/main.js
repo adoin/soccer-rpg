@@ -72,10 +72,16 @@ function paintRunSheet(skinId, kitSpec) {
   c2.getContext('2d').putImageData(copy, 0, 0);
   return c2;
 }
+function kitSpecFor(p) {
+  if (typeof SharedKits === 'undefined') return null;
+  if (!p || p.team === 'ref' || p.pos === 'REF') return SharedKits.resolveKit('ref');
+  if (p.pos === 'GK') return SharedKits.resolveKit(p.team === 'away' ? 'gkAway' : 'gkHome');
+  return SharedKits.resolveKit(p.team, null);
+}
 function sheetForPlayer(p) {
   if (!runPack.ready || typeof SharedKits === 'undefined') return null;
   var skinId = (p.skin && SharedKits.SKIN_PRESETS && SharedKits.SKIN_PRESETS[p.skin]) ? p.skin : 'fair';
-  var spec = SharedKits.resolveKit(p.team, p.kit);
+  var spec = kitSpecFor(p);
   var key = [p.team, skinId, spec.pattern, spec.primary, spec.secondary, spec.shorts, spec.socks, spec.shoes].join('|');
   if (!kitCache[key]) kitCache[key] = paintRunSheet(skinId, spec);
   return kitCache[key];
@@ -196,7 +202,7 @@ function runCycleFor(p, t) {
   var moving = v > 1.2;          // 原 0.02 米/帧在 60Hz 下 = 1.2 米/秒，现固定
   var fps = 6 + Math.min(10, v / 2);
   // ★ v3 8 帧：外场球员 8 帧（主/客队各按自家颜色换色），门将沿用旧表
-  var nF = (p.pos !== 'GK') ? 8 : 4;
+  var nF = 8;
   // 停步时冻住相位，保持落地的那一帧。若立刻切回第 0 帧，姿势会跳一下。
   if (moving) st.ph = (st.ph + fps * dt) % nF;
   return { moving: moving, fps: fps, phase: st.ph / nF, dx: dx, dy: dy, svx: st.svx, svy: st.svy, nFrames: nF, dt: dt };
@@ -206,8 +212,8 @@ function spriteFrameFor(p, t) {
   p._cycle = cyc; // 暂存本帧周期，供带球触球读取（state 每轮询重建，帧内有效即可）
   var st = animClock[p.id];
 
-  // ★ 2026-10-12 8 方向：外场球员用新 atlas（8 行方向 × 8 列帧），主/客队各按自家颜色换色；门将沿用旧表
-  if (p.pos !== 'GK') {
+  // 外场、门将、裁判都用同一张跑动图按球衣换色，避免旧表烤进去的杂色。
+  if (p.pos !== 'SKIP') {
     var sheet = sheetForPlayer(p);
     if (!runPack.anchors || !sheet) return null;
     // 方向行：平滑速度 + 扇区迟滞。低速保持上次朝向。
@@ -238,25 +244,7 @@ function spriteFrameFor(p, t) {
       is8dir: true, hasBall: !!p.hasBall, moving: cyc.moving
     };
   }
-
-  // 旧逻辑（门将沿用旧表）
-  var kit = (p.pos === 'GK' ? 'gk_' : '') + p.team;
-  var img0 = spriteAtlas[kit];
-  if (!img0 || !img0.complete || !img0.naturalWidth) return null; // 未加载完→兜底代码帧
-  var img = (img0._skins && p.skin && img0._skins[p.skin]) || img0;
-  // ★ 朝向：按移动 dx 决定（2026-10-10 修"月球漫步"——向左跑还朝右）。
-  //   静止时保持上次朝向；默认主队朝右、客队朝左。
-  if (cyc.dx > 0.05) st.face = 1;
-  else if (cyc.dx < -0.05) st.face = -1;
-  else if (!st.face) st.face = (p.team === 'away' ? -1 : 1);
-  var row;
-  if (cyc.moving) {
-    // 跑动循环：位移越大帧率越高（慢跑 6fps → 冲刺 16fps）
-    row = Math.floor(cyc.phase * 4) % 4;
-  } else {
-    row = 4; // idle 站立帧
-  }
-  return { img: img, row: row, face: st.face };
+  return null;
 }
 
 // ---------------- 结算演出图（像素风拼贴特写） ----------------
@@ -375,14 +363,12 @@ function framesFor(p) {
   }
   var skinHex = (typeof SharedKits !== 'undefined' && SharedKits.SKIN_PRESETS && SharedKits.SKIN_PRESETS[p.skin])
     ? SharedKits.SKIN_PRESETS[p.skin].color : '#f2c89b';
-  var spec = (typeof SharedKits !== 'undefined' && SharedKits.resolveKit) ? SharedKits.resolveKit(p.team, p.kit) : null;
+  var spec = kitSpecFor(p);
   var key = p.team + '_' + p.pos + '_' + (p.hair || 'black') + '_' + (p.skin || 'fair') + '_' +
     (spec ? spec.pattern + spec.primary + spec.shorts + spec.socks + spec.shoes : '');
   if (!frameCache[key]) {
-    var shirt = p.pos === 'GK'
-      ? (p.team === 'home' ? '#e8b923' : '#7a7f8a')
-      : (spec ? spec.primary : (p.team === 'home' ? '#2b5fe3' : '#d23b3b'));
-    var shorts = spec ? spec.shorts : (p.team === 'home' ? '#ffffff' : '#2b2b33');
+    var shirt = spec ? spec.primary : (p.team === 'home' ? '#2b5fe3' : '#d23b3b');
+    var shorts = spec ? spec.shorts : '#1a1a1a';
     frameCache[key] = S.playerFrames({
       shirt: shirt, shorts: shorts, socks: spec ? spec.socks : '#ffffff',
       shoes: spec ? spec.shoes : '#22222a',
@@ -867,7 +853,23 @@ function firstEnabled(items, from) {
 function backItem() { return { label: '← 返回', sub: '', enabled: true, back: true, fn: popHmLevel }; }
 function pushHmLevel(lvl) { if (lvl.items && lvl.sel == null) lvl.sel = firstEnabled(lvl.items, 0); ui.hmenu.stack.push(lvl); }
 function popHmLevel() { if (ui.hmenu && ui.hmenu.stack.length > 1) ui.hmenu.stack.pop(); }
-function headMenuBack() { popHmLevel(); } // 头顶菜单内 Esc = 返回上一步（第一级无返回，必须选）
+function cancelVoluntaryMenu() {
+  if (!state || !state.decision || !state.decision.voluntary) return false;
+  ui.hmenu = null;
+  ui.choosing = false;
+  ui.pauseOpen = false;
+  state.decision = null;
+  state.phase = 'play';
+  state.paused = false;
+  sendInput({ cancelMenu: true });
+  if (matchId) api.post('/api/match/' + matchId + '/pause', { paused: false });
+  return true;
+}
+function headMenuBack() {
+  // 自己打开的指令面板：Q / Esc / 取消直接关掉，马上恢复摇杆和 WASD。
+  if (cancelVoluntaryMenu()) return;
+  popHmLevel();
+}
 
 function optionSub(o) {
   if (o.sub) return o.sub;
@@ -884,7 +886,13 @@ function commandItem(o) {
     enabled: o.enabled !== false,
     fn: function () {
       if (ui.choosing) return;
-      if (o.id === 'pass') { ui.hmenu.passOpt = o; initAim(ui.hmenu); pushHmLevel({ kind: 'aim', title: '落点', sel: 0 }); requestHmPreview(); }
+      if (o.id === 'pass') {
+        ui.hmenu.passOpt = o;
+        initAim(ui.hmenu);
+        if (o.presetHeight) ui.hmenu.pass.height = o.presetHeight;
+        pushHmLevel({ kind: 'aim', title: '落点', sel: 0 });
+        requestHmPreview();
+      }
       else if (o.moves && o.moves.length) pushHmLevel(moveLevel(o));
       else if (o.shots && o.shots.length) pushHmLevel(shotLevel(o));
       else if (o.skills && o.skills.length) pushHmLevel(skillLevel(o));
@@ -1435,6 +1443,7 @@ function drawGame(t) {
   drawPitch();
   drawGoals();
   drawActors(t);
+  drawReferee(t);
   drawRestartMark();
   drawScoreboard();
   drawMinimap(); // ★ 小地图：全场只在这里看（球员点/球/镜头框/被操控绿圈）
@@ -1515,30 +1524,51 @@ function drawPitch() {
     }
     ctx.stroke();
   }
-  function circle(cx, cy, r) {
-    ctx.strokeStyle = 'rgba(255,255,255,0.9)'; ctx.lineWidth = 2;
+  function arc(cx, cy, r, a0, a1, width) {
+    ctx.strokeStyle = 'rgba(255,255,255,0.95)'; ctx.lineWidth = width || 2;
     ctx.beginPath();
-    for (var i = 0; i <= 40; i++) {
-      var a = (i / 40) * Math.PI * 2;
-      var p = project(cx + Math.cos(a) * r, cy + Math.sin(a) * r * 0.62);
+    var steps = 36;
+    for (var i = 0; i <= steps; i++) {
+      var a = a0 + (a1 - a0) * i / steps;
+      var p = project(cx + Math.cos(a) * r, cy + Math.sin(a) * r);
       if (i === 0) ctx.moveTo(p.x, p.y); else ctx.lineTo(p.x, p.y);
     }
     ctx.stroke();
   }
+  function dot(cx, cy) {
+    var p = project(cx, cy);
+    ctx.fillStyle = 'rgba(255,255,255,0.95)';
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, 2.4, 0, Math.PI * 2);
+    ctx.fill();
+  }
   var F = C.FIELD;
-  line(0, 0, F.W, 0); line(0, F.H, F.W, F.H);       // 边线
-  line(0, 0, 0, F.H); line(F.W, 0, F.W, F.H);       // 底线
-  line(F.W / 2, 0, F.W / 2, F.H);                    // 中线
-  circle(F.W / 2, F.H / 2, 9.15);                    // 中圈
-  // 两侧禁区
+  var L = C.PITCH;
+  line(0, 0, F.W, 0); line(0, F.H, F.W, F.H);
+  line(0, 0, 0, F.H); line(F.W, 0, F.W, F.H);
+  line(F.W / 2, 0, F.W / 2, F.H);
+  arc(F.W / 2, F.H / 2, L.centreRadius, 0, Math.PI * 2);
+  dot(F.W / 2, F.H / 2);
+  // 角球弧：半径 1 米，画在场内。
+  arc(0, 0, L.cornerRadius, 0, Math.PI / 2);
+  arc(0, F.H, L.cornerRadius, -Math.PI / 2, 0);
+  arc(F.W, 0, L.cornerRadius, Math.PI / 2, Math.PI);
+  arc(F.W, F.H, L.cornerRadius, Math.PI, Math.PI * 1.5);
   [[0, 1], [F.W, -1]].forEach(function (s) {
     var gx = s[0], d = s[1];
-    line(gx, F.H / 2 - 20.16, gx + 16.5 * d, F.H / 2 - 20.16);
-    line(gx + 16.5 * d, F.H / 2 - 20.16, gx + 16.5 * d, F.H / 2 + 20.16);
-    line(gx + 16.5 * d, F.H / 2 + 20.16, gx, F.H / 2 + 20.16);
-    line(gx, F.H / 2 - 9.16, gx + 5.5 * d, F.H / 2 - 9.16);
-    line(gx + 5.5 * d, F.H / 2 - 9.16, gx + 5.5 * d, F.H / 2 + 9.16);
-    line(gx + 5.5 * d, F.H / 2 + 9.16, gx, F.H / 2 + 9.16);
+    var ph = L.penaltyHalf, pd = L.penaltyDepth, gh = L.goalAreaHalf, gd = L.goalAreaDepth;
+    line(gx, F.H / 2 - ph, gx + pd * d, F.H / 2 - ph);
+    line(gx + pd * d, F.H / 2 - ph, gx + pd * d, F.H / 2 + ph);
+    line(gx + pd * d, F.H / 2 + ph, gx, F.H / 2 + ph);
+    line(gx, F.H / 2 - gh, gx + gd * d, F.H / 2 - gh);
+    line(gx + gd * d, F.H / 2 - gh, gx + gd * d, F.H / 2 + gh);
+    line(gx + gd * d, F.H / 2 + gh, gx, F.H / 2 + gh);
+    var spotX = gx + L.penaltySpot * d;
+    dot(spotX, F.H / 2);
+    // 点球弧只画禁区外的那一段（以罚球点为圆心，半径 9.15 米）。
+    var beta = Math.acos((L.penaltyDepth - L.penaltySpot) / L.arcRadius);
+    var mid = d > 0 ? 0 : Math.PI;
+    arc(spotX, F.H / 2, L.arcRadius, mid - beta, mid + beta, 3.5);
   });
 }
 
@@ -1808,6 +1838,22 @@ function drawActors(t) {
     }
   }
 
+}
+
+function drawReferee(t) {
+  if (!state) return;
+  var fake = { id: 'referee', team: 'ref', pos: 'REF', skin: 'fair', num: 0, hasBall: false };
+  if (!renderPos.referee) renderPos.referee = { x: C.FIELD.W / 2, y: 7 };
+  var spr = spriteFrameFor(fake, t);
+  var pr = project(renderPos.referee.x, renderPos.referee.y);
+  var dw = 16 * pr.s * 1.9, dh = 24 * pr.s * 1.9;
+  ctx.fillStyle = 'rgba(0,0,0,0.28)';
+  ctx.beginPath();
+  ctx.ellipse(pr.x, pr.y + 2, 12 * pr.s, 4 * pr.s, 0, 0, Math.PI * 2);
+  ctx.fill();
+  if (spr && spr.is8dir) {
+    blit8(spr.img, spr.anchors, spr.dirRow || 2, spr.col || 0, false, pr, dw, dh, 1);
+  }
 }
 
 function drawScoreboard() {

@@ -11,8 +11,24 @@
 })(typeof self !== 'undefined' ? self : this, function () {
   'use strict';
 
-  // 球场尺寸（米）：标准 105 x 68
+  // 球场尺寸（米）：FIFA 105 x 68。画线和规则判定都用这一套，不要另写一套数。
   var FIELD = { W: 105, H: 68 };
+  var PITCH = {
+    goalWidth: 7.32,
+    goalHalf: 3.66,
+    penaltyDepth: 16.5,
+    penaltyWidth: 40.32,
+    penaltyHalf: 20.16,
+    goalAreaDepth: 5.5,
+    goalAreaWidth: 18.32,
+    goalAreaHalf: 9.16,
+    penaltySpot: 11,
+    arcRadius: 9.15,
+    centreRadius: 9.15,
+    cornerRadius: 1,
+    wallDist: 9.15,
+    throwDist: 2,
+  };
 
   // 七大指令定义。
   // ★ 体能设计（单资源制，无精神力，2026-09-27 起）：
@@ -79,6 +95,7 @@
 
   return {
     FIELD: FIELD,
+    PITCH: PITCH,
     COMMANDS: COMMANDS,
     STAMINA: STAMINA,
     DEFAULT_CONFIG: DEFAULT_CONFIG,

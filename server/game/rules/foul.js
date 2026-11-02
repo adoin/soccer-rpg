@@ -24,8 +24,11 @@
 var FM = require('../../../shared/fm');
 var Teams = require('../../../shared/teams');
 
-var FIELD_W = 105;
-var FIELD_H = 68;
+var C = require('../../../shared/constants');
+var FIELD_W = C.FIELD.W;
+var FIELD_H = C.FIELD.H;
+var PEN_DEPTH = C.PITCH.penaltyDepth;
+var PEN_HALF = C.PITCH.penaltyHalf;
 
 function effFactor(p) {
   return 0.75 + 0.25 * (p.stamina / p.maxStamina);
@@ -57,8 +60,8 @@ function pickReferee(rng) {
 
 // 犯规地点是否在防守方禁区内（防守方 team 的禁区）
 function inBox(x, y, defendingTeam) {
-  var inX = defendingTeam === 'home' ? x < 16.5 : x > FIELD_W - 16.5;
-  return inX && Math.abs(y - FIELD_H / 2) <= 20.2;
+  var inX = defendingTeam === 'home' ? x < PEN_DEPTH : x > FIELD_W - PEN_DEPTH;
+  return inX && Math.abs(y - FIELD_H / 2) <= PEN_HALF;
 }
 
 function distGoal(p, attackingTeam) {
