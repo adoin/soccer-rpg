@@ -2751,15 +2751,50 @@ Match.prototype.boxClear = function (defending) {
   return true;
 };
 
+// 人退出禁区后按本位点散开，不要全贴在同一条边线上叠成一串。
 Match.prototype.pushOpponentsFromBox = function (defending) {
-  var edge = defending === 'home' ? PITCH.penaltyDepth + 0.85 : FIELD.W - PITCH.penaltyDepth - 0.85;
-  for (var i = 0; i < this.players.length; i++) {
+  var sign = defending === 'home' ? 1 : -1;
+  var line = defending === 'home' ? PITCH.penaltyDepth : FIELD.W - PITCH.penaltyDepth;
+  var foes = [];
+  var i;
+  for (i = 0; i < this.players.length; i++) {
     var p = this.players[i];
     if (p.sentOff || p.team === defending) continue;
-    if (!this.inPenaltyArea(p.x, p.y, defending)) continue;
-    p.x = edge;
-    p._vx = 0;
-    p._vy = 0;
+    var along = (p.x - line) * sign;
+    if (along < 2.8) foes.push(p);
+  }
+  foes.sort(function (a, b) { return (a.hy - b.hy) || (a.num - b.num); });
+  var usedY = [];
+  function claimY(y) {
+    var guard = 0;
+    while (guard++ < 24) {
+      var clear = true;
+      for (var k = 0; k < usedY.length; k++) {
+        if (Math.abs(usedY[k] - y) < 1.15) clear = false;
+      }
+      if (clear && y >= 3 && y <= FIELD.H - 3) { usedY.push(y); return y; }
+      y += 1.25;
+      if (y > FIELD.H - 3) y = 3 + (guard % 8) * 1.3;
+    }
+    y = clamp(y, 3, FIELD.H - 3);
+    usedY.push(y);
+    return y;
+  }
+  for (i = 0; i < foes.length; i++) {
+    var q = foes[i];
+    var depth = q.pos === 'FW' ? 8.2 : q.pos === 'MF' ? 5.1 : q.pos === 'DF' ? 2.4 : 3.6;
+    q.x = line + sign * depth;
+    q.y = claimY(q.hy != null ? q.hy : FIELD.H / 2);
+    q.x = clamp(q.x, 1.2, FIELD.W - 1.2);
+    q._vx = 0;
+    q._vy = 0;
+  }
+  this.separatePlayers();
+  for (i = 0; i < foes.length; i++) {
+    var q2 = foes[i];
+    if (!this.inPenaltyArea(q2.x, q2.y, defending)) continue;
+    q2.x = line + sign * 1.6;
+    q2._vx = 0;
   }
 };
 
@@ -2767,11 +2802,7 @@ Match.prototype.respectRestart = function (p) {
   var r = this.restart;
   if (!r || !r.held || !p || p.sentOff || p.team === r.team) return;
   if (r.kind === 'goalkick') {
-    if (this.inPenaltyArea(p.x, p.y, r.team)) {
-      p.x = r.team === 'home' ? PITCH.penaltyDepth + 0.85 : FIELD.W - PITCH.penaltyDepth - 0.85;
-      p._vx = 0;
-      p._vy = 0;
-    }
+    if (this.inPenaltyArea(p.x, p.y, r.team)) this.pushOpponentsFromBox(r.team);
     return;
   }
   var need = 0;

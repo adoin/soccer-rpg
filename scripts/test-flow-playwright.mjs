@@ -122,24 +122,34 @@ console.log('PASS humans still inside before the kick', JSON.stringify(waiting))
 
 const lofted = await desk.evaluate(() => {
   const m = window.__M();
-  m.players.forEach(function (p) { if (p.team === 'home') p.x = 97; });
+  m.players.forEach(function (p) { if (p.team === 'home') { p.x = 97; p.y = 34; } });
   m.restart.readyAt = Math.max(1, m.now - 2000);
   m.setPaused(false);
   var guard = 0;
   while (m.ball.ownerId && guard++ < 6) m.tick();
-  const inside = m.players.filter(function (p) { return p.team === 'home' && m.inPenaltyArea(p.x, p.y, 'away'); }).length;
+  const home = m.players.filter(function (p) { return p.team === 'home'; });
+  const inside = home.filter(function (p) { return m.inPenaltyArea(p.x, p.y, 'away'); }).length;
+  var minD = 1e9;
+  home.forEach(function (a, ia) {
+    home.forEach(function (b, ib) {
+      if (ib <= ia) return;
+      var d = Math.hypot(a.x - b.x, a.y - b.y);
+      if (d < minD) minD = d;
+    });
+  });
   m.players.forEach(function (p) { p.frozenUntil = m.now + 99999; });
   for (var i = 0; i < 6; i++) m.tick();
   m.setPaused(true);
   return {
     inside: inside,
+    minD: minD,
     owner: m.ball.ownerId,
     z: m.ball.z,
     vz: m.ball.vz,
     phase: m.phase,
   };
 });
-assert(lofted.inside === 0 && !lofted.owner && lofted.z > 2, '球门球没有等高球或人还在禁区 ' + JSON.stringify(lofted));
+assert(lofted.inside === 0 && lofted.minD >= 0.9 && !lofted.owner && lofted.z > 2, '球门球没有散开或没有飞起来 ' + JSON.stringify(lofted));
 await settle(desk);
 await shot(desk, 'goalkick-lofted.png');
 console.log('PASS lofted goal kick after box clear', JSON.stringify(lofted));
@@ -289,7 +299,22 @@ const phoneMenu = await phone.evaluate(() => {
   return { sub: m.decision.options[0].sub, piece: m.decision.setpiece };
 });
 assert(phoneMenu.piece === 'penalty' && phoneMenu.sub.indexOf('射门') >= 0, '手机点球菜单不对 ' + JSON.stringify(phoneMenu));
-console.log('PASS mobile taker menus', JSON.stringify(phoneMenu));
+const menuFit = await phone.evaluate(() => {
+  const box = window.__menuBox;
+  const stick = { x: 170, y: 448, r: 84 };
+  const keys = [
+    { x: 1206, y: 250, r: 40 }, { x: 1206, y: 352, r: 42 }, { x: 1206, y: 454, r: 40 },
+    { x: 1084, y: 352, r: 56 }, { x: 1084, y: 478, r: 38 },
+  ];
+  function hit(c) {
+    const nx = Math.max(box.x, Math.min(c.x, box.x + box.w));
+    const ny = Math.max(box.y, Math.min(c.y, box.y + box.h));
+    return Math.hypot(c.x - nx, c.y - ny) < c.r + 6;
+  }
+  return { css: box.css, nameSize: box.nameSize, rows: box.rows, total: box.total, w: box.w, h: box.h, x: box.x, y: box.y, stick: hit(stick), key: keys.some(hit) };
+});
+assert(menuFit.css >= 13 && !menuFit.stick && !menuFit.key, '手机主罚菜单太小或被按键挡住 ' + JSON.stringify(menuFit));
+console.log('PASS mobile taker menus', JSON.stringify(phoneMenu), JSON.stringify(menuFit));
 
 await browser.close();
 server.close();

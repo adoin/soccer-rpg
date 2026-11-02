@@ -372,6 +372,20 @@ console.log('== 球门球等高球、门将持球、裁判走动 ==');
     return p.team === 'home' && m.inPenaltyArea(p.x, p.y, 'away');
   });
   ok(inside.length === 0, '对方还在禁区时先被推出，球还没开', inside.length);
+  var homeOut = m.players.filter(function (p) { return p.team === 'home'; });
+  var minD = 1e9, spanX = 0, spanY = 0, minX = 1e9, maxX = -1e9, minY = 1e9, maxY = -1e9;
+  homeOut.forEach(function (a, ia) {
+    if (a.x < minX) minX = a.x; if (a.x > maxX) maxX = a.x;
+    if (a.y < minY) minY = a.y; if (a.y > maxY) maxY = a.y;
+    homeOut.forEach(function (b, ib) {
+      if (ib <= ia) return;
+      var d = Math.hypot(a.x - b.x, a.y - b.y);
+      if (d < minD) minD = d;
+    });
+  });
+  spanX = maxX - minX; spanY = maxY - minY;
+  ok(minD >= 0.9, '退出禁区后球员没有叠在一起', minD.toFixed(2));
+  ok(spanX > 2 && spanY > 8, '退出后散开，不是一条竖线', spanX.toFixed(1) + ' x ' + spanY.toFixed(1));
   ok(m.ball.ownerId === 'a1' && (m.ball.vz || 0) < 1, '禁区清空前不开球', m.ball.ownerId + ' vz=' + m.ball.vz);
   m.players.forEach(function (p) { if (p.team === 'home') p.x = 98; });
   m.restart.readyAt = m.now - 5000;

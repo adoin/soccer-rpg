@@ -1115,7 +1115,15 @@ function drawHeadMenu() {
   drawHmLanding(hm);
 }
 
-// setpiece-stats-v1：主罚名单按定位球类型分列，三列数字固定对齐。
+// setpiece-menu-v2：小屏按 CSS 像素放大主罚名单，躲开摇杆和虚拟键。
+function paintScale() {
+  var cv = document.getElementById('game');
+  if (!cv || !cv.getBoundingClientRect) return 1;
+  var r = cv.getBoundingClientRect();
+  var s = Math.min(r.width / W, r.height / H);
+  if (!(s > 0.2 && s < 4)) return 1;
+  return s;
+}
 function drawSetPieceMenu(lvl, d) {
   var items = lvl.items || [];
   var title = '定位球';
@@ -1126,72 +1134,103 @@ function drawSetPieceMenu(lvl, d) {
   items.forEach(function (it) {
     if (it.stats && it.stats.length > cols) cols = it.stats.length;
   });
-  var nameSize = 15;
-  var statSize = 13;
-  ctx.font = 'bold ' + nameSize + 'px "PingFang SC","Microsoft YaHei",monospace';
-  var nameW = 108;
-  items.forEach(function (it) {
-    var label = String(it.label || '').replace(/^[•·]\s*/, '');
-    var tw = ctx.measureText('▶ ' + label).width;
-    if (tw + 10 > nameW) nameW = tw + 10;
-  });
-  var colW = 0;
-  if (cols) {
-    ctx.font = statSize + 'px "PingFang SC","Microsoft YaHei",monospace';
+  var scale = paintScale();
+  var cssPx = function (css) { return Math.ceil(css / scale); };
+  var nameSize = Math.max(16, cssPx(14));
+  var statSize = Math.max(15, cssPx(14));
+  var titleSize = Math.max(18, cssPx(15));
+  var shortStat = { '角球': '角', '长传': '长', '传中': '传', '射门': '射', '任意球': '任', '心理': '心' };
+  var useShort = false;
+  var left = 332;
+  var right = isTouch ? 1000 : 1044;
+  var top = 148;
+  var bottom = 544;
+  function statText(st) {
+    var k = useShort && shortStat[st.k] ? shortStat[st.k] : st.k;
+    return k + ' ' + st.v;
+  }
+  function layout() {
+    var fontName = 'bold ' + nameSize + 'px "PingFang SC","Microsoft YaHei",monospace';
+    ctx.font = fontName;
+    var nameW = 96;
     items.forEach(function (it) {
-      (it.stats || []).forEach(function (st) {
-        var tw = ctx.measureText(st.k + ' ' + st.v).width + 16;
-        if (tw > colW) colW = tw;
-      });
+      var label = String(it.label || '').replace(/^[•·]\s*/, '');
+      var tw = ctx.measureText('▶ ' + label).width + 8;
+      if (tw > nameW) nameW = tw;
     });
-  }
-  var rowH = items.length > 8 ? 24 : 28;
-  var headH = 36;
-  var w = cols ? (20 + nameW + cols * colW + 12) : 360;
-  var maxW = 1048 - 332;
-  if (w > maxW && cols) {
-    w = maxW;
-    colW = Math.floor((w - 20 - nameW - 12) / cols);
-    if (colW < 62) {
-      nameSize = 13;
-      statSize = 12;
-      nameW = Math.min(nameW, 132);
-      colW = Math.floor((w - 20 - nameW - 12) / cols);
+    var colW = 0;
+    if (cols) {
+      ctx.font = statSize + 'px "PingFang SC","Microsoft YaHei",monospace';
+      items.forEach(function (it) {
+        (it.stats || []).forEach(function (st) {
+          var tw = ctx.measureText(statText(st)).width + Math.ceil(statSize * 0.65);
+          if (tw > colW) colW = tw;
+        });
+      });
     }
+    var w = cols ? (18 + nameW + cols * colW + 14) : 420;
+    return { nameW: nameW, colW: colW, w: w };
   }
-  var h = headH + items.length * rowH + 12;
-  var x = 332;
-  var y = 150;
-  if (y + h > 640) y = Math.max(120, 640 - h);
+  var box = layout();
+  if (box.w > right - left && cols) {
+    useShort = true;
+    box = layout();
+  }
+  var maxW = right - left;
+  if (box.w > maxW) box.w = maxW;
+  var headH = Math.max(40, titleSize + 18);
+  var rowH = Math.max(nameSize + 10, statSize + 10);
+  var maxRows = Math.max(4, Math.floor((bottom - top - headH - 14) / rowH));
+  var visible = Math.min(items.length, maxRows);
+  var scroll = 0;
+  if (visible < items.length) {
+    var sel = lvl.sel || 0;
+    scroll = sel - Math.floor((visible - 1) / 2);
+    if (scroll < 0) scroll = 0;
+    if (scroll > items.length - visible) scroll = items.length - visible;
+  }
+  var h = headH + visible * rowH + 12;
+  var x = left;
+  var y = top;
+  if (y + h > bottom) y = Math.max(top, bottom - h);
   ctx.fillStyle = 'rgba(8,12,26,0.97)';
-  rr(x, y, w, h, 10); ctx.fill();
+  rr(x, y, box.w, h, 10); ctx.fill();
   ctx.strokeStyle = '#ffd94a'; ctx.lineWidth = 2;
-  rr(x, y, w, h, 10); ctx.stroke();
-  text(title, x + 16, y + 20, 18, '#ffd94a', 'left', true);
-  text('确定 = E', x + w - 14, y + 20, 13, '#9fb4dd', 'right');
-  items.forEach(function (it, i) {
-    var ry = y + headH + i * rowH;
+  rr(x, y, box.w, h, 10); ctx.stroke();
+  text(title, x + 16, y + headH / 2, titleSize, '#ffd94a', 'left', true);
+  var hint = visible < items.length ? '上/下翻' : '确定 = E';
+  text(hint, x + box.w - 14, y + headH / 2, Math.max(13, cssPx(12)), '#9fb4dd', 'right');
+  for (var vi = 0; vi < visible; vi++) {
+    var i = scroll + vi;
+    var it = items[i];
+    var ry = y + headH + vi * rowH;
     if (i === lvl.sel) {
       ctx.fillStyle = 'rgba(255,217,74,0.18)';
-      ctx.fillRect(x + 8, ry + 2, w - 16, rowH - 4);
+      ctx.fillRect(x + 8, ry + 2, box.w - 16, rowH - 4);
     }
     var color = !it.enabled ? '#5a6584' : it.back ? '#9fb4dd' : (i === lvl.sel ? '#ffd94a' : '#ffffff');
     var label = String(it.label || '').replace(/^[•·]\s*/, '');
     text((i === lvl.sel ? '▶ ' : '') + label, x + 14, ry + rowH / 2, nameSize, color, 'left', true);
     if (it.stats && it.stats.length) {
       it.stats.forEach(function (st, si) {
-        text(st.k + ' ' + st.v, x + 16 + nameW + si * colW, ry + rowH / 2, statSize, it.enabled ? '#d5e2ff' : '#4a5468', 'left');
+        text(statText(st), x + 12 + box.nameW + si * box.colW, ry + rowH / 2, statSize, it.enabled ? '#d5e2ff' : '#4a5468', 'left');
       });
     } else if (it.sub) {
-      text(it.sub, x + w - 12, ry + rowH / 2, statSize, it.enabled ? '#d5e2ff' : '#4a5468', 'right');
+      text(it.sub, x + box.w - 12, ry + rowH / 2, statSize, it.enabled ? '#d5e2ff' : '#4a5468', 'right');
     }
     (function (item, idx) {
-      addClick(x + 8, ry, w - 16, rowH, function () {
+      addClick(x + 8, ry, box.w - 16, rowH, function () {
         if (!item.enabled) { toast('体能不足或该球员无法使用'); return; }
         lvl.sel = idx; item.fn();
       });
     })(it, i);
-  });
+  }
+  if (DEBUG) {
+    window.__menuBox = {
+      x: x, y: y, w: box.w, h: h, nameSize: nameSize, statSize: statSize,
+      scale: scale, css: +(nameSize * scale).toFixed(2), rows: visible, total: items.length, short: useShort,
+    };
+  }
 }
 
 function drawHmList(lvl, pr, cx, headY) {
