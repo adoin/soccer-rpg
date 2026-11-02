@@ -27,12 +27,15 @@ function surfaceOf(name) {
 }
 
 // 这个高度谁能用身体哪个部位处理。够不着返回 null。
-// 脚 <0.65m；胸 0.65–1.45m；头 1.45–2.55m（门将可到 3.3m）。
-function controlBand(z, isGK) {
+// 脚 <0.65m；胸 0.65–1.45m；头 1.45–2.55m。
+// 门将禁区外可到 3.3m；只有在本方禁区内才再高到 4.2m。
+function controlBand(z, isGK, inBox) {
   z = z || 0;
   if (z < 0.65) return 'foot';
   if (z < 1.45) return 'chest';
-  if (z <= (isGK ? 3.3 : 2.55)) return 'header';
+  var head = 2.55;
+  if (isGK) head = inBox ? 4.2 : 3.3;
+  if (z <= head) return 'header';
   return null;
 }
 

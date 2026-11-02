@@ -305,6 +305,124 @@ console.log('== 开球 ==');
   ok(m.phase === 'play' && m.ball.ownerId === 'h10', '开球结束后球还在主队', m.ball.ownerId);
 })();
 
+console.log('== 主罚名单按定位球类型列属性 ==');
+(function () {
+  var m = newMatch(41);
+  m.players.forEach(function (p) {
+    if (!p.stats) return;
+    ok(p.stats.corners != null && p.stats.longPassing != null && p.stats.crossing != null && p.stats.freeKicks != null,
+      p.id + ' 有角球长传传中任意球');
+  });
+  m.ball.x = 104; m.ball.y = 6; m.ball.lastTouchTeam = 'away';
+  m.whistleCorner('home');
+  ok(m.decision && m.decision.kind === 'taker', '角球先选主罚');
+  var sub = m.decision.options[0].sub;
+  ok(sub.indexOf('角球') >= 0 && sub.indexOf('长传') >= 0 && sub.indexOf('传中') >= 0 && sub.indexOf('心理') < 0,
+    '角球名单是角球长传传中', sub);
+  var best = m.bestTaker('home', 'corner');
+  ok(m.decision.options[0].id === best.id, '光标默认停在角球最好的人', m.decision.options[0].id);
+  var scores = m.decision.options.map(function (o) { return m.takerScore(m.byId[o.id], 'corner'); });
+  var sorted = scores.slice().sort(function (a, b) { return b - a; });
+  ok(scores.join(',') === sorted.join(','), '角球名单按加权分从高到低');
+
+  m.decision = null; m.restart = null; m.phase = 'play';
+  set(m, 'h10', 70, 34); set(m, 'a4', 71.1, 34);
+  m.ball.ownerId = 'h10';
+  var f = Foul.judgeFoul(m, P(m, 'a4'), P(m, 'h10'), { fromBehind: true });
+  f.advantage = false; f.card = 'none';
+  m.applyFoulResult(f);
+  ok(m.decision && m.decision.setpiece === 'foul', '任意球选人', m.decision && m.decision.setpiece);
+  var fk = m.decision.options[0].sub;
+  ok(fk.indexOf('射门') >= 0 && fk.indexOf('长传') >= 0 && fk.indexOf('任意球') >= 0 && fk.indexOf('传中') < 0,
+    '任意球名单是射门长传任意球', fk);
+  ok(m.decision.options[0].id === m.bestTaker('home', 'foul').id, '任意球默认最好的主罚');
+
+  var hi = P(m, 'h10'), lo = P(m, 'h4');
+  hi.stats.freeKicks = 18; hi.stats.longPassing = 18; hi.stats.corners = 18; hi.stats.crossing = 18;
+  lo.stats.freeKicks = 4; lo.stats.longPassing = 4; lo.stats.corners = 4; lo.stats.crossing = 4;
+  m.restart = { kind: 'corner', team: 'home', x: hi.x, y: hi.y, held: true, takerId: hi.id };
+  m.phase = 'decision';
+  m.decision = { playerId: hi.id, kind: 'setpiece', options: [{ id: 'pass', enabled: true, cost: 0, rate: 80 }] };
+  m.resolveAction(hi, 'pass', 80, { aimX: hi.x + 30, aimY: 34, technique: 'inside', height: 'high', model: true });
+  var hiR = m.lastPassScatter;
+  m.phase = 'decision';
+  m.restart = { kind: 'corner', team: 'home', x: lo.x, y: lo.y, held: true, takerId: lo.id };
+  m.decision = { playerId: lo.id, kind: 'setpiece', options: [{ id: 'pass', enabled: true, cost: 0, rate: 80 }] };
+  m.resolveAction(lo, 'pass', 80, { aimX: lo.x + 30, aimY: 34, technique: 'inside', height: 'high', model: true });
+  ok(hiR < m.lastPassScatter, '角球属性高的人出球更准', hiR + ' vs ' + m.lastPassScatter);
+  var shot = require('../shared/moves').shotById('shot-driven');
+  var pOnHi = m.shotChance(hi, P(m, 'a1'), shot, { freeKick: true }).pOn;
+  var pOnLo = m.shotChance(lo, P(m, 'a1'), shot, { freeKick: true }).pOn;
+  ok(pOnHi > pOnLo, '任意球属性高的人射门更准', pOnHi.toFixed(3) + ' vs ' + pOnLo.toFixed(3));
+})();
+
+console.log('== 球门球等高球、门将持球、裁判走动 ==');
+(function () {
+  var m = newMatch(42);
+  m.ball.x = 106; m.ball.y = 20; m.ball.lastTouchTeam = 'home';
+  m.whistleGoalKick('away');
+  m.overlayUntil = 0;
+  m.phase = 'play';
+  m.restart.readyAt = m.now;
+  m.players.forEach(function (p) {
+    if (p.team === 'home') { p.x = 98; p.y = 34; }
+  });
+  m.tick();
+  var inside = m.players.filter(function (p) {
+    return p.team === 'home' && m.inPenaltyArea(p.x, p.y, 'away');
+  });
+  ok(inside.length === 0, '对方还在禁区时先被推出，球还没开', inside.length);
+  ok(m.ball.ownerId === 'a1' && (m.ball.vz || 0) < 1, '禁区清空前不开球', m.ball.ownerId + ' vz=' + m.ball.vz);
+  m.players.forEach(function (p) { if (p.team === 'home') p.x = 98; });
+  m.restart.readyAt = m.now - 5000;
+  m.tick();
+  inside = m.players.filter(function (p) {
+    return p.team === 'home' && m.inPenaltyArea(p.x, p.y, 'away');
+  });
+  ok(inside.length === 0, '开球时对方已经退出禁区', inside.map(function (p) { return p.x.toFixed(1); }).join(','));
+  ok(!m.ball.ownerId && m.ball.vz > 8 && m.ball.z > 0.4, '球门球是高球', 'z=' + m.ball.z + ' vz=' + m.ball.vz);
+  var rise = 0;
+  while ((m.ball.z || 0) < 3 && rise++ < 15) m.simulate(0.1);
+  ok((m.ball.z || 0) > 3 && !m.ball.ownerId, '球门球飞过头顶', 'z=' + m.ball.z + ' owner=' + m.ball.ownerId);
+  m.players.forEach(function (p) {
+    if (p.team === 'home' && p.pos !== 'GK') { p.x = m.ball.x; p.y = m.ball.y; }
+  });
+  m.simulate(0.1);
+  ok(!m.ball.ownerId, '人跑到高球正下方也接不住', m.ball.ownerId);
+
+  var m2 = newMatch(43);
+  set(m2, 'a1', 60, 34);
+  m2.ball.ownerId = 'a1'; m2.ball.x = 60; m2.ball.y = 34;
+  m2.simulate(0.1);
+  ok(P(m2, 'a1').x > 105 - 16.5, '门将拿到球后留在禁区', P(m2, 'a1').x.toFixed(2));
+  ok(P(m2, 'a1').gkHolding, '门将是把球抱住');
+  var xHold = P(m2, 'a1').x;
+  m2.simulate(0.1);
+  ok(Math.abs(P(m2, 'a1').x - xHold) < 0.2, '抱球时不会带球冲出来', P(m2, 'a1').x.toFixed(2));
+  var steps = 0;
+  while (m2.ball.ownerId === 'a1' && steps++ < 20) m2.tick();
+  ok(m2.ball.ownerId !== 'a1' && ((m2.ball.z || 0) > 0.4 || m2.phase === 'passflight'), '客队门将会把球发出去', m2.phase + ' z=' + m2.ball.z);
+
+  var m3 = newMatch(44);
+  m3.ball.x = 70; m3.ball.y = 20; m3.ball.ownerId = 'h10';
+  set(m3, 'h10', 70, 20);
+  var rx = m3.refereePos.x, ry = m3.refereePos.y;
+  var i;
+  for (i = 0; i < 25; i++) m3.tick();
+  var moved = Math.hypot(m3.refereePos.x - rx, m3.refereePos.y - ry);
+  ok(moved > 4, '裁判会跟着球走', moved.toFixed(2));
+  ok(Math.hypot(m3.refereePos.x - m3.ball.x, m3.refereePos.y - m3.ball.y) > 6, '裁判不贴着球');
+
+  var m4 = newMatch(45);
+  m4.goal(P(m4, 'h9'), 'home');
+  var sawGoal = m4.phase === 'goal';
+  var guard2 = 0;
+  while (m4.overlayActive() && guard2++ < 50) m4.tick();
+  ok(sawGoal && m4.phase === 'goal', '结算画面结束前还停在进球，没有提前开球', m4.phase);
+  while (m4.phase === 'goal' && guard2++ < 80) m4.tick();
+  ok(m4.phase === 'kickoff', '画面结束后才摆开球', m4.phase);
+})();
+
 if (failures) {
   console.log('\n' + failures + ' TEST(S) FAILED');
   process.exit(1);

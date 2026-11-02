@@ -41,8 +41,8 @@ function segDist(px, py, x0, y0, x1, y1) {
 }
 
 // 拦截包络：球在高度 z 时可拦截的横向半径；够不着返回 null
-function envelope(z, isGK) {
-  var headH = isGK ? 3.4 : 2.6;
+function envelope(z, isGK, inBox) {
+  var headH = isGK ? (inBox ? 4.2 : 3.4) : 2.6;
   if (z < 1.0) return { radius: 1.6, aerial: false };
   if (z < headH) return { radius: 1.1, aerial: true };
   return null;
@@ -75,7 +75,8 @@ function checkInterception(match, flight) {
     var sd = segDist(q.x, q.y, flight.px, flight.py, flight.x, flight.y);
     var k = flight.k0 + sd.t * (flight.k1 - flight.k0);
     var z = heightAt(flight.peak, k);
-    var env = envelope(z, q.pos === 'GK');
+    var inBox = q.pos === 'GK' && match.inPenaltyArea && match.inPenaltyArea(q.x, q.y, q.team);
+    var env = envelope(z, q.pos === 'GK', inBox);
     if (!env || sd.d > env.radius) continue;
     var score = sd.d + (env.aerial ? 0.4 : 0);
     if (score < bestScore) {

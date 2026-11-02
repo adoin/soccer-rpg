@@ -50,7 +50,7 @@
     'pace', 'acceleration', 'agility', 'strength', 'jumping', 'stamina', 'balance',
     // 技术
     'dribbling', 'passing', 'finishing', 'longShots', 'tackling', 'marking',
-    'heading', 'technique', 'firstTouch', 'crossing', 'setPieces',
+    'heading', 'technique', 'firstTouch', 'crossing', 'corners', 'longPassing', 'freeKicks', 'setPieces',
     // 心智
     'decisions', 'anticipation', 'offBall', 'positioning', 'vision',
     'composure', 'determination', 'aggression', 'bravery', 'teamwork',
@@ -103,6 +103,38 @@
     { num: 11, name: '火渡 空',  pos: 'MF', level: 9,  stats: base({ finishing: 12, pace: 13, acceleration: 12, offBall: 11, anticipation: 11, heading: 11, jumping: 11, composure: 10, dribbling: 10 }), special: null },
   ];
 
+  function clampN(v, lo, hi) { return v < lo ? lo : v > hi ? hi : v; }
+
+  // 角球 / 长传 / 传中 / 任意球：按位置和已有技术补齐。边路主罚角球，组织者长传和任意球更高。
+  function deriveDelivery(stats, pos, num) {
+    var s = stats;
+    var pass = s.passing != null ? s.passing : Math.round(((s.vision || 10) + (s.technique || 10)) / 2);
+    var fin = s.finishing != null ? s.finishing : 10;
+    var tech = s.technique != null ? s.technique : 10;
+    var vision = s.vision != null ? s.vision : 10;
+    var comp = s.composure != null ? s.composure : 10;
+    var pace = s.pace != null ? s.pace : 10;
+    if (pos === 'GK') {
+      s.corners = 4;
+      s.crossing = 5;
+      s.longPassing = clampN(Math.round((s.kicking || 8) * 0.55 + vision * 0.25 + 2), 6, 12);
+      s.freeKicks = 4;
+      return;
+    }
+    var wide = num === 2 || num === 5 || num === 7 || num === 11;
+    var creator = num === 5 || num === 6 || num === 8 || num === 10;
+    s.longPassing = clampN(Math.round(pass * 0.5 + vision * 0.35 + tech * 0.15), 7, 18);
+    if (wide) s.crossing = clampN(Math.round(8 + pace * 0.2 + pass * 0.25 + (num === 7 || num === 11 ? 2 : 0)), 10, 18);
+    else if (creator) s.crossing = clampN(Math.round(pass * 0.45 + tech * 0.2 + 2), 8, 15);
+    else s.crossing = clampN(Math.round(pass * 0.3 + (s.heading || 10) * 0.15 + 2), 6, 12);
+    s.corners = clampN(Math.round(s.crossing * 0.62 + s.longPassing * 0.38), 6, 18);
+    var fkBase = fin * 0.34 + tech * 0.22 + pass * 0.24 + comp * 0.2;
+    if (num === 10) fkBase += 2;
+    else if (num === 8 || num === 9) fkBase += 1;
+    s.freeKicks = clampN(Math.round(fkBase), 6, 18);
+    if (pos === 'DF' && !wide) s.freeKicks = clampN(s.freeKicks - 1, 6, 12);
+  }
+
   // 生成比赛用球员对象（深拷贝 + 运行时字段）
   // 体能为单一资源：maxStamina/stamina = 100（初始满），无精神力字段。
   function makeTeams() {
@@ -153,6 +185,9 @@
           cards: { yellow: 0, red: false }, // 红黄牌
           sentOff: false,   // 是否被罚下
         };
+      }).map(function (o) {
+        deriveDelivery(o.stats, o.pos, o.num);
+        return o;
       });
     }
     return { home: build(HOME, 'home'), away: build(AWAY, 'away') };

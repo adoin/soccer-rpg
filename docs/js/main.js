@@ -280,8 +280,11 @@ function takeSnapshot() {
   var now = performance.now();
   var px = {};
   state.players.forEach(function (p) { px[p.id] = { x: p.x, y: p.y }; });
+  var ref = state.referee && state.referee.x != null
+    ? { x: state.referee.x, y: state.referee.y }
+    : { x: C.FIELD.W / 2, y: 12 };
   snapPrev = snapCurr;
-  snapCurr = { t: now, px: px, ball: { x: state.ball.x, y: state.ball.y } };
+  snapCurr = { t: now, px: px, ball: { x: state.ball.x, y: state.ball.y }, ref: ref };
   if (!snapPrev) snapPrev = snapCurr;
 }
 var selectedHomeIdx = 9;    // 阵容条选中的主队球员下标（默认 10 号）
@@ -873,6 +876,7 @@ function commandItem(o) {
   return {
     label: (CMD_ICONS[o.id] || '•') + ' ' + o.name,
     sub: optionSub(o),
+    stats: o.stats || null,
     enabled: o.enabled !== false,
     fn: function () {
       if (ui.choosing) return;
@@ -1111,27 +1115,60 @@ function drawHeadMenu() {
   drawHmLanding(hm);
 }
 
-// 定位球选人 / 射门：固定一块不透明面板，不跟球员头顶走，也不压记分牌和小地图。
+// setpiece-stats-v1：主罚名单按定位球类型分列，三列数字固定对齐。
 function drawSetPieceMenu(lvl, d) {
   var items = lvl.items || [];
   var title = '定位球';
   if (d.kind === 'taker') title = '选择主罚';
   else if (d.kind === 'penalty-shot' || lvl.kind === 'shots') title = '选择射门';
   else if (lvl.title) title = lvl.title;
-  var rowH = items.length > 8 ? 26 : 30;
-  var headH = 40;
-  var w = 360;
+  var cols = 0;
+  items.forEach(function (it) {
+    if (it.stats && it.stats.length > cols) cols = it.stats.length;
+  });
+  var nameSize = 15;
+  var statSize = 13;
+  ctx.font = 'bold ' + nameSize + 'px "PingFang SC","Microsoft YaHei",monospace';
+  var nameW = 108;
+  items.forEach(function (it) {
+    var label = String(it.label || '').replace(/^[•·]\s*/, '');
+    var tw = ctx.measureText('▶ ' + label).width;
+    if (tw + 10 > nameW) nameW = tw + 10;
+  });
+  var colW = 0;
+  if (cols) {
+    ctx.font = statSize + 'px "PingFang SC","Microsoft YaHei",monospace';
+    items.forEach(function (it) {
+      (it.stats || []).forEach(function (st) {
+        var tw = ctx.measureText(st.k + ' ' + st.v).width + 16;
+        if (tw > colW) colW = tw;
+      });
+    });
+  }
+  var rowH = items.length > 8 ? 24 : 28;
+  var headH = 36;
+  var w = cols ? (20 + nameW + cols * colW + 12) : 360;
+  var maxW = 1048 - 332;
+  if (w > maxW && cols) {
+    w = maxW;
+    colW = Math.floor((w - 20 - nameW - 12) / cols);
+    if (colW < 62) {
+      nameSize = 13;
+      statSize = 12;
+      nameW = Math.min(nameW, 132);
+      colW = Math.floor((w - 20 - nameW - 12) / cols);
+    }
+  }
   var h = headH + items.length * rowH + 12;
-  // 事件条在 x=16..316。菜单贴在它右边，不盖住文案，也不碰上小地图。
   var x = 332;
   var y = 150;
-  if (y + h > 548) y = Math.max(148, 548 - h);
+  if (y + h > 640) y = Math.max(120, 640 - h);
   ctx.fillStyle = 'rgba(8,12,26,0.97)';
   rr(x, y, w, h, 10); ctx.fill();
   ctx.strokeStyle = '#ffd94a'; ctx.lineWidth = 2;
   rr(x, y, w, h, 10); ctx.stroke();
-  text(title, x + 16, y + 22, 18, '#ffd94a', 'left', true);
-  text('确定 = E', x + w - 14, y + 22, 13, '#9fb4dd', 'right');
+  text(title, x + 16, y + 20, 18, '#ffd94a', 'left', true);
+  text('确定 = E', x + w - 14, y + 20, 13, '#9fb4dd', 'right');
   items.forEach(function (it, i) {
     var ry = y + headH + i * rowH;
     if (i === lvl.sel) {
@@ -1140,8 +1177,14 @@ function drawSetPieceMenu(lvl, d) {
     }
     var color = !it.enabled ? '#5a6584' : it.back ? '#9fb4dd' : (i === lvl.sel ? '#ffd94a' : '#ffffff');
     var label = String(it.label || '').replace(/^[•·]\s*/, '');
-    text((i === lvl.sel ? '▶ ' : '') + label, x + 14, ry + rowH / 2, 15, color, 'left', true);
-    if (it.sub) text(it.sub, x + w - 12, ry + rowH / 2, 13, it.enabled ? '#d5e2ff' : '#4a5468', 'right');
+    text((i === lvl.sel ? '▶ ' : '') + label, x + 14, ry + rowH / 2, nameSize, color, 'left', true);
+    if (it.stats && it.stats.length) {
+      it.stats.forEach(function (st, si) {
+        text(st.k + ' ' + st.v, x + 16 + nameW + si * colW, ry + rowH / 2, statSize, it.enabled ? '#d5e2ff' : '#4a5468', 'left');
+      });
+    } else if (it.sub) {
+      text(it.sub, x + w - 12, ry + rowH / 2, statSize, it.enabled ? '#d5e2ff' : '#4a5468', 'right');
+    }
     (function (item, idx) {
       addClick(x + 8, ry, w - 16, rowH, function () {
         if (!item.enabled) { toast('体能不足或该球员无法使用'); return; }
@@ -1833,7 +1876,24 @@ function drawActors(t) {
 function drawReferee(t) {
   if (!state) return;
   var fake = { id: 'referee', team: 'ref', pos: 'REF', skin: 'fair', num: 0, hasBall: false };
-  if (!renderPos.referee) renderPos.referee = { x: C.FIELD.W / 2, y: 7 };
+  var A = snapPrev && snapPrev.ref, B = snapCurr && snapCurr.ref;
+  if (!renderPos.referee) {
+    var s0 = B || (state.referee && state.referee.x != null ? state.referee : { x: C.FIELD.W / 2, y: 12 });
+    renderPos.referee = { x: s0.x, y: s0.y };
+  }
+  if (A && B) {
+    var ia = 1;
+    if (snapPrev && snapCurr && snapCurr.t > snapPrev.t) {
+      ia = (t - snapPrev.t) / (snapCurr.t - snapPrev.t);
+      if (ia < 0) ia = 0; else if (ia > 1) ia = 1;
+    }
+    var dx = B.x - A.x, dy = B.y - A.y;
+    if (dx * dx + dy * dy > 64) { renderPos.referee.x = B.x; renderPos.referee.y = B.y; }
+    else { renderPos.referee.x = A.x + dx * ia; renderPos.referee.y = A.y + dy * ia; }
+  } else if (B) {
+    renderPos.referee.x = B.x;
+    renderPos.referee.y = B.y;
+  }
   var spr = spriteFrameFor(fake, t);
   var pr = project(renderPos.referee.x, renderPos.referee.y);
   var dw = 16 * pr.s * 1.9, dh = 24 * pr.s * 1.9;
@@ -2198,7 +2258,11 @@ function showingCutscene() {
 }
 function skipCutscene() {
   var a = showingCutscene();
-  if (a) { ui.cutSkipId = cutActionId(a); return true; }
+  if (a) {
+    ui.cutSkipId = cutActionId(a);
+    sendInput({ dismissOverlay: true });
+    return true;
+  }
   return false;
 }
 function drawCutin() {

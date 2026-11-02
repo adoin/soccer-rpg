@@ -145,10 +145,27 @@ function looseChasers(players, ball, perTeam) {
   return ids;
 }
 
-// 自由球拾取。高度不对的人进不了名单；两人贴身再比预判+第一脚。
+// 高球落点。球还在上升或离地时，用来判断谁才站在落点附近。
+function loftedLand(ball) {
+  var z = ball.z || 0;
+  var vz = ball.vz || 0;
+  if (z < 0.35 && Math.abs(vz) < 1.2) return null;
+  var g = 9.81;
+  var disc = vz * vz + 2 * g * z;
+  var t = (vz + Math.sqrt(Math.max(0, disc))) / g;
+  if (!(t > 0)) return null;
+  return {
+    x: (ball.x || 0) + (ball.vx || 0) * t,
+    y: (ball.y || 0) + (ball.vy || 0) * t,
+    t: t,
+  };
+}
+
+// 自由球拾取。高度不对的人进不了名单；高球只有贴着落点、或球还很低时贴着球的人能争。
 function claim(match) {
   var ball = match.ball;
   var recv = ball.receive && match.now < ball.receive.until ? ball.receive.id : null;
+  var land = loftedLand(ball);
   var cands = [];
   for (var i = 0; i < match.players.length; i++) {
     var p = match.players[i];
@@ -157,10 +174,16 @@ function claim(match) {
     if (match.now < (p.holdingUntil || 0)) continue;
     var dead = ball.deadTo;
     if (dead && match.now < dead.until && p.id === dead.id) continue;
-    var band = Ball.controlBand(ball.z || 0, p.pos === 'GK');
+    var inBox = p.pos === 'GK' && match.inPenaltyArea && match.inPenaltyArea(p.x, p.y, p.team);
+    var band = Ball.controlBand(ball.z || 0, p.pos === 'GK', inBox);
     if (!band) continue;
     var reach = band === 'foot' ? 0.95 : band === 'chest' ? 1.05 : 1.2;
     var d = Math.hypot(p.x - ball.x, p.y - ball.y);
+    if (land && land.t > 0.2) {
+      var dLand = Math.hypot(p.x - land.x, p.y - land.y);
+      var lowAtBall = (ball.z || 0) < 1.2 && d <= 1.15;
+      if (dLand > 2.6 && !lowAtBall) continue;
+    }
     if (d <= reach) cands.push({ p: p, d: d, band: band });
   }
   if (!cands.length) return null;
