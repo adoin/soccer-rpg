@@ -183,6 +183,8 @@ module.exports = {
   blockTargets: blockTargets,
   updateSwaps: updateSwaps,
   slotPoint: slotPoint,
+  separateTeammates: separateTeammates,
+  holdOffBall: holdOffBall,
   HOLD_BAR: HOLD_BAR,
   TRAP_BAR: TRAP_BAR,
   ANTI_BAR: ANTI_BAR,
@@ -345,7 +347,14 @@ function carrierAdjust(match, carrier) {
 
 // 门将：站位、近门柱、单刀、传中、扫荡都在 rules/gk.js。这里只做转发。
 function keeperTarget(match, p) {
-  return GKPos.position(match, p);
+  var t = GKPos.position(match, p);
+  var goalX = p.team === 'home' ? 0 : FIELD_W;
+  var inward = p.team === 'home' ? 1 : -1;
+  var along = (t.x - goalX) * inward;
+  if (along > 15.5) t.x = goalX + inward * 15.5;
+  if (along < 0.8) t.x = goalX + inward * 0.8;
+  t.y = clamp(t.y, FIELD_H / 2 - 16, FIELD_H / 2 + 16);
+  return t;
 }
 
 function nearestOpp(match, x, y, team) {
@@ -381,36 +390,100 @@ function slotDef(p, num) {
   return form.slots[num] || form.slots[String(num)] || { u: p.formU || 40, y: p.formY || 34, pos: p.pos, line: 'DM' };
 }
 
-// 整队平移：进攻时后腰线落在球后约 10 米，防守时约 16 米。宽度一起收放。
+// 整队平移：后卫线到前锋大约 36 米，整块跟着球横移。丢球后整块再退一截。
 function blockShift(match, team) {
   var form = formationOf(match.players.filter(function (p) { return p.team === team; })[0]);
   var carrier = match.ball.ownerId ? match.byId[match.ball.ownerId] : null;
   var attack = !!(carrier && carrier.team === team);
   var ballU = team === 'home' ? match.ball.x : (FIELD_W - match.ball.x);
-  var behind = attack ? 10 : 16;
-  var du = clamp(ballU - behind - form.refU, -16, 40);
-  if (match.mentality === 'attack') du += attack ? 4 : 1;
-  if (match.mentality === 'defend') du -= attack ? 1 : 4;
-  du = clamp(du, -18, 42);
-  var width = attack ? 1 : 0.82;
-  var yShift = clamp((match.ball.y - FIELD_H / 2) * (attack ? 0.42 : 0.28), -8, 8);
-  return { du: du, width: width, yShift: yShift, attack: attack, refU: form.refU };
+  var depth = 36;
+  var front = attack ? ballU + 8 : ballU - 12;
+  var back = front - depth;
+  if (match._transitionDef === team && match.now < (match._transitionUntil || 0)) {
+    front -= 6; back -= 6;
+  }
+  if (!attack) front = Math.min(front, ballU - 3);
+  if (front < back + 11) back = front - 11;
+  if (back < 3) {
+    back = 3;
+    if (!attack) front = Math.min(Math.max(front, back + 11), ballU - 2);
+  }
+  if (front > 98) { front = 98; back = Math.max(10, front - depth); }
+  if (match.mentality === 'attack') { back += attack ? 2 : 0; front += attack ? 2 : 0; }
+  if (match.mentality === 'defend') { back -= 2; front -= 2; }
+  back = clamp(back, 4, 62);
+  if (!attack) front = Math.min(front, ballU - 2);
+  if (front < back + 10) back = Math.max(4, front - 12);
+  front = clamp(front, back + 10, 100);
+  var width = attack ? 1.02 : 0.9;
+  var yShift = clamp((match.ball.y - FIELD_H / 2) * (attack ? 0.34 : 0.22), -7, 7);
+  return { du: 0, back: back, front: front, depth: front - back, width: width, yShift: yShift, attack: attack, refU: form.refU };
 }
 
 // 某个槽位在本队坐标系下的场地坐标（已含整块平移）。
+var LINE_OFF = { GK: -10, DF: 0, DM: 12, AM: 24, ST: 36 };
+
 function slotPoint(p, num, shift) {
   var slot = slotDef(p, num == null ? p.num : num);
-  var line = LINE_U[slot.line] || LINE_U.DM;
+  var back = shift.back != null ? shift.back : 22;
+  var span = shift.front != null ? Math.max(8, shift.front - back) : 36;
+  var baseOff = LINE_OFF[slot.line] != null ? LINE_OFF[slot.line] : 12;
+  var off = baseOff * (span / 36);
   var u, y;
   if (slot.line === 'GK' || slot.pos === 'GK') {
-    u = clamp(slot.u + shift.du * 0.08, line.min, line.max);
-    y = clamp(FIELD_H / 2 + (matchBallY(shift) - FIELD_H / 2) * 0.12, 28, 40);
+    u = clamp(back + off, 2, 14);
+    y = clamp(FIELD_H / 2 + (matchBallY(shift) - FIELD_H / 2) * 0.1, 28, 40);
   } else {
-    u = clamp(slot.u + shift.du, line.min, line.max);
-    y = clamp(FIELD_H / 2 + (slot.y - FIELD_H / 2) * shift.width + shift.yShift, 6, FIELD_H - 6);
+    u = clamp(back + off, 4, 100);
+    y = clamp(FIELD_H / 2 + (slot.y - FIELD_H / 2) * (shift.width || 1) + (shift.yShift || 0), 5, FIELD_H - 5);
   }
   var x = p.team === 'home' ? u : FIELD_W - u;
   return { x: clamp(x, 2, FIELD_W - 2), y: y, u: u };
+}
+
+// 除了持球人和上抢的人，其他人不要挤进球的 10 米圈。
+function holdOffBall(players, ball, skip) {
+  if (!ball) return;
+  for (var i = 0; i < players.length; i++) {
+    var p = players[i];
+    if (p.sentOff || p.pos === 'GK') continue;
+    if (skip && skip[p.id]) continue;
+    var dx = p.x - ball.x, dy = p.y - ball.y;
+    var d = Math.sqrt(dx * dx + dy * dy);
+    if (!(d < 10) || d < 0.15) continue;
+    var push = Math.min(1.6, 10.4 - d);
+    p.x += dx / d * push;
+    p.y += dy / d * push;
+    p.x = clamp(p.x, 1.2, FIELD_W - 1.2);
+    p.y = clamp(p.y, 2, FIELD_H - 2);
+  }
+}
+
+// 队友之间保持大约 9 米。这是转向力，不是 0.92 米的身体碰撞。
+function separateTeammates(players) {
+  var MIN = 9;
+  var list = [];
+  for (var i = 0; i < players.length; i++) {
+    if (!players[i].sentOff && players[i].pos !== 'GK') list.push(players[i]);
+  }
+  for (var a = 0; a < list.length; a++) {
+    for (var b = a + 1; b < list.length; b++) {
+      var p = list[a], q = list[b];
+      if (p.team !== q.team) continue;
+      var dx = q.x - p.x, dy = q.y - p.y;
+      var d = Math.sqrt(dx * dx + dy * dy);
+      if (d >= MIN) continue;
+      if (d < 0.05) { dx = 1; dy = 0; d = 1; }
+      var push = Math.min(0.55, (MIN - d) * 0.08);
+      var ux = dx / d, uy = dy / d;
+      p.x -= ux * push; p.y -= uy * push;
+      q.x += ux * push; q.y += uy * push;
+      p.x = clamp(p.x, 1.2, FIELD_W - 1.2);
+      q.x = clamp(q.x, 1.2, FIELD_W - 1.2);
+      p.y = clamp(p.y, 2, FIELD_H - 2);
+      q.y = clamp(q.y, 2, FIELD_H - 2);
+    }
+  }
 }
 
 function matchBallY(shift) {
@@ -424,6 +497,7 @@ function blockTargets(match, team) {
   match.players.forEach(function (p) {
     if (p.team !== team || p.sentOff) return;
     out[p.id] = slotPoint(p, p.cover || p.num, shift);
+    p._anchor = out[p.id];
   });
   return out;
 }
@@ -557,11 +631,15 @@ function attackSupportTargets(match, carrier) {
       spMul = 1;
       p._task = 'support';
     }
+    if ((p.num === 2 || p.num === 5) && shift.attack) {
+      var overlap = p.team === 'home' ? 6 : -6;
+      tx = clamp(tx + overlap, 8, FIELD_W - 8);
+    }
     var dx = tx - carrier.x, dy = ty - carrier.y;
     var dd = Math.sqrt(dx * dx + dy * dy);
-    if (dd < 9 && dd > 0.01 && line !== 'DF' && p.pos !== 'DF') {
-      tx = carrier.x + dx / dd * 9.2;
-      ty = carrier.y + dy / dd * 9.2;
+    if (dd < 12 && dd > 0.05 && p.pos !== 'DF') {
+      tx = carrier.x + dx / dd * 12;
+      ty = carrier.y + dy / dd * 12;
     }
     out[p.id] = {
       x: clamp(tx, 3, FIELD_W - 3),

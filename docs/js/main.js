@@ -420,6 +420,7 @@ function project(x, y) {
 // ---------------- 输入 ----------------
 cv.addEventListener('click', function (e) {
   // ★ 全屏特写显示时：点任意位置只关闭特写（根治特写排队，2026-10-11）
+  if (screen === 'game' && state && state.lastAction && state.lastAction.duel) { skipCutscene(); sendInput({ dismissOverlay: true }); return; }
   if (screen === 'game' && typeof showingCutscene === 'function' && showingCutscene()) { skipCutscene(); return; }
   var pt = canvasPoint(e.clientX, e.clientY);
   var mx = pt.x, my = pt.y;
@@ -437,6 +438,7 @@ document.addEventListener('keydown', function (e) {
   var held = (e.key || '').toLowerCase();
   if (held) keysDown[held] = true;
   if (e.key === 'Escape' && screen === 'game') {
+    if (state && state.lastAction && state.lastAction.duel) { sendInput({ dismissOverlay: true }); return; }
     if (headMenuOpen()) { headMenuBack(); return; } // 头顶菜单内：Esc = 返回上一步
     if (showingCutscene()) { skipCutscene(); return; } // ★ 全屏特写：Esc 只关闭特写
     if (!ui.overlay) togglePause();
@@ -451,6 +453,9 @@ document.addEventListener('keydown', function (e) {
   if (headMenuOpen() && headMenuKey(e)) return; // 头顶菜单打开时接管键盘（方向键/回车/空格选，Esc 返回）
   var k = (e.key || '').toLowerCase();
   // ★ 全屏特写显示时：Enter/空格只关闭特写，不触发下层动作（根治特写排队打断心流，2026-10-11）
+  if (state && state.lastAction && state.lastAction.duel && (k === 'enter' || k === ' ' || k === 'e' || k === 'q')) {
+    sendInput({ dismissOverlay: true }); e.preventDefault(); return;
+  }
   if (showingCutscene() && (k === 'enter' || k === ' ')) { skipCutscene(); e.preventDefault(); return; }
   if ([' ', 'tab', 'w', 'a', 's', 'd', 'j', 'k', 'l'].indexOf(k) >= 0) e.preventDefault();
   if (e.repeat) return;
@@ -1513,6 +1518,7 @@ function drawGame(t) {
   drawBackground();
   drawSurround();
   drawPitch();
+  if (DEBUG) drawAnchors();
   drawGoals();
   drawActors(t);
   drawReferee(t);
@@ -2304,9 +2310,49 @@ function skipCutscene() {
   }
   return false;
 }
+function drawAnchors() {
+  if (!state) return;
+  state.players.forEach(function (p) {
+    if (!p.anchor) return;
+    var pr = project(p.anchor.x, p.anchor.y);
+    ctx.beginPath();
+    ctx.strokeStyle = p.team === 'home' ? 'rgba(80,160,255,0.85)' : 'rgba(255,90,90,0.85)';
+    ctx.lineWidth = 2;
+    ctx.arc(pr.x, pr.y, 7, 0, Math.PI * 2);
+    ctx.stroke();
+  });
+}
+
+// duel-settle-v1
+function drawDuelSettlement(a) {
+  var d = a.duel;
+  if (!d) return;
+  var scale = paintScale();
+  var size = Math.max(18, Math.ceil(15 / scale));
+  var small = Math.max(16, Math.ceil(14 / scale));
+  var w = Math.min(760, W - 80);
+  var h = 250;
+  var x = (W - w) / 2;
+  var y = 150;
+  ctx.fillStyle = 'rgba(6,8,16,0.94)';
+  rr(x, y, w, h, 12); ctx.fill();
+  ctx.strokeStyle = '#ffd94a'; ctx.lineWidth = 3;
+  rr(x, y, w, h, 12); ctx.stroke();
+  text(d.atkLabel + ' 对 ' + d.defLabel, x + 20, y + 28, size + 2, '#ffd94a', 'left', true);
+  text(d.result || '', x + w - 18, y + 28, size, d.result && d.result.indexOf('成功') >= 0 ? '#9dffb0' : '#ffb0b0', 'right', true);
+  var atkLine = (d.atkAttrs || []).map(function (b) { return b.k + ' ' + b.v; }).join('  ');
+  var defLine = (d.defAttrs || []).map(function (b) { return b.k + ' ' + b.v; }).join('  ');
+  text(d.atkName + '  ' + atkLine, x + 20, y + 78, small, '#d6e6ff', 'left', true);
+  text('摇摆 ' + d.swingA + '  体能 ' + d.fatA + '  →  ' + d.aScore, x + 20, y + 112, small, '#ffffff', 'left');
+  text(d.defName + '  ' + defLine + (d.support ? '  +' + d.support + '协防' : ''), x + 20, y + 156, small, '#ffd0d0', 'left', true);
+  text('摇摆 ' + d.swingD + '  体能 ' + d.fatD + '  →  ' + d.dScore, x + 20, y + 190, small, '#ffffff', 'left');
+  text('点按或取消关闭', x + w - 18, y + h - 22, Math.max(14, small - 2), '#9fb4dd', 'right');
+}
+
 function drawCutin() {
   if (!state || !state.lastAction) return;
   var a = state.lastAction;
+  if (a.duel) { drawDuelSettlement(a); return; }
   // ★ 漫画分镜优先。图还没到就退回旧的 webp 演出。
   if (a.cut && typeof drawMangaCutin === 'function') {
     if (ui.cutSkipId === cutActionId(a)) {

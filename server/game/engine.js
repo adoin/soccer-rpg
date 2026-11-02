@@ -34,6 +34,7 @@ var Shield = require('./rules/shield');
 var Switch = require('./rules/switch');
 var GK = require('./rules/gk');
 var Moves = require('../../shared/moves');
+var Duels = require('../../shared/duels');
 
 var FIELD = C.FIELD;
 var PITCH = C.PITCH;
@@ -69,16 +70,26 @@ Match.prototype.setAction = function (a) {
     goal: 1, foul: 1, offside: 1, throwin: 1, corner: 1,
     goalkick: 1, penalty: 1, halftime: 1, fulltime: 1,
   };
-  if (freezeKind[a.kind]) {
+  if (freezeKind[a.kind] || a.duel) {
     var ms = (a.until || 0) - Date.now();
     if (!(ms > 0)) ms = 1600;
     this.overlayUntil = this.now + ms;
+    if (typeof window !== 'undefined' || this.forceSettle) this.overlayUntilWall = Date.now() + ms;
   }
   return a;
 };
 
 Match.prototype.overlayActive = function () {
+  if (this.overlayUntilWall && Date.now() < this.overlayUntilWall) return true;
   return !!(this.overlayUntil && this.now < this.overlayUntil);
+};
+
+// 菜单、结算、暂停共用这一处：裁判、球员、球和比赛时钟都不走。
+Match.prototype.worldFrozen = function () {
+  if (this.paused || this.decision) return true;
+  if (this.overlayUntilWall && Date.now() < this.overlayUntilWall) return true;
+  if ((typeof window === 'undefined') && this.overlayUntil && this.now < this.overlayUntil && !this.forceSettle) return false;
+  return false;
 };
 
 // ★ 被动决策重触发冷却（毫秒）：一次决策结算 / 哨声恢复 / 拦截 / 解围之后，
@@ -664,12 +675,113 @@ Match.prototype.moveFlightPlayers = function (pf, dt) {
   });
 };
 
+Match.prototype.releaseFreeze = function () {
+  this.overlayUntilWall = 0;
+  this.overlayUntil = this.now;
+  var job = this.pendingOutcome;
+  this.pendingOutcome = null;
+  if (job && job.apply) job.apply.call(this);
+  if (this.phase === 'goal' || this.phase === 'whistle' || this.phase === 'halftime' || this.phase === 'penalty') {
+    this.phaseUntil = Math.min(this.phaseUntil || this.now, this.now);
+  }
+};
+Match.prototype.finishSettlement = function () { this.releaseFreeze(); };
+
+Match.prototype.settleContact = function (p, def, atkId, rate, dir) {
+  var extras = [];
+  this.opponentsOf(p.team).forEach(function (q) {
+    if (q.id === def.id || q.sentOff || q.pos === 'GK') return;
+    if (dist(q, p) <= Moves.CHALLENGE_RANGE) extras.push(q);
+  });
+  var forced = rate >= 99 ? true : null;
+  var duel = Duels.resolve(this.rng, p, def, atkId, 'mark', extras, forced);
+  var win = duel.attackWins;
+  var selfD = this;
+  return this.holdForSettlement({
+    kind: 'duel',
+    label: duel.view.atkLabel,
+    playerName: p.name,
+    team: p.team,
+    success: win,
+    text: win
+      ? (p.name + ' 的' + duel.view.atkLabel + '对上 ' + def.name + '。')
+      : (def.name + ' 看住了 ' + p.name + ' 的' + duel.view.atkLabel + '。'),
+    duel: duel.view,
+    until: Date.now() + 2200,
+  }, function () {
+    if (win) {
+      p.x = clamp(def.x + 7 * dir, 2, FIELD.W - 2);
+      p.y = clamp(def.y + (selfD.rng() - 0.5) * 4, 2, FIELD.H - 2);
+      def.beatenUntil = selfD.now + 1800;
+      selfD.setAction({
+        kind: atkId, label: duel.view.atkLabel, playerName: p.name, team: p.team, success: true,
+        cut: def.pos === 'GK' ? 'round-gk' : 'dribble-win',
+        roles: selfD.roleLooks({ attacker: p, defender: def }),
+        text: p.name + ' 用' + duel.view.atkLabel + '晃过了 ' + def.name + '！',
+        until: Date.now() + 1800,
+      });
+    } else {
+      selfD.ball.ownerId = def.id;
+      selfD.ball.x = def.x; selfD.ball.y = def.y;
+      selfD.setAction({
+        kind: 'tackle', label: '抢断', playerName: def.name, team: def.team, success: true,
+        cut: 'tackle-win',
+        roles: selfD.roleLooks({ tackler: def, dribbler: p, attacker: p, defender: def }),
+        text: def.name + ' 断下了 ' + p.name + ' 的' + duel.view.atkLabel + '。',
+        until: Date.now() + 1800,
+      });
+    }
+  });
+};
+
+// 先出结算，画面结束才真正改位置。浏览器里会停住；节点测试里立刻结算，避免旧测试空等。
+Match.prototype.presentContest = function (defender, attackerId, kind, result, apply) {
+  var attacker = this.byId[attackerId];
+  var duel = Duels.resolve(this.rng, attacker || defender, defender, kind === 'shot' ? 'shot-driven' : 'pass', 'tackle', [], result === 'clean' ? false : null);
+  duel.view.result = result === 'clean' ? '断下' : '挡出';
+  return this.holdForSettlement({
+    kind: 'duel',
+    label: result === 'clean' ? '断球' : '挡出',
+    playerName: defender.name,
+    team: defender.team,
+    success: true,
+    text: defender.name + (result === 'clean' ? ' 断下了球。' : ' 把球挡开。'),
+    duel: duel.view,
+    until: Date.now() + 1600,
+  }, apply);
+};
+
+Match.prototype.holdForSettlement = function (action, apply) {
+  action.until = action.until || (Date.now() + 2200);
+  this.setAction(action);
+  var live = (typeof window !== 'undefined') || this.forceSettle;
+  if (live) {
+    this.overlayUntilWall = action.until;
+    this.pendingOutcome = { apply: apply };
+    return this.lastAction;
+  }
+  this.overlayUntil = this.now;
+  this.overlayUntilWall = 0;
+  if (apply) apply.call(this);
+  return this.lastAction;
+};
+
 Match.prototype.tick = function () {
   this.ensureControl();
-  if (this.paused) return;
+  if (this.overlayUntilWall && Date.now() >= this.overlayUntilWall) this.releaseFreeze();
+  if (this.decision && this.decision.kind === 'gk-distribute') {
+    var gkWait = this.byId[this.decision.playerId];
+    if (gkWait && !gkWait._gkWall) gkWait._gkWall = Date.now() + 6000;
+    if (gkWait && gkWait._gkWall && Date.now() >= gkWait._gkWall) {
+      gkWait._gkWall = 0;
+      this.keeperDistribute(gkWait, 'gk-punt');
+    }
+  }
+  if (this.paused || this.decision) return;
+  if (this.overlayUntilWall && Date.now() < this.overlayUntilWall) return;
   var dt = this.config.tickMs / 1000;
-  // 结算画面还在时，只走时钟。不开球、不跑 AI、不自动大脚。
-  if (this.overlayActive()) {
+  // 节点里的旧结算遮罩仍只推进模拟钟，场上不动。浏览器改走墙钟，钟也停。
+  if (typeof window === 'undefined' && !this.forceSettle && this.overlayUntil && this.now < this.overlayUntil) {
     this.now += dt * 1000;
     return;
   }
@@ -717,8 +829,13 @@ Match.prototype.tick = function () {
         if (blk) {
           this.lastInterceptK = blk.k; // 测试用
           var bres = Intercept.resolveContest(this, blk, sf.ballSpeed, 'shot');
-          if (bres === 'clean') { this.interceptClean(blk.player, 'shot'); break; }
-          if (bres === 'deflect') { this.interceptDeflect(blk, sf.ballSpeed); break; }
+          if (bres === 'clean' || bres === 'deflect') {
+            this.presentContest(blk.player, sf.shooterId, 'shot', bres, function () {
+              if (bres === 'clean') this.interceptClean(blk.player, 'shot');
+              else this.interceptDeflect(blk, sf.ballSpeed);
+            });
+            break;
+          }
           blk.player.beatenUntil = this.now + 700;
         }
         var kp = this.byId[sf.keeperId];
@@ -760,8 +877,13 @@ Match.prototype.tick = function () {
         if (hit) {
           this.lastInterceptK = hit.k; // 测试用：记录拦截发生时的飞行进度
           var res = Intercept.resolveContest(this, hit, pf.ballSpeed, 'pass');
-          if (res === 'clean') { this.interceptClean(hit.player, 'pass'); break; }
-          if (res === 'deflect') { this.interceptDeflect(hit, pf.ballSpeed); break; }
+          if (res === 'clean' || res === 'deflect') {
+            this.presentContest(hit.player, pf.passerId, 'pass', res, function () {
+              if (res === 'clean') this.interceptClean(hit.player, 'pass');
+              else this.interceptDeflect(hit, pf.ballSpeed);
+            });
+            break;
+          }
           hit.player.beatenUntil = this.now + 700; // 扑空：踉跄一下
         }
         this.moveFlightPlayers(pf, dt);
@@ -1159,6 +1281,18 @@ Match.prototype.simulate = function (dt) {
     this._lastCarrierId = carrierId;
     if (carrier) {
       carrier._gotBallAt = this.now; // ★ 持球时间：造越位触发判定用
+      if (this._possessTeam && this._possessTeam !== carrier.team) {
+        this._transitionUntil = this.now + 2200;
+        this._transitionDef = this._possessTeam;
+        var nearest = null, nd = 1e9;
+        this.players.forEach(function (q) {
+          if (q.team !== carrier.team || q.sentOff || q.pos === 'GK') return;
+          var d = dist(q, carrier);
+          if (d < nd) { nd = d; nearest = q; }
+        });
+        this._counterId = nearest ? nearest.id : null;
+      }
+      this._possessTeam = carrier.team;
       if (carrier.team === 'home') this.autoSwitchToCarrier(carrier.id);
       else this.autoSwitchToDefender();
     }
@@ -1174,7 +1308,7 @@ Match.prototype.simulate = function (dt) {
       return;
     }
     var chaseIds = {};
-    Receive.looseChasers(this.players, this.ball, 3).forEach(function (id) { chaseIds[id] = true; });
+    Receive.looseChasers(this.players, this.ball, 1).forEach(function (id) { chaseIds[id] = true; });
     var recv = this.ball.receive;
     if (recv && this.now < recv.until && recv.id && this.byId[recv.id] && !this.byId[recv.id].sentOff) {
       chaseIds[recv.id] = 'recv';
@@ -1214,6 +1348,7 @@ Match.prototype.simulate = function (dt) {
       this.ball.restartExempt = null;
       this.looseBallCut(bestP, zClaim);
     }
+    Behavior.separateTeammates(this.players);
     return;
   }
 
@@ -1257,9 +1392,14 @@ Match.prototype.simulate = function (dt) {
   //   - lineTargets：防线落位目标（纪律/造越位协同驱动）
   //   - snapAtt：进攻方视角的越位快照（跑位时机/收步决策用）
   var pressing = {};
-  sortedOpp.forEach(function (q, idx) {
-    if (idx < 2 && self.now >= q.beatenUntil && self.now >= q.frozenUntil) pressing[q.id] = true;
-  });
+  var countering = self._transitionDef && self.now < (self._transitionUntil || 0) && carrier.team !== self._transitionDef;
+  if (countering) {
+    if (self._counterId) pressing[self._counterId] = true;
+  } else {
+    sortedOpp.forEach(function (q, idx) {
+      if (idx === 0 && self.now >= q.beatenUntil && self.now >= q.frozenUntil) pressing[q.id] = true;
+    });
+  }
   // 全队按 4-2-3-1 槽位整体平移。只有 pressing 里的 1～2 人离开阵型去抢球。
   Behavior.updateSwaps(self, 'home', pressing, carrier.id);
   Behavior.updateSwaps(self, 'away', pressing, carrier.id);
@@ -1291,7 +1431,7 @@ Match.prototype.simulate = function (dt) {
       // ★ 2026-10-09 用户：全员狂动不像足球——落位是慢跑，只有上抢才冲刺
       var rank = sortedOpp.indexOf(p);
       var aggr = FM.aggr(p) / 100, defAb = FM.defend(p) / 100; // 0-1（FM 能力值×5 后为 5-100）
-      if (rank === 0 && !beaten && !pFrozen) {
+      if ((pressing[p.id] || rank === 0) && !beaten && !pFrozen && !(countering && !pressing[p.id])) {
         // ★ 护球不是定身：除非身体被完全压制且侵略性极低，否则仍然选择上抢
         var chDec = Shield.challengeDecision(p, carrier);
         if (!chDec.challenge) {
@@ -1311,10 +1451,10 @@ Match.prototype.simulate = function (dt) {
         if (self.now - (p._pressSince || 0) < 250) sp *= 0.6;
         chaseCount++;
         }
-      } else if (rank === 1 && !beaten && !pFrozen) {
+      } else if (rank === 1 && !countering && !beaten && !pFrozen) {
         // ★ 协防：防守能力高的站位更深更稳，慢跑到位（之前 0.8 冲刺，一过人就撞上）
         var gx2 = carrier.team === 'home' ? FIELD.W : 0;
-        var depth = 0.55 + (1 - defAb) * 0.15; // 能力差的站位靠前（容易失位）
+        var depth = 0.62 + (1 - defAb) * 0.1;
         tx = carrier.x + (gx2 - carrier.x) * depth;
         ty = (carrier.y + FIELD.H / 2) / 2;
         sp = self.playerSpeed(p, false) * 0.5;
@@ -1358,6 +1498,11 @@ Match.prototype.simulate = function (dt) {
     }
     self.updateEnergy(p, dt);
   });
+  Behavior.separateTeammates(this.players);
+  var skipNear = {};
+  skipNear[carrier.id] = true;
+  Object.keys(pressing).forEach(function (id) { skipNear[id] = true; });
+  Behavior.holdOffBall(this.players, this.ball, skipNear);
 
   // ★ 护球进行中：贴身的防守人过了冷却就再做一次对抗（捅/犯规/对挤），不会站着看
   if (this.now < (carrier.shieldUntil || 0) && sortedOpp.length) {
@@ -1704,9 +1849,10 @@ Match.prototype.resolveAction = function (p, commandId, rate, params) {
         break;
       }
       commandId = 'dribble';
-      rate = Math.min(rate, 72);
+      this._atkSkill = 'burst';
+      if (rate < 99) rate = Math.min(rate, 72);
       success = roll < rate;
-      // 贴身时突然加速走低威力突破，下面跟突破同一套结算。
+      // 贴身时突然加速走自己的权重，下面跟突破同一套结算。
     }
     case 'dribble': {
       var def = near.player;
@@ -1717,42 +1863,9 @@ Match.prototype.resolveAction = function (p, commandId, rate, params) {
         success = true;
         break;
       }
-      if (success) {
-        p.x = clamp(def.x + 7 * dir, 2, FIELD.W - 2);
-        p.y = clamp(def.y + (this.rng() - 0.5) * 6, 2, FIELD.H - 2);
-        // ★ 全屏演出期间引擎不停表：踉跄时长盖住演出，否则演完用户就看不到了
-        def.beatenUntil = this.now + 2000 + CUT_OVERLAY_MS;
-        text = p.name + ' 用突破晃过了 ' + def.name + '！';
-        cut = def.pos === 'GK' ? 'round-gk' : 'dribble-win';
-        roles = def.pos === 'GK'
-          ? this.roleLooks({ striker: p, keeper: def, attacker: p, defender: def })
-          : this.roleLooks({ attacker: p, defender: def });
-      } else {
-        // ★ 抢断对决：干净抢断 / 犯规 / 被过掉（基于数值随机）；上抢的防守方消耗体能
-        var t = Foul.judgeTackle(this, def, p, {
-          fromBehind: false,
-          speedHigh: true,
-          attackPromising: Foul.distGoal(p, p.team) < 30,
-        });
-        def.stamina = Math.max(0, def.stamina - C.STAMINA.TACKLE_COST);
-        if (t.outcome === 'clean') {
-          this.ball.ownerId = def.id;
-          text = p.name + ' 的突破被 ' + def.name + ' 干净地断下！';
-          cut = 'tackle-win';
-          roles = this.roleLooks({ tackler: def, dribbler: p, attacker: p, defender: def });
-        } else if (t.outcome === 'beaten') {
-          def.beatenUntil = this.now + 2000 + CUT_OVERLAY_MS; // ★ 盖住全屏演出
-          p.x = clamp(def.x + 7 * dir, 2, FIELD.W - 2);
-          text = p.name + ' 强行抹过了 ' + def.name + '！';
-          cut = def.pos === 'GK' ? 'round-gk' : 'dribble-win';
-          roles = def.pos === 'GK'
-            ? this.roleLooks({ striker: p, keeper: def, attacker: p, defender: def })
-            : this.roleLooks({ attacker: p, defender: def });
-        } else {
-          return this.applyFoulResult(t.foul);
-        }
-      }
-      break;
+      var atkId = this._atkSkill || 'dribble';
+      this._atkSkill = null;
+      return this.settleContact(p, def, atkId, rate, dir);
     }
     case 'pass': {
       // ★ 多阶段传球：params{长/短,方向8向,脚法,高度,力量} → 预估落点 → 散布掷骰 → 球感修正
@@ -1902,11 +2015,25 @@ Match.prototype.resolveAction = function (p, commandId, rate, params) {
         else outcome = 'spill';
       } else outcome = 'goal';
       if (shotCtx.indirect && outcome === 'goal') outcome = 'wide';
-      this.startShotFlight(p, keeper, {
+      var shotDuel = keeper ? Duels.resolve(this.rng, p, keeper, (shotDef && shotDef.id) || 'shot-driven', 'gk', [], forced ? true : null) : null;
+      var selfShot = this;
+      var shotPack = {
         isSpecial: isSpecial, label: label, outcome: outcome,
         snap: osShot.snap, indirect: shotCtx.indirect,
+      };
+      if (!shotDuel) {
+        this.startShotFlight(p, keeper, shotPack);
+        return { kind: commandId, label: label, playerName: p.name, success: outcome === 'goal', pending: true, text: '' };
+      }
+      return this.holdForSettlement({
+        kind: 'duel', label: label, playerName: p.name, team: p.team,
+        success: outcome === 'goal',
+        text: p.name + ' 起脚，' + keeper.name + ' 迎上来。',
+        duel: shotDuel.view,
+        until: Date.now() + 1800,
+      }, function () {
+        selfShot.startShotFlight(p, keeper, shotPack);
       });
-      return { kind: commandId, label: label, playerName: p.name, success: outcome === 'goal', pending: true, text: '' };
     }
     case 'feint': {
       var d2 = near.player;
@@ -1917,37 +2044,7 @@ Match.prototype.resolveAction = function (p, commandId, rate, params) {
         success = true;
         break;
       }
-      if (success) {
-        d2.frozenUntil = this.now + 2500;
-        p.x = clamp(p.x + 3 * dir, 2, FIELD.W - 2);
-        text = p.name + ' 的假动作晃晕了 ' + d2.name + '！';
-        cut = 'feint-win';
-        roles = this.roleLooks({ attacker: p, defender: d2 });
-      } else {
-        // ★ 假动作被看穿：防守方上抢，同样走抢断对决；上抢消耗体能
-        var t2 = Foul.judgeTackle(this, d2, p, {
-          fromBehind: false,
-          speedHigh: false,
-          attackPromising: false,
-        });
-        d2.stamina = Math.max(0, d2.stamina - C.STAMINA.TACKLE_COST);
-        if (t2.outcome === 'clean') {
-          this.ball.ownerId = d2.id;
-          text = p.name + ' 的假动作被 ' + d2.name + ' 看穿并断下！';
-          cut = 'tackle-win';
-          roles = this.roleLooks({ tackler: d2, dribbler: p });
-        } else if (t2.outcome === 'beaten') {
-          d2.beatenUntil = this.now + 1500 + CUT_OVERLAY_MS; // ★ 盖住全屏演出
-          text = p.name + ' 的假动作没晃开 ' + d2.name + '，但顺势抹了过去！';
-          cut = d2.pos === 'GK' ? 'round-gk' : 'dribble-win';
-          roles = d2.pos === 'GK'
-            ? this.roleLooks({ striker: p, keeper: d2, attacker: p, defender: d2 })
-            : this.roleLooks({ attacker: p, defender: d2 });
-        } else {
-          return this.applyFoulResult(t2.foul);
-        }
-      }
-      break;
+      return this.settleContact(p, d2, 'feint', rate, dir);
     }
     case 'retreat': {
       p.retreatTarget = { x: clamp(p.x - 16 * dir, 6, FIELD.W - 6), y: FIELD.H / 2 };
@@ -3361,29 +3458,42 @@ Match.prototype.resolveDefSkill = function (defender, attacker, sk) {
   if (sk.strength) dPower += FM.v(defender, 'strength') * 0.35;
   var aPower = FM.dribble(attacker) * 0.45 + FM.v(attacker, 'balance') * 0.15;
   var pClean = clamp(0.55 + (dPower - aPower) * 0.02, 0.12, 0.92);
-  if (this.rng() < pClean) {
-    this.ball.ownerId = defender.id;
-    this.ball.x = defender.x;
-    this.ball.y = defender.y;
-    defender.beatenUntil = 0;
-    attacker.beatenUntil = this.now + 1400 + (sk.cut ? CUT_OVERLAY_MS : 0);
-    this.setAction({
-      kind: sk.id, label: sk.name, playerName: defender.name, team: defender.team,
-      success: true, cut: sk.cut,
-      roles: this.roleLooks({ defender: defender, attacker: attacker, tackler: defender, dribbler: attacker }),
-      text: defender.name + ' 使出' + sk.name + '，把 ' + attacker.name + ' 的球断了下来！',
-      until: Date.now() + CUT_OVERLAY_MS,
-    });
-    return this.lastAction;
-  }
-  defender.beatenUntil = this.now + 1600;
-  this.setAction({
-    kind: sk.id, label: sk.name, playerName: defender.name, team: defender.team,
-    success: false, cut: null,
-    text: attacker.name + ' 晃开了 ' + defender.name + ' 的' + sk.name + '。',
-    until: Date.now() + 1400,
+  var defId = sk.id || 'tackle';
+  var duelSk = Duels.resolve(this.rng, attacker, defender, 'dribble', defId, [], null);
+  var clean = !duelSk.attackWins;
+  if (sk.power >= 30) clean = true;
+  var selfSk = this;
+  return this.holdForSettlement({
+    kind: 'duel', label: sk.name, playerName: defender.name, team: defender.team,
+    success: clean, duel: duelSk.view,
+    text: clean
+      ? (defender.name + ' 的' + sk.name + '对上 ' + attacker.name + '。')
+      : (attacker.name + ' 躲开了 ' + defender.name + ' 的' + sk.name + '。'),
+    until: Date.now() + 2000,
+  }, function () {
+    if (clean) {
+      selfSk.ball.ownerId = defender.id;
+      selfSk.ball.x = defender.x;
+      selfSk.ball.y = defender.y;
+      defender.beatenUntil = 0;
+      attacker.beatenUntil = selfSk.now + 1400;
+      selfSk.setAction({
+        kind: sk.id, label: sk.name, playerName: defender.name, team: defender.team,
+        success: true, cut: sk.cut,
+        roles: selfSk.roleLooks({ defender: defender, attacker: attacker, tackler: defender, dribbler: attacker }),
+        text: defender.name + ' 使出' + sk.name + '，把 ' + attacker.name + ' 的球断了下来！',
+        until: Date.now() + 1800,
+      });
+    } else {
+      defender.beatenUntil = selfSk.now + 1600;
+      selfSk.setAction({
+        kind: sk.id, label: sk.name, playerName: defender.name, team: defender.team,
+        success: false, cut: null,
+        text: attacker.name + ' 晃开了 ' + defender.name + ' 的' + sk.name + '。',
+        until: Date.now() + 1400,
+      });
+    }
   });
-  return this.lastAction;
 };
 
 Match.prototype.considerDefSkill = function (carrier) {
@@ -3471,12 +3581,7 @@ Match.prototype.setInput = function (data) {
   c.dx = dz(data.dx); c.dy = dz(data.dy);
   c.sprint = !!data.sprint; c.slow = !!data.slow;
   c.stamp = this.now;
-  if (data.dismissOverlay && this.overlayActive()) {
-    this.overlayUntil = this.now;
-    if (this.phase === 'goal' || this.phase === 'whistle' || this.phase === 'halftime' || this.phase === 'penalty') {
-      this.phaseUntil = Math.min(this.phaseUntil || this.now, this.now);
-    }
-  }
+  if (data.dismissOverlay && (this.overlayActive() || this.pendingOutcome)) this.releaseFreeze();
   if (data.cancelMenu) this.cancelVoluntaryDecision();
   if (data.menu && this.phase === 'play') this.tryManualDecision(); // ★ E 键手动呼出决策菜单
   if (c.dx !== 0 || c.dy !== 0 || c.sprint || c.slow) c.activeStamp = this.now;
@@ -3585,6 +3690,7 @@ Match.prototype.serialize = function () {
         sentOff: !!p.sentOff,
         cover: p.cover || p.num,
         swapped: !!p.swapWith,
+        anchor: p._anchor ? { x: +p._anchor.x.toFixed(1), y: +p._anchor.y.toFixed(1) } : null,
       };
     }),
     restart: this.restart ? {
