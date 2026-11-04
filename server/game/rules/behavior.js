@@ -391,16 +391,26 @@ function slotDef(p, num) {
 }
 
 // 整队平移：后卫线到前锋大约 36 米，整块跟着球横移。丢球后整块再退一截。
+// 球权刚变的几秒里锚点锁在丢球那一下，不再跟着球滑。
+function shapeLock(match) {
+  var lock = match && match._shapeLock;
+  if (lock && match.now < lock.until) return lock;
+  return null;
+}
+
 function blockShift(match, team) {
   var form = formationOf(match.players.filter(function (p) { return p.team === team; })[0]);
   var carrier = match.ball.ownerId ? match.byId[match.ball.ownerId] : null;
-  var attack = !!(carrier && carrier.team === team);
-  var ballU = team === 'home' ? match.ball.x : (FIELD_W - match.ball.x);
+  var lock = shapeLock(match);
+  var ballX = lock ? lock.x : match.ball.x;
+  var ballY = lock ? lock.y : match.ball.y;
+  var attack = lock ? (lock.team === team) : !!(carrier && carrier.team === team);
+  var ballU = team === 'home' ? ballX : (FIELD_W - ballX);
   var depth = 36;
   var front = attack ? ballU + 8 : ballU - 12;
   var back = front - depth;
-  if (match._transitionDef === team && match.now < (match._transitionUntil || 0)) {
-    front -= 6; back -= 6;
+  if (!attack && match._transitionDef === team && match.now < (match._transitionUntil || 0)) {
+    front -= 4; back -= 4;
   }
   if (!attack) front = Math.min(front, ballU - 3);
   if (front < back + 11) back = front - 11;
@@ -416,7 +426,7 @@ function blockShift(match, team) {
   if (front < back + 10) back = Math.max(4, front - 12);
   front = clamp(front, back + 10, 100);
   var width = attack ? 1.02 : 0.9;
-  var yShift = clamp((match.ball.y - FIELD_H / 2) * (attack ? 0.34 : 0.22), -7, 7);
+  var yShift = clamp((ballY - FIELD_H / 2) * (attack ? 0.34 : 0.22), -7, 7);
   return { du: 0, back: back, front: front, depth: front - back, width: width, yShift: yShift, attack: attack, refU: form.refU };
 }
 
@@ -459,9 +469,9 @@ function holdOffBall(players, ball, skip) {
   }
 }
 
-// 队友之间保持大约 9 米。这是转向力，不是 0.92 米的身体碰撞。
+// 队友之间保持大约 8 米。这是转向力，不是 0.92 米的身体碰撞。
 function separateTeammates(players) {
-  var MIN = 9;
+  var MIN = 8;
   var list = [];
   for (var i = 0; i < players.length; i++) {
     if (!players[i].sentOff && players[i].pos !== 'GK') list.push(players[i]);
@@ -474,7 +484,7 @@ function separateTeammates(players) {
       var d = Math.sqrt(dx * dx + dy * dy);
       if (d >= MIN) continue;
       if (d < 0.05) { dx = 1; dy = 0; d = 1; }
-      var push = Math.min(0.55, (MIN - d) * 0.08);
+      var push = Math.min(1.15, (MIN - d) * 0.22);
       var ux = dx / d, uy = dy / d;
       p.x -= ux * push; p.y -= uy * push;
       q.x += ux * push; q.y += uy * push;
@@ -492,7 +502,8 @@ function matchBallY(shift) {
 
 function blockTargets(match, team) {
   var shift = blockShift(match, team);
-  shift._ballY = match.ball.y;
+  var lock = shapeLock(match);
+  shift._ballY = lock ? lock.y : match.ball.y;
   var out = {};
   match.players.forEach(function (p) {
     if (p.team !== team || p.sentOff) return;
@@ -512,7 +523,8 @@ function updateSwaps(match, team, pressing, carrierId) {
   if (match.autoSwap === false) return;
   pressing = pressing || {};
   var shift = blockShift(match, team);
-  shift._ballY = match.ball.y;
+  var lockY = shapeLock(match);
+  shift._ballY = lockY ? lockY.y : match.ball.y;
   var mates = match.players.filter(function (p) {
     return p.team === team && !p.sentOff && p.pos !== 'GK';
   });
@@ -583,7 +595,8 @@ function updateSwaps(match, team, pressing, carrierId) {
 function attackSupportTargets(match, carrier) {
   if (!carrier) return {};
   var shift = blockShift(match, carrier.team);
-  shift._ballY = match.ball.y;
+  var lockY = shapeLock(match);
+  shift._ballY = lockY ? lockY.y : match.ball.y;
   var attackU = carrier.team === 'home' ? carrier.x : (FIELD_W - carrier.x);
   var out = {};
   match.players.forEach(function (p) {

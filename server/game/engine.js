@@ -658,21 +658,36 @@ Match.prototype.interceptDeflect = function (hit, ballSpeed) {
 //   门将按 Behavior 选位；进攻方其余人向落点方向移动接应。
 Match.prototype.moveFlightPlayers = function (pf, dt) {
   var self = this;
+  Behavior.updateSwaps(self, 'home', {}, null);
+  Behavior.updateSwaps(self, 'away', {}, null);
+  var shapeH = Behavior.blockTargets(self, 'home');
+  var shapeA = Behavior.blockTargets(self, 'away');
+  var chaser = null, cd = 1e9;
+  this.players.forEach(function (p) {
+    if (p.sentOff || p.team === pf.team || p.pos === 'GK') return;
+    var d = dist(p, self.ball);
+    if (d < cd) { cd = d; chaser = p; }
+  });
   this.players.forEach(function (p) {
     if (p.sentOff) return;
     if (self.now < p.frozenUntil) { p._vx = 0; p._vy = 0; return; }
     if (p.id === pf.receiverId) {
       var runTo = Receive.flightRunTarget(pf, p);
       self.moveToward(p, runTo.x, runTo.y, self.playerSpeed(p, true), dt);
-    } else if (p.team !== pf.team && p.pos !== 'GK') {
-      self.moveToward(p, self.ball.x, self.ball.y, self.playerSpeed(p, true) * 0.9, dt);
     } else if (p.pos === 'GK') {
       self.keeperStep(p, dt);
+    } else if (chaser && p.id === chaser.id) {
+      self.moveToward(p, self.ball.x, self.ball.y, self.playerSpeed(p, true) * 0.9, dt);
     } else {
-      self.moveToward(p, (p.x + pf.x1) / 2, (p.y + pf.y1) / 2, self.playerSpeed(p, false) * 0.6, dt);
+      var shape = p.team === 'home' ? shapeH : shapeA;
+      var lt = shape[p.id];
+      var tx = lt ? lt.x : p.hx;
+      var ty = lt ? lt.y : p.hy;
+      self.recoverToward(p, tx, ty, dt);
     }
     self.updateEnergy(p, dt);
   });
+  Behavior.separateTeammates(this.players);
 };
 
 Match.prototype.releaseFreeze = function () {
@@ -1126,6 +1141,19 @@ Match.prototype.keeperStep = function (p, dt) {
   p._gkCross = kt.crossAct || null;
 };
 
+// 丢球后回位：在正常加速之外每拍再补一小步，人不会在锚点外面磨蹭整整 5 秒。
+Match.prototype.recoverToward = function (p, tx, ty, dt) {
+  this.moveToward(p, tx, ty, this.playerSpeed(p, true), dt);
+  var dx = tx - p.x, dy = ty - p.y;
+  var d = Math.sqrt(dx * dx + dy * dy);
+  if (d < 0.35) return;
+  var step = Math.min(0.9, d * 0.2);
+  p.x += dx / d * step;
+  p.y += dy / d * step;
+  p.x = clamp(p.x, 1, FIELD.W - 1);
+  p.y = clamp(p.y, 1, FIELD.H - 1);
+};
+
 Match.prototype.moveToward = function (p, tx, ty, speed, dt) {
   var dx = tx - p.x, dy = ty - p.y;
   var d = Math.sqrt(dx * dx + dy * dy);
@@ -1262,6 +1290,26 @@ Match.prototype.updateEnergy = function (p, dt) {
   p.stamina = clamp(p.stamina, 0, p.maxStamina);
 };
 
+// shape-lock-v1：球权变化后 5 秒锁定锚点。只有丢球方最近的一个人反抢，其余人拉开回阵型。
+Match.prototype.notePossession = function (carrier) {
+  if (!carrier) return;
+  var prev = this._possessTeam;
+  if (prev && prev !== carrier.team && this.phase === 'play' && !this.restart) {
+    this._transitionUntil = this.now + 5000;
+    this._transitionDef = prev;
+    this._shapeLock = { until: this.now + 5000, x: this.ball.x, y: this.ball.y, team: carrier.team };
+    var nearest = null, nd = 1e9;
+    var self = this;
+    this.players.forEach(function (q) {
+      if (q.team !== prev || q.sentOff || q.pos === 'GK') return;
+      var d = dist(q, carrier);
+      if (d < nd) { nd = d; nearest = q; }
+    });
+    this._counterId = nearest ? nearest.id : null;
+  }
+  this._possessTeam = carrier.team;
+};
+
 Match.prototype.simulate = function (dt) {
   var self = this;
   var carrier = this.carrier();
@@ -1281,18 +1329,7 @@ Match.prototype.simulate = function (dt) {
     this._lastCarrierId = carrierId;
     if (carrier) {
       carrier._gotBallAt = this.now; // ★ 持球时间：造越位触发判定用
-      if (this._possessTeam && this._possessTeam !== carrier.team) {
-        this._transitionUntil = this.now + 2200;
-        this._transitionDef = this._possessTeam;
-        var nearest = null, nd = 1e9;
-        this.players.forEach(function (q) {
-          if (q.team !== carrier.team || q.sentOff || q.pos === 'GK') return;
-          var d = dist(q, carrier);
-          if (d < nd) { nd = d; nearest = q; }
-        });
-        this._counterId = nearest ? nearest.id : null;
-      }
-      this._possessTeam = carrier.team;
+      this.notePossession(carrier);
       if (carrier.team === 'home') this.autoSwitchToCarrier(carrier.id);
       else this.autoSwitchToDefender();
     }
@@ -1312,6 +1349,18 @@ Match.prototype.simulate = function (dt) {
     var recv = this.ball.receive;
     if (recv && this.now < recv.until && recv.id && this.byId[recv.id] && !this.byId[recv.id].sentOff) {
       chaseIds[recv.id] = 'recv';
+    }
+    if (this.now < (this._transitionUntil || 0)) {
+      var only = null, onlyD = 1e9;
+      this.players.forEach(function (p) {
+        if (!chaseIds[p.id] || p.sentOff || p.pos === 'GK' || chaseIds[p.id] === 'recv') return;
+        var d = dist(p, self.ball);
+        if (d < onlyD) { onlyD = d; only = p; }
+      });
+      var nextChase = {};
+      if (only) nextChase[only.id] = true;
+      if (recv && recv.id && chaseIds[recv.id]) nextChase[recv.id] = chaseIds[recv.id];
+      chaseIds = nextChase;
     }
     Behavior.updateSwaps(self, 'home', {}, null);
     Behavior.updateSwaps(self, 'away', {}, null);
@@ -1333,7 +1382,8 @@ Match.prototype.simulate = function (dt) {
       } else {
         var looseShape = p.team === 'home' ? looseHome : looseAway;
         var ls = looseShape[p.id] || { x: p.hx, y: p.hy };
-        self.moveToward(p, ls.x, ls.y, self.playerSpeed(p, false) * 0.7, dt);
+        if (self.now < (self._transitionUntil || 0)) self.recoverToward(p, ls.x, ls.y, dt);
+        else self.moveToward(p, ls.x, ls.y, self.playerSpeed(p, false) * 0.7, dt);
       }
       self.updateEnergy(p, dt);
     });
@@ -1349,6 +1399,7 @@ Match.prototype.simulate = function (dt) {
       this.looseBallCut(bestP, zClaim);
     }
     Behavior.separateTeammates(this.players);
+    if (this.now < (this._transitionUntil || 0)) Behavior.separateTeammates(this.players);
     return;
   }
 
@@ -1465,7 +1516,19 @@ Match.prototype.simulate = function (dt) {
         else { tx = p.hx; ty = p.hy; }
         sp = self.playerSpeed(p, false) * 0.5;
         if (beaten) sp *= 0.08; // ★ 被晃倒：原地踉跄定住
+        if (self.now < (self._transitionUntil || 0) && !beaten && !pFrozen) {
+          self.recoverToward(p, tx, ty, dt);
+          self.updateEnergy(p, dt);
+          return;
+        }
       }
+    } else if (self.now < (self._transitionUntil || 0)) {
+      var trA = shape[p.id];
+      tx = trA ? trA.x : p.hx;
+      ty = trA ? trA.y : p.hy;
+      self.recoverToward(p, tx, ty, dt);
+      self.updateEnergy(p, dt);
+      return;
     } else if (self.now < p.holdingUntil) {
       // ★ 行为层：急停收步中——原地不动，不参与这次进攻
       tx = p.x; ty = p.y;
@@ -1499,10 +1562,11 @@ Match.prototype.simulate = function (dt) {
     self.updateEnergy(p, dt);
   });
   Behavior.separateTeammates(this.players);
+  if (self.now < (self._transitionUntil || 0)) Behavior.separateTeammates(this.players);
   var skipNear = {};
   skipNear[carrier.id] = true;
   Object.keys(pressing).forEach(function (id) { skipNear[id] = true; });
-  Behavior.holdOffBall(this.players, this.ball, skipNear);
+  if (self.now >= (self._transitionUntil || 0)) Behavior.holdOffBall(this.players, this.ball, skipNear);
 
   // ★ 护球进行中：贴身的防守人过了冷却就再做一次对抗（捅/犯规/对挤），不会站着看
   if (this.now < (carrier.shieldUntil || 0) && sortedOpp.length) {
@@ -3753,6 +3817,9 @@ Match.prototype.debugPose = function (name) {
   if (name === 'burst') {
     this.players.forEach(function (p) { if (p.team === 'away') place(p.id, 96, p.y); });
     place('h10', 40, 34);
+    place('a4', 41.3, 34);
+    this.byId.a4.beatenUntil = 0;
+    this.byId.a4.frozenUntil = 0;
     this.ball.ownerId = 'h10'; this.ball.x = 41.2; this.ball.y = 34;
     this.phase = 'decision';
     this.decision = { playerId: 'h10', options: this.buildOptions(this.byId.h10) };

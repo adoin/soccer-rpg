@@ -10,6 +10,17 @@
 <div id="wrap">
   <canvas id="game" width="1280" height="720"></canvas>
 </div>
+<!-- touch-float-v1：摇杆和虚拟键在画布之上，左 40% 点哪哪就是摇杆 -->
+<div id="touch-ui" hidden>
+  <div id="stick-zone"></div>
+  <div id="stick-hint" aria-hidden="true"></div>
+  <div id="float-stick" hidden>
+    <div id="float-stick-base"></div>
+    <div id="float-stick-knob"></div>
+  </div>
+  <div id="vkey-layer"></div>
+  <div id="touch-debug" hidden></div>
+</div>
 <div id="rotate-prompt">
   <div class="rotate-phone"></div>
   <div class="rotate-title">请横屏</div>

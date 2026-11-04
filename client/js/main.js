@@ -411,10 +411,40 @@ function curViewW() {
 var SURROUND = 22;
 function cameraX() {
   var viewW = curViewW();
-  var minCx = -SURROUND + viewW * 0.5;
-  var maxCx = C.FIELD.W + SURROUND - viewW * 1.5;
+  var lvl = (typeof hmTop === 'function') ? hmTop() : null;
+  var aiming = !!(ui.hmenu && lvl && lvl.kind === 'aim' && ui.hmenu.pass);
+  var minCx = aiming ? -8 : (-SURROUND + viewW * 0.5);
+  var maxCx = aiming ? (C.FIELD.W + 8 - viewW * 0.45) : (C.FIELD.W + SURROUND - viewW * 1.5);
   if (maxCx < minCx) return (C.FIELD.W - viewW) / 2;
-  return clamp(ballR.x - viewW * 0.45, minCx, maxCx);
+  var focus = ballR.x;
+  if (aiming) focus = ui.hmenu.pass.aimX * 0.72 + ballR.x * 0.28;
+  var cx = clamp(focus - viewW * (aiming ? 0.38 : 0.45), minCx, maxCx);
+  if (!aiming) return cx;
+  return clamp(shiftCameraForAim(cx, viewW, ui.hmenu.pass.aimX, ui.hmenu.pass.aimY), minCx, maxCx);
+}
+// 落点光标不要钻进右侧按键，也不要停在左侧摇杆底下。
+function shiftCameraForAim(cx, viewW, ax, ay) {
+  var depth = clamp(ay / C.FIELD.H, 0, 1);
+  var persp = 0.5 + 0.5 * (1 - depth);
+  if (!(persp > 0.05)) return cx;
+  var SAFE_R = 960;
+  var SAFE_L = 520;
+  var limitR = (SAFE_R - W / 2) * viewW / (W * persp);
+  var cxMin = ax - viewW / 2 - limitR;
+  if (cx < cxMin) cx = cxMin;
+  var limitL = (SAFE_L - W / 2) * viewW / (W * persp);
+  var cxMax = ax - viewW / 2 - limitL;
+  if (cx > cxMax && cxMax >= cxMin) cx = cxMax;
+  return cx;
+}
+function safeAimScreen(sx, sy) {
+  if (!isTouch) return { x: sx, y: sy };
+  var x = sx, y = sy;
+  if (x > 960) x = 960;
+  if (x < 340) x = 340;
+  if (y > 530) y = 512;
+  if (y < 78) y = 78;
+  return { x: x, y: y };
 }
 function project(x, y) {
   var viewW = curViewW();
@@ -435,7 +465,7 @@ cv.addEventListener('click', function (e) {
   var pt = canvasPoint(e.clientX, e.clientY);
   var mx = pt.x, my = pt.y;
   // 虚拟键和摇杆走指针/触摸，不把同一次点击再交给底下的界面。
-  if (isTouch && screen === 'game' && (hitVKey(pt) || hitStick(pt))) return;
+  if (isTouch && screen === 'game' && touchInControl(e.clientX, e.clientY, pt)) return;
   for (var i = clickables.length - 1; i >= 0; i--) {
     var c = clickables[i];
     if (mx >= c.x && mx <= c.x + c.w && my >= c.y && my <= c.y + c.h) {
@@ -517,15 +547,19 @@ function updatePadFromKeys() {
 }
 
 // ---- 触屏：摇杆 + 与键盘一一对应的虚拟键 ----
-// 指针和触摸两套都听。iOS/Android 上同一次手指会先后派发，按位置并到同一个触点，避免连发。
-// 拖摇杆时 preventDefault，配合 touch-action:none，页面不滚动、不缩放。
+// touch-keys-v1
+// touch-float-v1：左 40% 屏幕落下即生成摇杆；按键是画布之上的一层，触摸不进球场。
+// 指针 setPointerCapture，再加 passive:false 的 touch 兜底。iOS 抓不到指针时走 touch。
 
 cv.style.touchAction = 'none';
+var STICK_CSS_R = 74;
+var stickOrigin = null;
+var touchDbg = { n: 0, line: '尚无触摸' };
+var vkeysReady = false;
 
 function canvasPoint(clientX, clientY) {
   var rect = cv.getBoundingClientRect();
   var rw = rect.width || W, rh = rect.height || H;
-  // object-fit: contain 时画面在元素里居中，不能按元素外框直接换算。
   var scale = Math.min(rw / W, rh / H);
   if (!(scale > 0)) scale = 1;
   var offX = (rw - W * scale) / 2;
@@ -535,28 +569,51 @@ function canvasPoint(clientX, clientY) {
     y: (clientY - rect.top - offY) / scale,
   };
 }
+function clientOfCanvas(x, y) {
+  var rect = cv.getBoundingClientRect();
+  var rw = rect.width || W, rh = rect.height || H;
+  var scale = Math.min(rw / W, rh / H);
+  if (!(scale > 0)) scale = 1;
+  var offX = (rw - W * scale) / 2;
+  var offY = (rh - H * scale) / 2;
+  return { x: rect.left + offX + x * scale, y: rect.top + offY + y * scale, scale: scale };
+}
 function portraitLock() {
   try {
     return !!(window.matchMedia && window.matchMedia('(orientation: portrait) and (max-width: 900px)').matches);
   } catch (err) { return false; }
+}
+function inStickScreen(cx, cy) {
+  var w = window.innerWidth || 1280;
+  var h = window.innerHeight || 720;
+  return cx >= 0 && cy >= 0 && cx <= w * 0.40 && cy <= h;
+}
+function inKeyColumn(p) {
+  return !!(p && p.x >= 990 && p.y >= 150 && p.y <= 560);
+}
+function touchInControl(cx, cy, p) {
+  if (cx != null && cy != null && inStickScreen(cx, cy)) return true;
+  if (p && (hitVKey(p) || inKeyColumn(p))) return true;
+  return false;
 }
 function hitVKey(p) {
   var best = null, bestD = 1e9;
   for (var i = 0; i < VKEYS.length; i++) {
     var b = VKEYS[i];
     var d = Math.hypot(p.x - b.x, p.y - b.y);
-    if (d <= b.r + 8 && d < bestD) { best = b; bestD = d; }
+    if (d <= b.r + 10 && d < bestD) { best = b; bestD = d; }
   }
   return best;
 }
 function hitStick(p) {
-  return Math.hypot(p.x - STICK.x, p.y - STICK.y) <= STICK.r + 24;
+  if (!p) return false;
+  var c = clientOfCanvas(p.x, p.y);
+  return inStickScreen(c.x, c.y);
 }
 function stickOwned() {
   for (var k in contacts) if (contacts[k].role === 'stick') return true;
   return false;
 }
-// 指针 id 和触摸 id 各有一套数字，不能混在一个表里，否则第二根手指会撞上第一根的指针。
 function lookupId(ns, id) {
   var key = ns + ':' + id;
   return idMap[key] != null ? idMap[key] : key;
@@ -568,7 +625,7 @@ function beginId(ns, id, p) {
   for (var i = recentDown.length - 1; i >= 0; i--) {
     var r = recentDown[i];
     if (now - r.t > 70) continue;
-    if (Math.hypot(p.x - r.x, p.y - r.y) < 16) {
+    if (Math.hypot(p.x - r.x, p.y - r.y) < 28) {
       idMap[key] = r.id;
       return r.id;
     }
@@ -578,21 +635,53 @@ function beginId(ns, id, p) {
   if (recentDown.length > 8) recentDown.shift();
   return key;
 }
-function applyStick(p) {
-  var dx = (p.x - STICK.x) / STICK.r;
-  var dy = (p.y - STICK.y) / STICK.r;
+function noteTouchDbg(type, x, y, role) {
+  touchDbg.n += 1;
+  touchDbg.line = type + ' ' + (role || '') + ' ' + Math.round(x) + ',' + Math.round(y) +
+    '  n=' + touchDbg.n + '  dx=' + (stickVec.dx || 0).toFixed(2) + ' dy=' + (stickVec.dy || 0).toFixed(2);
+  if (!DEBUG) return;
+  var el = document.getElementById('touch-debug');
+  if (el && 'hidden' in el) {
+    el.hidden = false;
+    el.textContent = touchDbg.line;
+  }
+}
+function showFloatStick(x, y) {
+  var el = document.getElementById('float-stick');
+  var knob = document.getElementById('float-stick-knob');
+  if (!el || !el.style) return;
+  el.hidden = false;
+  el.style.left = x + 'px';
+  el.style.top = y + 'px';
+  if (knob && knob.style) {
+    var px = stickVec.dx * STICK_CSS_R * 0.62;
+    var py = -stickVec.dy * STICK_CSS_R * 0.62;
+    knob.style.transform = 'translate(' + px + 'px,' + py + 'px)';
+  }
+}
+function hideFloatStick() {
+  var el = document.getElementById('float-stick');
+  if (el && 'hidden' in el) el.hidden = true;
+}
+function applyStickClient(cx, cy) {
+  if (!stickOrigin) stickOrigin = { x: cx, y: cy };
+  var dx = (cx - stickOrigin.x) / STICK_CSS_R;
+  var dy = (cy - stickOrigin.y) / STICK_CSS_R;
   var len = Math.hypot(dx, dy);
-  if (len < 0.18) { dx = 0; dy = 0; }
+  if (len < 0.16) { dx = 0; dy = 0; }
   else if (len > 1) { dx /= len; dy /= len; }
   stickVec.on = true;
   stickVec.dx = Math.round(dx * 1000) / 1000;
-  stickVec.dy = Math.round(-dy * 1000) / 1000; // 画布向下，场地 +y 朝上
+  stickVec.dy = Math.round(-dy * 1000) / 1000;
   updatePadFromKeys();
+  showFloatStick(stickOrigin.x, stickOrigin.y);
 }
 function releaseStick() {
   stickVec.on = false;
   stickVec.dx = 0;
   stickVec.dy = 0;
+  stickOrigin = null;
+  hideFloatStick();
   updatePadFromKeys();
 }
 function endContact(ns, rawId) {
@@ -608,45 +697,66 @@ function clearContacts() {
   recentDown = [];
   releaseStick();
 }
-// 虚拟键走和实体键盘同一条 keydown/keyup。按住不连发；280ms 内的连点丢掉。
 function synthTap(key, code) {
   var now = Date.now();
   if (now < (keyLockUntil[key] || 0)) return;
   keyLockUntil[key] = now + 280;
+  if (!document.dispatchEvent || typeof KeyboardEvent !== 'function') return;
   document.dispatchEvent(new KeyboardEvent('keydown', { key: key, code: code, bubbles: true, cancelable: true }));
   document.dispatchEvent(new KeyboardEvent('keyup', { key: key, code: code, bubbles: true, cancelable: true }));
 }
-function handleDown(ns, rawId, p, nativeEvent) {
+function capturePointer(nativeEvent, el) {
+  if (!nativeEvent || nativeEvent.pointerId == null || !el || typeof el.setPointerCapture !== 'function') return;
+  try { el.setPointerCapture(nativeEvent.pointerId); } catch (err) {}
+}
+function controlStickDown(ns, rawId, cx, cy, nativeEvent, el) {
   if (!isTouch || screen !== 'game' || portraitLock()) return false;
-  if (typeof showingCutscene === 'function' && showingCutscene() && !headMenuOpen()) {
-    skipCutscene();
-    if (nativeEvent && nativeEvent.cancelable) nativeEvent.preventDefault();
-    return true;
-  }
-  if (ui.pauseOpen || ui.overlay) return false;
-  var id = beginId(ns, rawId, p);
+  noteTouchDbg(nativeEvent && nativeEvent.type ? nativeEvent.type : 'touchstart', cx, cy, 'stick');
+  if (nativeEvent && nativeEvent.cancelable) nativeEvent.preventDefault();
+  if (nativeEvent && nativeEvent.stopPropagation) nativeEvent.stopPropagation();
+  if (typeof showingCutscene === 'function' && showingCutscene() && !headMenuOpen()) skipCutscene();
+  var id = beginId(ns, rawId, { x: cx, y: cy });
   if (contacts[id]) {
     if (ns === 't') contacts[id].touchId = rawId;
-    if (nativeEvent && nativeEvent.cancelable) nativeEvent.preventDefault();
     return true;
   }
+  if (stickOwned()) return true;
+  contacts[id] = { role: 'stick', touchId: ns === 't' ? rawId : null };
+  stickOrigin = { x: cx, y: cy };
+  capturePointer(nativeEvent, el);
+  applyStickClient(cx, cy);
+  return true;
+}
+function controlKeyDown(ns, rawId, key, nativeEvent, el, cx, cy) {
+  if (!isTouch || screen !== 'game' || portraitLock() || !key) return false;
+  var x = cx != null ? cx : (nativeEvent ? nativeEvent.clientX : 0);
+  var y = cy != null ? cy : (nativeEvent ? nativeEvent.clientY : 0);
+  noteTouchDbg(nativeEvent && nativeEvent.type ? nativeEvent.type : 'touchstart', x, y, key.id);
+  if (nativeEvent && nativeEvent.cancelable) nativeEvent.preventDefault();
+  if (nativeEvent && nativeEvent.stopPropagation) nativeEvent.stopPropagation();
+  if (typeof showingCutscene === 'function' && showingCutscene() && !headMenuOpen()) skipCutscene();
+  var id = beginId(ns, rawId, { x: x, y: y });
+  if (contacts[id]) {
+    if (ns === 't') contacts[id].touchId = rawId;
+    return true;
+  }
+  contacts[id] = { role: 'key', id: key.id, touchId: ns === 't' ? rawId : null };
+  capturePointer(nativeEvent, el);
+  synthTap(key.key, key.code);
+  return true;
+}
+function handleDown(ns, rawId, p, nativeEvent, clientX, clientY) {
+  if (!isTouch || screen !== 'game' || portraitLock()) return false;
+  var cx = clientX != null ? clientX : (nativeEvent ? nativeEvent.clientX : null);
+  var cy = clientY != null ? clientY : (nativeEvent ? nativeEvent.clientY : null);
+  if (typeof showingCutscene === 'function' && showingCutscene() && !headMenuOpen()) skipCutscene();
   var key = hitVKey(p);
-  if (key) {
-    contacts[id] = { role: 'key', id: key.id, touchId: ns === 't' ? rawId : null };
+  if (key) return controlKeyDown(ns, rawId, key, nativeEvent, nativeEvent && nativeEvent.currentTarget, cx, cy);
+  if (cx != null && inStickScreen(cx, cy)) return controlStickDown(ns, rawId, cx, cy, nativeEvent, nativeEvent && nativeEvent.currentTarget);
+  if (touchInControl(cx, cy, p)) {
     if (nativeEvent && nativeEvent.cancelable) nativeEvent.preventDefault();
-    if (nativeEvent && nativeEvent.pointerId != null) {
-      try { cv.setPointerCapture(nativeEvent.pointerId); } catch (err) {}
-    }
-    synthTap(key.key, key.code);
-    return true;
-  }
-  if (!stickOwned() && hitStick(p)) {
-    contacts[id] = { role: 'stick', touchId: ns === 't' ? rawId : null };
-    if (nativeEvent && nativeEvent.cancelable) nativeEvent.preventDefault();
-    if (nativeEvent && nativeEvent.pointerId != null) {
-      try { cv.setPointerCapture(nativeEvent.pointerId); } catch (err) {}
-    }
-    applyStick(p);
+    if (nativeEvent && nativeEvent.stopPropagation) nativeEvent.stopPropagation();
+    noteTouchDbg('blocked', cx || 0, cy || 0, 'field');
     return true;
   }
   var lvl = (typeof hmTop === 'function') ? hmTop() : null;
@@ -657,28 +767,34 @@ function handleDown(ns, rawId, p, nativeEvent) {
   }
   return false;
 }
+function eventOnControl(e) {
+  var t = e && e.target;
+  return !!(t && t.closest && t.closest('#touch-ui'));
+}
 function onPointerDown(e) {
   if (!e || e.pointerType === 'mouse') return;
+  if (eventOnControl(e)) return;
   handleDown('p', e.pointerId, canvasPoint(e.clientX, e.clientY), e);
 }
 function onPointerMove(e) {
   if (!e || e.pointerType === 'mouse') return;
   var c = contacts[lookupId('p', e.pointerId)];
-  if (!c) return;
+  if (!c || c.role !== 'stick') return;
   if (e.cancelable) e.preventDefault();
-  if (c.role === 'stick') applyStick(canvasPoint(e.clientX, e.clientY));
+  applyStickClient(e.clientX, e.clientY);
+  noteTouchDbg('pointermove', e.clientX, e.clientY, 'stick');
 }
 function onPointerUp(e) {
   if (!e || e.pointerType === 'mouse') return;
-  // 手机上松手以 touchend / touchcancel 为准，避免指针 id 对不上时把摇杆清掉。
   if ('ontouchstart' in window) return;
   endContact('p', e.pointerId);
 }
 function onTouchStart(e) {
+  if (eventOnControl(e)) return;
   var used = false;
   for (var i = 0; i < e.changedTouches.length; i++) {
     var t = e.changedTouches[i];
-    if (handleDown('t', t.identifier, canvasPoint(t.clientX, t.clientY), e)) used = true;
+    if (handleDown('t', t.identifier, canvasPoint(t.clientX, t.clientY), e, t.clientX, t.clientY)) used = true;
   }
   if (used && e.cancelable) e.preventDefault();
 }
@@ -690,19 +806,18 @@ function onTouchMove(e) {
     var c = contacts[lookupId('t', t.identifier)];
     if (c && c.role === 'stick') {
       if (e.cancelable) e.preventDefault();
-      applyStick(canvasPoint(t.clientX, t.clientY));
+      applyStickClient(t.clientX, t.clientY);
+      noteTouchDbg('touchmove', t.clientX, t.clientY, 'stick');
       moved = true;
     }
   }
-  // 指针已经在拖、触摸 id 还没对上时，落在摇杆附近的 touchmove 继续驱动。
-  if (!moved && stickVec.on) {
+  if (!moved && stickVec.on && stickOrigin) {
     for (var j = 0; j < e.changedTouches.length; j++) {
       var t2 = e.changedTouches[j];
       if (contacts[lookupId('t', t2.identifier)]) continue;
-      var p2 = canvasPoint(t2.clientX, t2.clientY);
-      if (Math.hypot(p2.x - STICK.x, p2.y - STICK.y) < STICK.r + 180) {
+      if (inStickScreen(t2.clientX, t2.clientY) || Math.hypot(t2.clientX - stickOrigin.x, t2.clientY - stickOrigin.y) < 220) {
         if (e.cancelable) e.preventDefault();
-        applyStick(p2);
+        applyStickClient(t2.clientX, t2.clientY);
       }
     }
   }
@@ -713,8 +828,6 @@ function onTouchEnd(e) {
   for (var n = 0; n < ended.length; n++) endContact('t', ended[n]);
   if (e.touches.length) return;
   if (!stickOwned()) { releaseStick(); return; }
-  // 浏览器已经没有手指。摇杆若就是这根结束的手指，归零。
-  // 只松开按键时，有的实现会把剩余手指列表报成空的，摇杆要留着。
   var stick = null;
   for (var k in contacts) if (contacts[k].role === 'stick') stick = contacts[k];
   if (!stick || stick.touchId == null) { releaseStick(); return; }
@@ -723,6 +836,129 @@ function onTouchEnd(e) {
 function onTouchCancel(e) {
   onTouchEnd(e);
   clearContacts();
+}
+function bindControl(el, kind, keyBtn) {
+  if (!el || typeof el.addEventListener !== 'function') return;
+  el.addEventListener('pointerdown', function (e) {
+    if (!e || e.pointerType === 'mouse') return;
+    if (kind === 'key') controlKeyDown('p', e.pointerId, keyBtn, e, el);
+    else controlStickDown('p', e.pointerId, e.clientX, e.clientY, e, el);
+  }, { passive: false });
+  el.addEventListener('pointermove', function (e) {
+    if (!e || e.pointerType === 'mouse') return;
+    var c = contacts[lookupId('p', e.pointerId)];
+    if (!c || c.role !== 'stick') return;
+    if (e.cancelable) e.preventDefault();
+    e.stopPropagation();
+    applyStickClient(e.clientX, e.clientY);
+    noteTouchDbg('pointermove', e.clientX, e.clientY, 'stick');
+  }, { passive: false });
+  el.addEventListener('pointerup', function (e) {
+    if (!e || e.pointerType === 'mouse') return;
+    if ('ontouchstart' in window) return;
+    endContact('p', e.pointerId);
+  }, { passive: false });
+  el.addEventListener('pointercancel', function (e) {
+    if (!e || e.pointerType === 'mouse') return;
+    if ('ontouchstart' in window) return;
+    endContact('p', e.pointerId);
+  }, { passive: false });
+  el.addEventListener('touchstart', function (e) {
+    if (e.cancelable) e.preventDefault();
+    e.stopPropagation();
+    for (var i = 0; i < e.changedTouches.length; i++) {
+      var t = e.changedTouches[i];
+      if (kind === 'key') controlKeyDown('t', t.identifier, keyBtn, e, el, t.clientX, t.clientY);
+      else controlStickDown('t', t.identifier, t.clientX, t.clientY, e, el);
+    }
+  }, { passive: false });
+  el.addEventListener('touchmove', function (e) {
+    if (e.cancelable) e.preventDefault();
+    e.stopPropagation();
+    for (var i = 0; i < e.changedTouches.length; i++) {
+      var t = e.changedTouches[i];
+      var c = contacts[lookupId('t', t.identifier)];
+      if (c && c.role === 'stick') {
+        applyStickClient(t.clientX, t.clientY);
+        noteTouchDbg('touchmove', t.clientX, t.clientY, 'stick');
+      }
+    }
+  }, { passive: false });
+  el.addEventListener('touchend', function (e) {
+    if (e.cancelable) e.preventDefault();
+    e.stopPropagation();
+    onTouchEnd(e);
+  }, { passive: false });
+  el.addEventListener('touchcancel', function (e) {
+    if (e.cancelable) e.preventDefault();
+    e.stopPropagation();
+    onTouchCancel(e);
+  }, { passive: false });
+  el.addEventListener('contextmenu', function (e) { e.preventDefault(); }, { passive: false });
+}
+function ensureVKeyButtons() {
+  if (vkeysReady) return;
+  var layer = document.getElementById('vkey-layer');
+  var zone = document.getElementById('stick-zone');
+  if (!layer || typeof layer.appendChild !== 'function' || !zone) return;
+  if (typeof document.createElement !== 'function') return;
+  var probe = document.createElement('div');
+  if (!probe || typeof probe.addEventListener !== 'function') return;
+  VKEYS.forEach(function (b) {
+    var btn = document.createElement('div');
+    btn.className = 'vkey' + (b.id === 'confirm' ? ' vkey-confirm' : '');
+    btn.setAttribute('data-id', b.id);
+    btn.innerHTML = '<span class="vkey-label">' + b.label + '</span><span class="vkey-key">' + b.keyLabel + '</span>';
+    bindControl(btn, 'key', b);
+    layer.appendChild(btn);
+  });
+  bindControl(zone, 'stick', null);
+  vkeysReady = true;
+}
+function layoutVKeys() {
+  var hint = document.getElementById('stick-hint');
+  if (hint && hint.style) {
+    var hs = clientOfCanvas(STICK.x, STICK.y);
+    hint.style.left = hs.x + 'px';
+    hint.style.top = hs.y + 'px';
+    if ('hidden' in hint) hint.hidden = !!stickVec.on;
+  }
+  var layer = document.getElementById('vkey-layer');
+  if (!layer || !layer.children) return;
+  for (var i = 0; i < layer.children.length; i++) {
+    var btn = layer.children[i];
+    if (!btn.getAttribute) continue;
+    var id = btn.getAttribute('data-id');
+    var spec = null;
+    for (var k = 0; k < VKEYS.length; k++) if (VKEYS[k].id === id) spec = VKEYS[k];
+    if (!spec || !btn.style) continue;
+    var p = clientOfCanvas(spec.x, spec.y);
+    var rad = Math.max(22, spec.r * p.scale);
+    btn.style.left = (p.x - rad) + 'px';
+    btn.style.top = (p.y - rad) + 'px';
+    btn.style.width = (rad * 2) + 'px';
+    btn.style.height = (rad * 2) + 'px';
+    btn.style.fontSize = Math.max(12, Math.round(rad * 0.32)) + 'px';
+    var held = false;
+    for (var ck in contacts) if (contacts[ck].role === 'key' && contacts[ck].id === id) held = true;
+    if (btn.classList) btn.classList.toggle('held', held);
+  }
+}
+function syncTouchLayer() {
+  var el = document.getElementById('touch-ui');
+  if (!el || !('hidden' in el)) return;
+  var on = !!(isTouch && screen === 'game' && !portraitLock());
+  el.hidden = !on;
+  if (!on) return;
+  ensureVKeyButtons();
+  layoutVKeys();
+}
+function driveStickAim() {
+  if (!stickVec.on || screen !== 'game') return;
+  var lvl = (typeof hmTop === 'function') ? hmTop() : null;
+  if (!lvl || lvl.kind !== 'aim' || !ui.hmenu || !ui.hmenu.pass) return;
+  if (Math.hypot(stickVec.dx, stickVec.dy) < 0.12) return;
+  nudgeAim(stickVec.dx * 0.18, stickVec.dy * 0.18);
 }
 document.addEventListener('pointerdown', onPointerDown, { passive: false, capture: true });
 document.addEventListener('pointermove', onPointerMove, { passive: false, capture: true });
@@ -735,12 +971,37 @@ document.addEventListener('touchcancel', onTouchCancel, { passive: false, captur
 ['gesturestart', 'gesturechange', 'gestureend'].forEach(function (type) {
   document.addEventListener(type, function (e) { if (e.cancelable) e.preventDefault(); }, { passive: false });
 });
+
 function addClick(x, y, w, h, action) {
   clickables.push({ x: x, y: y, w: w, h: h, action: action });
 }
+function clearToast() {
+  ui.toast = '';
+  ui.toastUntil = 0;
+}
 function toast(msg, ms) {
-  ui.toast = msg;
-  ui.toastUntil = Date.now() + (ms || 2200);
+  ui.toast = msg || '';
+  ui.toastUntil = Date.now() + (ms == null ? 2000 : ms);
+}
+// toast-current-v1：只提示当前这一下事件，约 2 秒后消失。球权轮询不再造一句「对方断球」。
+function syncEventToast(st) {
+  if (!st) return;
+  var a = st.lastAction;
+  if (a && a.duel) { clearToast(); ui._toastKey = 'duel'; return; }
+  if (st.phase === 'kickoff' || st.phase === 'goal' || st.phase === 'whistle' || st.phase === 'penalty' || st.restart) {
+    if (ui.toast && (ui.toast.indexOf('断球') >= 0 || ui.toast.indexOf('夺回') >= 0)) clearToast();
+  }
+  var key = a ? ((a.kind || '') + '|' + (a.label || '') + '|' + (a.text || '') + '|' + (a.until || 0)) : '';
+  if (key === ui._toastKey) return;
+  ui._toastKey = key;
+  clearToast();
+  if (!a || st.phase !== 'play' || st.restart) return;
+  var blob = (a.kind || '') + (a.label || '') + (a.text || '');
+  var takeover = a.kind === 'tackle' || a.kind === 'intercept' || /断球|抢断|断下/.test(blob);
+  if (!takeover) return;
+  if (a.duel && a.duel.result && a.duel.result.indexOf('成功') >= 0 && a.team === 'home' && a.kind !== 'tackle') return;
+  if (a.team === 'away') toast('⚠️ 对方断球！', 2000);
+  else if (a.team === 'home') toast('⚽ 夺回球权！', 2000);
 }
 
 // ---------------- 比赛控制 ----------------
@@ -804,19 +1065,7 @@ function refresh() {
     state.players.forEach(function (p) {
       if (!renderPos[p.id]) renderPos[p.id] = { x: p.x, y: p.y };
     });
-    // ★ 球权转换提示：己方持球 → 对方持球（比赛中），toast 提示，避免"我的人被断了却没任何事件"的困惑
-    //   说明：被动决策菜单只在"我方持球被压迫"时触发；对方断球后不弹菜单，直接继续比赛
-    var homeBall = false, awayBall = false;
-    state.players.forEach(function (p) {
-      if (p.hasBall) { if (p.team === 'home') homeBall = true; else awayBall = true; }
-    });
-    if (ui._prevHomeBall && !homeBall && awayBall && state.phase === 'play') {
-      toast('⚠️ 对方断球！');
-    }
-    if (ui._prevAwayBall && !awayBall && homeBall && state.phase === 'play') {
-      toast('⚽ 夺回球权！');
-    }
-    ui._prevHomeBall = homeBall; ui._prevAwayBall = awayBall;
+    syncEventToast(state);
     // 输入心跳：保持操控输入新鲜（服务器 2 秒无有效操作则 AI 接管）
     sendInput();
   }).catch(function () {});
@@ -1157,6 +1406,16 @@ function drawSetPieceMenu(lvl, d) {
   var shortStat = { '角球': '角', '长传': '长', '传中': '传', '射门': '射', '任意球': '任', '心理': '心' };
   var useShort = false;
   var left = 332;
+  if (isTouch) {
+    try {
+      var wrap = document.getElementById('wrap').getBoundingClientRect();
+      var cvb = cv.getBoundingClientRect();
+      var sc = Math.min(cvb.width / W, cvb.height / H) || 1;
+      var offX = (cvb.width - W * sc) / 2;
+      var zoneRight = (wrap.left + wrap.width * 0.40 - cvb.left - offX) / sc + 18;
+      if (zoneRight > left) left = Math.min(560, zoneRight);
+    } catch (err) {}
+  }
   var right = isTouch ? 1000 : 1044;
   var top = 148;
   var bottom = 544;
@@ -1277,10 +1536,15 @@ function drawHmAim(hm, lvl, pr, cx, headY) {
   var p = playerById(hm.playerId);
   if (!p) return;
   // 兜底：点场上任意位置放置落点（先注册=低优先级，按钮优先；只覆盖场上区域 y<556，底部 UI 不受影响）
-  addClick(0, 0, W, 556, function (mx, my) { setAimFromScreen(mx, my); });
+  addClick(0, 0, W, 556, function (mx, my) {
+    var c = clientOfCanvas(mx, my);
+    if (isTouch && touchInControl(c.x, c.y, { x: mx, y: my })) return;
+    setAimFromScreen(mx, my);
+  });
   var rp = renderPos[p.id] || p;
   var pp = project(rp.x, rp.y);
-  var ap = project(hm.pass.aimX, hm.pass.aimY);
+  var ap0 = project(hm.pass.aimX, hm.pass.aimY);
+  var ap = safeAimScreen(ap0.x, ap0.y);
   // 传球者→落点连线
   ctx.strokeStyle = 'rgba(255,217,74,0.6)'; ctx.lineWidth = 2; ctx.setLineDash([8, 6]);
   ctx.beginPath(); ctx.moveTo(pp.x, pp.y - 8); ctx.lineTo(ap.x, ap.y); ctx.stroke();
@@ -1301,7 +1565,7 @@ function drawHmAim(hm, lvl, pr, cx, headY) {
   var pow = Math.round((dist - AIM_MIN) / (AIM_MAX - AIM_MIN) * 100);
   hmText('\u2014 落点 \u2014', cx, headY - 128, 15, '#9fb4dd', false);
   hmText(dist.toFixed(0) + '米 \u00b7 力量' + pow + '%', cx, headY - 100, 20, '#ffd94a');
-  hmText('方向键/WASD 微调 \u00b7 Shift更精细 \u00b7 点击场上放置', cx, headY - 72, 13, '#9fb4dd', false);
+  hmText(isTouch ? '摇杆移动落点 · 确定确认' : '方向键/WASD 微调 · Shift更精细 · 点击场上放置', cx, headY - 72, 13, '#9fb4dd', false);
   var items = [
     { label: '\u2705 继续', fn: function () { pushHmLevel(techLevel()); requestHmPreview(); } },
     { label: '\u2190 返回', back: true, fn: popHmLevel }
@@ -1343,7 +1607,9 @@ function drawHmConfirm(hm, lvl, pr, cx, headY) {
 function drawHmLanding(hm) {
   var pv = hm.preview;
   if (!pv) return;
-  var lp = project(pv.x, pv.y);
+  var lp0 = project(pv.x, pv.y);
+  var lpSafe = safeAimScreen(lp0.x, lp0.y);
+  var lp = { x: lpSafe.x, y: lpSafe.y, s: lp0.s };
   var prad = Math.max(10, pv.r * 19 * lp.s);
   ctx.save();
   ctx.fillStyle = 'rgba(255,217,74,0.16)';
@@ -2268,6 +2534,8 @@ function drawRoster(x, y, w, h) {
 // ---------------- 透明虚拟手柄（移动端 / Pad） ----------------
 function drawGamepad() {
   if (screen !== 'game') return;
+  var layer = document.getElementById('touch-ui');
+  if (layer && !layer.hidden) return;
   ctx.fillStyle = stickVec.on ? 'rgba(6,10,20,0.55)' : 'rgba(6,10,20,0.40)';
   ctx.beginPath(); ctx.arc(STICK.x, STICK.y, STICK.r, 0, Math.PI * 2); ctx.fill();
   ctx.strokeStyle = 'rgba(255,255,255,0.55)'; ctx.lineWidth = 3; ctx.stroke();
@@ -2333,10 +2601,39 @@ function drawAnchors() {
   });
 }
 
-// duel-settle-v1
-function drawDuelSettlement(a) {
-  var d = a.duel;
-  if (!d) return;
+// duel-settle-v1：对玩家只显示「突破 对 卡位 — 突破成功」。属性、摇摆、体能和分数只在 ?debug=1。
+function duelResultLine(d) {
+  return (d.atkLabel || '') + ' 对 ' + (d.defLabel || '') + ' — ' + (d.result || '');
+}
+function drawDuelCutArt(a) {
+  if (!a.cut || (ui.cutSkipId && ui.cutSkipId === cutActionId(a))) return false;
+  var im = ensureCutImg(a.cut);
+  if (!(im && im.complete && im.naturalWidth)) return false;
+  var iw = Math.min(520, W - 80), ih = iw * 2 / 3;
+  var ix = (W - iw) / 2, iy = 78;
+  ctx.drawImage(im, ix, iy, iw, ih);
+  ctx.strokeStyle = '#ffd94a'; ctx.lineWidth = 3;
+  ctx.strokeRect(ix - 2, iy - 2, iw + 4, ih + 4);
+  return iy + ih;
+}
+function drawDuelResultOnly(a, d) {
+  var line = duelResultLine(d);
+  var artBottom = drawDuelCutArt(a);
+  var scale = paintScale();
+  var size = Math.max(22, Math.ceil(18 / scale));
+  ctx.font = 'bold ' + size + 'px "PingFang SC","Microsoft YaHei",sans-serif';
+  var bw = Math.min(W - 48, Math.max(420, ctx.measureText(line).width + 56));
+  var bh = size + 28;
+  var bx = (W - bw) / 2;
+  var by = artBottom ? artBottom + 16 : 268;
+  ctx.fillStyle = 'rgba(6,8,16,0.92)';
+  rr(bx, by, bw, bh, 10); ctx.fill();
+  ctx.strokeStyle = '#ffd94a'; ctx.lineWidth = 3;
+  rr(bx, by, bw, bh, 10); ctx.stroke();
+  var good = d.result && d.result.indexOf('成功') >= 0;
+  text(line, W / 2, by + bh / 2, size, good ? '#9dffb0' : '#ffd0d0', 'center', true);
+}
+function drawDuelBreakdown(a, d) {
   var scale = paintScale();
   var size = Math.max(18, Math.ceil(15 / scale));
   var small = Math.max(16, Math.ceil(14 / scale));
@@ -2357,6 +2654,12 @@ function drawDuelSettlement(a) {
   text(d.defName + '  ' + defLine + (d.support ? '  +' + d.support + '协防' : ''), x + 20, y + 156, small, '#ffd0d0', 'left', true);
   text('摇摆 ' + d.swingD + '  体能 ' + d.fatD + '  →  ' + d.dScore, x + 20, y + 190, small, '#ffffff', 'left');
   text('点按或取消关闭', x + w - 18, y + h - 22, Math.max(14, small - 2), '#9fb4dd', 'right');
+}
+function drawDuelSettlement(a) {
+  var d = a.duel;
+  if (!d) return;
+  if (DEBUG) { drawDuelBreakdown(a, d); return; }
+  drawDuelResultOnly(a, d);
 }
 
 function drawCutin() {
@@ -2529,6 +2832,7 @@ function drawFulltime() {
 }
 
 function drawToast() {
+  if (state && state.lastAction && state.lastAction.duel) return;
   if (!ui.toast || Date.now() > ui.toastUntil) return;
   ctx.font = '17px "PingFang SC","Microsoft YaHei",monospace';
   var tw = ctx.measureText(ui.toast).width + 40;
@@ -2559,6 +2863,8 @@ function frame(t) {
 function frameInner(t) {
   frameNo++;
   clickables = [];
+  syncTouchLayer();
+  driveStickAim();
   ctx.clearRect(0, 0, W, H);
   if (screen === 'title') drawTitle();
   else {
@@ -2591,7 +2897,7 @@ function frameInner(t) {
 
 // ★ debug 自动开赛：?debug=1&autostart=1 时跳过标题界面直接开赛，
 //   浏览器自动化测试不再依赖画布点击"开始比赛"按钮。
-if (DEBUG && /[?&]autostart=1/.test(location.search)) {
+if (/[?&]autostart=1/.test(location.search)) {
   setTimeout(function () { if (screen === 'title') startMatch(); }, 600);
 }
 
@@ -2623,6 +2929,10 @@ if (DEBUG) {
       hint: typeof hintMessage === 'function' ? hintMessage() : null,
       pad: { dx: pad.dx, dy: pad.dy },
       stick: { dx: stickVec.dx, dy: stickVec.dy, on: stickVec.on },
+      toast: ui.toast && Date.now() <= ui.toastUntil ? ui.toast : '',
+      touch: touchDbg.line,
+      touchN: touchDbg.n,
+      aim: (ui.hmenu && ui.hmenu.pass) ? { x: ui.hmenu.pass.aimX, y: ui.hmenu.pass.aimY } : null,
     };
   };
 }

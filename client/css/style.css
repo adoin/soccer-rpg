@@ -32,6 +32,131 @@ html, body {
   cursor: pointer;
   object-fit: contain;
   touch-action: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+}
+/* 控制层盖在画布上。只有摇杆区和按键吃触摸，其余穿透到球场。 */
+#touch-ui {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  pointer-events: none;
+  touch-action: none;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+}
+#touch-ui[hidden] { display: none !important; }
+#stick-zone {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 40%;
+  z-index: 2;
+  pointer-events: auto;
+  touch-action: none;
+  background: transparent;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+}
+#stick-hint {
+  position: fixed;
+  width: 148px;
+  height: 148px;
+  margin-left: -74px;
+  margin-top: -74px;
+  border-radius: 50%;
+  border: 3px solid rgba(255,255,255,0.35);
+  background: rgba(6,10,20,0.28);
+  pointer-events: none;
+  z-index: 3;
+  touch-action: none;
+}
+#stick-hint:after {
+  content: "WASD";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 18px;
+  text-align: center;
+  color: #ffd94a;
+  font: bold 13px "PingFang SC", "Microsoft YaHei", sans-serif;
+}
+#float-stick {
+  position: fixed;
+  width: 148px;
+  height: 148px;
+  margin-left: -74px;
+  margin-top: -74px;
+  pointer-events: none;
+  z-index: 5;
+  touch-action: none;
+}
+#float-stick[hidden] { display: none !important; }
+#float-stick-base {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  background: rgba(6,10,20,0.55);
+  border: 3px solid rgba(255,255,255,0.7);
+}
+#float-stick-knob {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 64px;
+  height: 64px;
+  margin-left: -32px;
+  margin-top: -32px;
+  border-radius: 50%;
+  background: rgba(255,255,255,0.42);
+  border: 3px solid rgba(255,255,255,0.85);
+}
+#vkey-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 4;
+  pointer-events: none;
+}
+.vkey {
+  position: absolute;
+  pointer-events: auto;
+  touch-action: none;
+  border-radius: 50%;
+  border: 2px solid rgba(255,255,255,0.55);
+  background: rgba(6,10,20,0.5);
+  color: #fff;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  margin: 0;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+  font-family: "PingFang SC", "Microsoft YaHei", sans-serif;
+}
+.vkey-confirm {
+  background: rgba(255,217,74,0.28);
+  border-color: rgba(255,226,140,0.9);
+}
+.vkey-label { font-weight: 800; line-height: 1.1; pointer-events: none; }
+.vkey-key { color: #ffd94a; font-weight: 700; line-height: 1.1; pointer-events: none; }
+.vkey.held { background: rgba(255,217,74,0.5); }
+#touch-debug {
+  position: fixed;
+  left: 42%;
+  top: 8px;
+  z-index: 6;
+  max-width: 46%;
+  pointer-events: none;
+  color: #7dff9a;
+  background: rgba(0,0,0,0.72);
+  font: 12px/1.35 ui-monospace, monospace;
+  padding: 6px 8px;
+  white-space: pre-wrap;
 }
 #rotate-prompt {
   display: none;
