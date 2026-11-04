@@ -338,7 +338,13 @@ function sendInput(extra) {
   if (extra) for (var k in extra) body[k] = extra[k];
   api.post('/api/match/' + matchId + '/input', body).catch(function () {});
 }
+function noteTutorialInput() {
+  if (ui.tutorialDone || ui.tutorialArmed || ui.hintClosed) return;
+  ui.tutorialArmed = true;
+  ui.tutorialUntil = Date.now() + 4000;
+}
 function setPad(dx, dy, sprint, slow) {
+  if (dx || dy) noteTutorialInput();
   if (dx !== pad.dx || dy !== pad.dy || sprint !== pad.sprint || slow !== pad.slow) {
     pad.dx = dx; pad.dy = dy; pad.sprint = sprint; pad.slow = slow;
     sendInput();
@@ -688,6 +694,7 @@ function clearContacts() {
   releaseStick();
 }
 function synthTap(key, code) {
+  noteTutorialInput();
   var now = Date.now();
   if (now < (keyLockUntil[key] || 0)) return;
   keyLockUntil[key] = now + 280;
@@ -1010,7 +1017,9 @@ function startMatch() {
     contacts = {}; idMap = {}; recentDown = [];
     for (var k in keys) keys[k] = false;
     ui.pauseOpen = false; ui.overlay = null; ui.choosing = false; ui.exitArm = 0;
-    ui.tutorialUntil = Date.now() + 4500;
+    ui.tutorialUntil = 0;
+    ui.tutorialArmed = false;
+    ui.tutorialDone = false;
     ui.hintClosed = false;
     refresh();
     // ★ 状态轮询从 300ms 提到 120ms（与服务器 tick 对齐）：直接操控时按键→画面的延迟明显缩短
@@ -1549,13 +1558,10 @@ function drawHmAim(hm, lvl, pr, cx, headY) {
   ctx.moveTo(ap.x, ap.y - cr - 9); ctx.lineTo(ap.x, ap.y - cr + 5);
   ctx.moveTo(ap.x, ap.y + cr - 5); ctx.lineTo(ap.x, ap.y + cr + 9);
   ctx.stroke();
-  // 距离·力量读数（力量由距离导出）
   var dx = hm.pass.aimX - p.x, dy = hm.pass.aimY - p.y;
   var dist = Math.sqrt(dx * dx + dy * dy);
   var pow = Math.round((dist - AIM_MIN) / (AIM_MAX - AIM_MIN) * 100);
-  hmText('\u2014 落点 \u2014', cx, headY - 128, 15, '#9fb4dd', false);
-  hmText(dist.toFixed(0) + '米 \u00b7 力量' + pow + '%', cx, headY - 100, 20, '#ffd94a');
-  hmText(isTouch ? '摇杆移动落点 · 确定确认' : '方向键/WASD 微调 · Shift更精细 · 点击场上放置', cx, headY - 72, 13, '#9fb4dd', false);
+  drawAimReadout(ap, cx, headY, dist, pow);
   var items = [
     { label: '\u2705 继续', fn: function () { pushHmLevel(techLevel()); requestHmPreview(); } },
     { label: '\u2190 返回', back: true, fn: popHmLevel }
@@ -1616,7 +1622,44 @@ function drawHmLanding(hm) {
     ctx.setLineDash([]);
   }
   ctx.restore();
-  hmText('预估落点', lp.x, lp.y - prad - 12, 15, '#ffd94a');
+}
+
+// 落点读数单独成块：一行距离和力量，提示小一号放在下面，躲开继续/返回。
+function drawAimReadout(ap, cx, headY, dist, pow) {
+  var scale = paintScale();
+  var size1 = Math.max(22, Math.ceil(15 / scale));
+  var size2 = Math.max(16, Math.ceil(12 / scale));
+  var line1 = dist.toFixed(0) + '米 · 力量' + pow + '%';
+  var line2 = isTouch ? '摇杆移动落点 · 确定确认' : '方向键/WASD 微调 · Shift 更精细';
+  ctx.font = 'bold ' + size1 + 'px "PingFang SC","Microsoft YaHei",sans-serif';
+  var w1 = ctx.measureText(line1).width;
+  ctx.font = size2 + 'px "PingFang SC","Microsoft YaHei",sans-serif';
+  var w2 = ctx.measureText(line2).width;
+  var w = Math.max(w1, w2);
+  var gap = Math.max(12, Math.ceil(8 / scale));
+  var h = size1 + gap + size2;
+  var menu = { l: cx - 150, r: cx + 150, t: headY - 58, b: headY + 40 };
+  function hits(x, top) {
+    var l = x - w / 2 - 8, r = x + w / 2 + 8;
+    return l < menu.r && r > menu.l && top < menu.b && top + h > menu.t;
+  }
+  var grass = 176;
+  var floor = 508;
+  function fit(cx0, top0) {
+    var x0 = clamp(cx0, w / 2 + 16, Math.min(960, W - 16) - w / 2);
+    if (top0 < grass || top0 + h > floor) return null;
+    if (hits(x0, top0)) return null;
+    return { x: x0, top: top0 };
+  }
+  var place = fit(ap.x, ap.y - 36 - h)
+    || fit(ap.x, ap.y + 36)
+    || fit(ap.x - w / 2 - 52, ap.y - h / 2)
+    || fit(ap.x + w / 2 + 52, ap.y - h / 2)
+    || fit(cx, menu.t - h - 18)
+    || fit(cx, menu.b + 16)
+    || { x: clamp(ap.x, w / 2 + 16, 720), top: grass };
+  hmText(line1, place.x, place.top + size1 / 2, size1, '#ffd94a');
+  hmText(line2, place.x, place.top + size1 + gap + size2 / 2, size2, '#d6e6ff', false);
 }
 
 // 头顶菜单键盘操作（决策暂停期间接管键盘）
@@ -2397,6 +2440,7 @@ function drawPlayerCard(x, y, w, h) {
 var CMD_ICONS = { dribble: '💨', burst: '💨', pass: '➡️', protect: '🛡️', shoot: '⚽', special: '🔥', feint: '🌀', retreat: '↩️', tackle: '🦵', jockey: '🧱', 'def-skills': '🛡️', 'def-flying': '🛝', 'def-sweep': '🌀', 'def-shoulder': '💪', 'def-elbow': '🚧', 'shot-driven': '💥', 'shot-placed': '🎯', 'shot-curl': '🌀' };
 
 function hintMessage() {
+  if (ui.tutorialArmed && !ui.tutorialDone && ui.tutorialUntil && Date.now() >= ui.tutorialUntil) ui.tutorialDone = true;
   if (ui.hintClosed) return null;
   if (!state) return null;
   var restarting = state.restart && (state.phase === 'whistle' || state.phase === 'penalty' || state.phase === 'decision' || state.restart.held);
@@ -2414,10 +2458,10 @@ function hintMessage() {
   if (state.phase === 'goal') return '⚽ 进球！';
   if (state.phase === 'halftime') return '中场休息…';
   if (state.paused) return '已暂停';
-  // 开场说明到点自己消失，不靠玩家点掉，也不会改成一条一直挂着的提示。
-  if (Date.now() < ui.tutorialUntil) {
-    return isTouch ? '拖摇杆移动，右侧按键同键盘。这条提示马上会消失。'
-                   : 'WASD 移动绿圈球员，E 选指令。这条提示马上会消失。';
+  if (!ui.tutorialDone) {
+    var tip = isTouch ? '拖摇杆移动，右侧按键同键盘。' : 'WASD 移动绿圈球员，E 选指令。';
+    if (!ui.tutorialArmed || Date.now() < ui.tutorialUntil) return tip;
+    ui.tutorialDone = true;
   }
   return null;
 }

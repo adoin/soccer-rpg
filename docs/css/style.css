@@ -147,16 +147,18 @@ html, body {
 .vkey.held { background: rgba(255,217,74,0.5); }
 #touch-debug {
   position: fixed;
-  left: 42%;
-  top: 8px;
+  left: 50%;
+  bottom: 108px;
+  transform: translateX(-50%);
   z-index: 6;
-  max-width: 46%;
+  max-width: 62%;
   pointer-events: none;
   color: #7dff9a;
   background: rgba(0,0,0,0.72);
   font: 12px/1.35 ui-monospace, monospace;
   padding: 6px 8px;
   white-space: pre-wrap;
+  text-align: center;
 }
 #rotate-prompt {
   display: none;

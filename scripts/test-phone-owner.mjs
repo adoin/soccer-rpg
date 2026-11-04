@@ -281,6 +281,8 @@ await lp.waitForFunction(() => {
   const ids = Object.keys(window.__matches || {});
   return ids.length && window.__matches[ids[0]].phase === 'play';
 }, null, { timeout: 15000 });
+await lp.keyboard.press('d');
+await lp.waitForTimeout(4300);
 const seen = await lp.evaluate(() => {
   var m = window.__matches[Object.keys(window.__matches)[0]];
   m.destroy();
