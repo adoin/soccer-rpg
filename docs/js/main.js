@@ -488,6 +488,12 @@ document.addEventListener('keydown', function (e) {
   if (DEBUG) { var _lt = hmTop(); dbgKey = 'key=' + e.key + ' menu=' + (headMenuOpen() ? 'open' : 'shut') + ' top=' + (_lt ? (_lt.kind + '#' + _lt.sel) : 'none'); }
   if (headMenuOpen() && headMenuKey(e)) return; // 头顶菜单打开时接管键盘（方向键/回车/空格选，Esc 返回）
   var k = (e.key || '').toLowerCase();
+  if (ui.pauseOpen && !ui.overlay) {
+    if (k === 'q') { togglePause(false); e.preventDefault(); return; }
+    if (k === 'e' || k === 'enter') { activatePause(); e.preventDefault(); return; }
+    if (k === 'w' || k === 'arrowup') { stepSelection(function () { return ui.pauseSel || 0; }, function (i) { ui.pauseSel = i; }, function () { return pauseItems().length; }, null, -1); e.preventDefault(); return; }
+    if (k === 's' || k === 'arrowdown') { stepSelection(function () { return ui.pauseSel || 0; }, function (i) { ui.pauseSel = i; }, function () { return pauseItems().length; }, null, 1); e.preventDefault(); return; }
+  }
   // ★ 全屏特写显示时：Enter/空格只关闭特写，不触发下层动作（根治特写排队打断心流，2026-10-11）
   if (state && state.lastAction && state.lastAction.duel && (k === 'enter' || k === ' ' || k === 'e' || k === 'q')) {
     sendInput({ dismissOverlay: true }); e.preventDefault(); return;
@@ -642,13 +648,24 @@ function noteTouchDbg(type, x, y, role) {
     el.textContent = touchDbg.line;
   }
 }
+function uiOrigin() {
+  var ui = document.getElementById('touch-ui');
+  if (!ui || !ui.getBoundingClientRect) return { left: 0, top: 0, width: 0, height: 0, bottom: 0, right: 0 };
+  var r = ui.getBoundingClientRect();
+  return { left: r.left, top: r.top, width: r.width, height: r.height, bottom: r.bottom, right: r.right };
+}
 function showFloatStick(x, y) {
   var el = document.getElementById('float-stick');
   var knob = document.getElementById('float-stick-knob');
   if (!el || !el.style) return;
+  var o = uiOrigin();
   el.hidden = false;
-  el.style.left = x + 'px';
-  el.style.top = y + 'px';
+  el.style.width = (STICK_CSS_R * 2) + 'px';
+  el.style.height = (STICK_CSS_R * 2) + 'px';
+  el.style.marginLeft = (-STICK_CSS_R) + 'px';
+  el.style.marginTop = (-STICK_CSS_R) + 'px';
+  el.style.left = (x - o.left) + 'px';
+  el.style.top = (y - o.top) + 'px';
   if (knob && knob.style) {
     var px = stickVec.dx * STICK_CSS_R * 0.62;
     var py = -stickVec.dy * STICK_CSS_R * 0.62;
@@ -913,32 +930,61 @@ function ensureVKeyButtons() {
   vkeysReady = true;
 }
 function layoutVKeys() {
+  var origin = uiOrigin();
+  if (!stickVec.on) {
+    var vh = origin.height || window.innerHeight || 390;
+    STICK_CSS_R = Math.max(46, Math.min(74, vh * 0.18));
+  }
   var hint = document.getElementById('stick-hint');
   if (hint && hint.style) {
     var hs = clientOfCanvas(STICK.x, STICK.y);
-    hint.style.left = hs.x + 'px';
-    hint.style.top = hs.y + 'px';
+    var d = STICK_CSS_R * 2;
+    hint.style.width = d + 'px';
+    hint.style.height = d + 'px';
+    hint.style.marginLeft = (-STICK_CSS_R) + 'px';
+    hint.style.marginTop = (-STICK_CSS_R) + 'px';
+    hint.style.left = (hs.x - origin.left) + 'px';
+    hint.style.top = (hs.y - origin.top) + 'px';
     if ('hidden' in hint) hint.hidden = !!stickVec.on;
   }
   var layer = document.getElementById('vkey-layer');
   if (!layer || !layer.children) return;
+  var items = [];
   for (var i = 0; i < layer.children.length; i++) {
     var btn = layer.children[i];
     if (!btn.getAttribute) continue;
     var id = btn.getAttribute('data-id');
     var spec = null;
     for (var k = 0; k < VKEYS.length; k++) if (VKEYS[k].id === id) spec = VKEYS[k];
-    if (!spec || !btn.style) continue;
+    if (!spec) continue;
     var p = clientOfCanvas(spec.x, spec.y);
-    var rad = Math.max(22, spec.r * p.scale);
-    btn.style.left = (p.x - rad) + 'px';
-    btn.style.top = (p.y - rad) + 'px';
-    btn.style.width = (rad * 2) + 'px';
-    btn.style.height = (rad * 2) + 'px';
-    btn.style.fontSize = Math.max(12, Math.round(rad * 0.32)) + 'px';
+    items.push({
+      btn: btn, id: id,
+      x: p.x - origin.left, y: p.y - origin.top,
+      rad: Math.max(14, spec.r * p.scale),
+    });
+  }
+  var fit = 1;
+  for (var a = 0; a < items.length; a++) {
+    for (var b = a + 1; b < items.length; b++) {
+      var dist = Math.hypot(items[a].x - items[b].x, items[a].y - items[b].y);
+      var span = items[a].rad + items[b].rad;
+      if (span > 1 && dist < span + 8) fit = Math.min(fit, Math.max(0.45, (dist - 8) / span));
+    }
+  }
+  var bottom = origin.height || 0;
+  for (var n = 0; n < items.length; n++) {
+    var it = items[n];
+    var rad = Math.max(15, it.rad * fit);
+    if (bottom && it.y + rad > bottom - 4) rad = Math.max(14, bottom - 4 - it.y);
+    it.btn.style.left = (it.x - rad) + 'px';
+    it.btn.style.top = (it.y - rad) + 'px';
+    it.btn.style.width = (rad * 2) + 'px';
+    it.btn.style.height = (rad * 2) + 'px';
+    it.btn.style.fontSize = Math.max(11, Math.round(rad * 0.32)) + 'px';
     var held = false;
-    for (var ck in contacts) if (contacts[ck].role === 'key' && contacts[ck].id === id) held = true;
-    if (btn.classList) btn.classList.toggle('held', held);
+    for (var ck in contacts) if (contacts[ck].role === 'key' && contacts[ck].id === it.id) held = true;
+    if (it.btn.classList) it.btn.classList.toggle('held', held);
   }
 }
 function syncTouchLayer() {
@@ -956,6 +1002,59 @@ function driveStickAim() {
   if (!lvl || lvl.kind !== 'aim' || !ui.hmenu || !ui.hmenu.pass) return;
   if (Math.hypot(stickVec.dx, stickVec.dy) < 0.12) return;
   nudgeAim(stickVec.dx * 0.18, stickVec.dy * 0.18);
+}
+// stick-menu-v1：菜单打开时，左摇杆上一下一格、下一下一格。拨一下只走一格。
+var stickNav = { dir: 0, until: 0 };
+function stepSelection(get, set, len, enabled, dir) {
+  var n = len();
+  if (!n) return;
+  var i = get();
+  if (i == null || isNaN(i)) i = 0;
+  for (var c = 0; c < n; c++) {
+    i = (i + dir + n) % n;
+    if (!enabled || enabled(i)) break;
+  }
+  set(i);
+}
+function menuListTarget() {
+  var lvl = (typeof hmTop === 'function') ? hmTop() : null;
+  if (headMenuOpen() && lvl && lvl.kind !== 'aim') {
+    if (lvl.kind === 'confirm') {
+      return {
+        get: function () { return lvl.sel || 0; },
+        set: function (i) { lvl.sel = i; },
+        len: function () { return 2; },
+      };
+    }
+    if (lvl.items && lvl.items.length) {
+      return {
+        get: function () { return lvl.sel || 0; },
+        set: function (i) { lvl.sel = i; },
+        len: function () { return lvl.items.length; },
+        enabled: function (i) { return !!(lvl.items[i] && lvl.items[i].enabled); },
+      };
+    }
+  }
+  if (ui.pauseOpen && !ui.overlay) {
+    return {
+      get: function () { return ui.pauseSel || 0; },
+      set: function (i) { ui.pauseSel = i; },
+      len: function () { return pauseItems().length; },
+    };
+  }
+  return null;
+}
+function driveStickList() {
+  var target = menuListTarget();
+  if (!target || !stickVec.on) { stickNav.dir = 0; return; }
+  var dy = stickVec.dy;
+  var dir = dy > 0.48 ? -1 : (dy < -0.48 ? 1 : 0);
+  if (!dir) { stickNav.dir = 0; return; }
+  var now = Date.now();
+  if (stickNav.dir === dir && now < stickNav.until) return;
+  stickNav.dir = dir;
+  stickNav.until = now + 360;
+  stepSelection(target.get, target.set, target.len, target.enabled, dir);
 }
 document.addEventListener('pointerdown', onPointerDown, { passive: false, capture: true });
 document.addEventListener('pointermove', onPointerMove, { passive: false, capture: true });
@@ -1714,7 +1813,29 @@ function headMenuKey(e) {
 function togglePause(force) {
   var target = typeof force === 'boolean' ? force : !ui.pauseOpen;
   ui.pauseOpen = target;
+  if (target) ui.pauseSel = 0;
   api.post('/api/match/' + matchId + '/pause', { paused: target });
+}
+function pauseItems() {
+  return [
+    { label: '继续比赛', fn: function () {
+        togglePause(false);
+        if (state && state.decision) toast('请先在球员头顶选择指令');
+      } },
+    { label: '⚙ 战术指令', fn: function () { ui.tacticOpen = !ui.tacticOpen; } },
+    { label: '👤 球员状态', fn: function () { ui.overlay = 'status'; ui.pauseOpen = false; api.post('/api/match/' + matchId + '/pause', { paused: false }); } },
+    { label: '🔧 比赛设定', fn: function () { ui.overlay = 'settings'; } },
+    { label: '⏪ 回放', fn: function () { toast('演示版暂未实现回放功能'); } },
+    { label: '⏻ 退出比赛', fn: function () {
+        if (Date.now() - ui.exitArm < 3000) { togglePause(false); exitMatch(); }
+        else { ui.exitArm = Date.now(); toast('再点一次确认退出比赛'); }
+      } },
+  ];
+}
+function activatePause() {
+  var items = pauseItems();
+  var it = items[ui.pauseSel || 0];
+  if (it) it.fn();
 }
 function exitMatch() {
   api.del('/api/match/' + matchId).catch(function () {});
@@ -2340,28 +2461,16 @@ function drawPauseMenu() {
   var x = W - 300, y = 62, w = 286, h = 320;
   panel(x, y, w, h);
   text('PAUSE', x + 20, y + 26, 20, '#9fb4dd', 'left', true);
-  var items = [
-    { label: '▶ 继续比赛', fn: function () {
-        togglePause(false);
-        // 决策点会暂停模拟：此时不是"暂停"，而是等玩家选指令
-        if (state && state.decision) toast('请先在球员头顶选择指令');
-      } },
-    { label: '⚙ 战术指令', fn: function () { ui.tacticOpen = !ui.tacticOpen; } },
-    { label: '👤 球员状态', fn: function () { ui.overlay = 'status'; ui.pauseOpen = false; api.post('/api/match/' + matchId + '/pause', { paused: false }); } },
-    { label: '🔧 比赛设定', fn: function () { ui.overlay = 'settings'; } },
-    { label: '⏪ 回放', fn: function () { toast('演示版暂未实现回放功能'); } },
-    { label: '⏻ 退出比赛', fn: function () {
-        if (Date.now() - ui.exitArm < 3000) { togglePause(false); exitMatch(); }
-        else { ui.exitArm = Date.now(); toast('再点一次确认退出比赛'); }
-      } },
-  ];
+  var items = pauseItems();
+  var sel = ui.pauseSel || 0;
   items.forEach(function (it, i) {
     var iy = y + 52 + i * 42, ih = 36;
+    var on = i === sel;
     var hov = it.label.indexOf('战术指令') === 0 && ui.tacticOpen;
-    ctx.fillStyle = hov ? '#2b5fe3' : '#141b34';
+    ctx.fillStyle = on || hov ? '#2b5fe3' : '#141b34';
     rr(x + 12, iy, w - 24, ih, 5); ctx.fill();
-    text(it.label, x + 28, iy + ih / 2, 18, '#fff', 'left');
-    (function (fn) { addClick(x + 12, iy, w - 24, ih, fn); })(it.fn);
+    text((on ? '▶ ' : '') + it.label, x + 28, iy + ih / 2, 18, on ? '#ffd94a' : '#fff', 'left');
+    (function (fn, idx) { addClick(x + 12, iy, w - 24, ih, function () { ui.pauseSel = idx; fn(); }); })(it.fn, i);
   });
   if (ui.tacticOpen) {
     var tys = y + 52 + 1 * 42;
@@ -2897,8 +3006,11 @@ function frame(t) {
 function frameInner(t) {
   frameNo++;
   clickables = [];
+  applyVisualViewport();
+  syncFsButton();
   syncTouchLayer();
   driveStickAim();
+  driveStickList();
   ctx.clearRect(0, 0, W, H);
   if (screen === 'title') drawTitle();
   else {
@@ -2972,6 +3084,84 @@ if (DEBUG) {
 }
 window.text = text;
 window.cutActionId = cutActionId;
+
+// vv-layout-v1：按 visualViewport 排画面，地址栏不再盖住底部按键。
+var chromeSim = (function () {
+  var m = /[?&]chrome=(\d+)/.exec((location && location.search) || '');
+  return m ? Math.min(140, parseInt(m[1], 10) || 0) : 0;
+})();
+function applyVisualViewport() {
+  var root = document.documentElement;
+  if (!root || !root.style || !root.style.setProperty) return;
+  var vv = window.visualViewport;
+  var top = vv ? vv.offsetTop : 0;
+  var left = vv ? vv.offsetLeft : 0;
+  var w = vv ? vv.width : (window.innerWidth || root.clientWidth || 800);
+  var h = vv ? vv.height : (window.innerHeight || root.clientHeight || 600);
+  if (chromeSim) h = Math.max(160, h - chromeSim);
+  root.style.setProperty('--vv-top', top + 'px');
+  root.style.setProperty('--vv-left', left + 'px');
+  root.style.setProperty('--vv-width', w + 'px');
+  root.style.setProperty('--vv-height', h + 'px');
+  var bar = document.getElementById('chrome-sim');
+  if (bar && bar.style) {
+    if (chromeSim) {
+      bar.hidden = false;
+      bar.style.height = chromeSim + 'px';
+    } else if ('hidden' in bar) bar.hidden = true;
+  }
+}
+function fullscreenNode() {
+  return document.fullscreenElement || document.webkitFullscreenElement || null;
+}
+function canFullscreen() {
+  var el = document.documentElement;
+  if (!el) return false;
+  var req = el.requestFullscreen || el.webkitRequestFullscreen;
+  if (typeof req !== 'function') return false;
+  if (document.fullscreenEnabled === false) return false;
+  var exit = document.exitFullscreen || document.webkitExitFullscreen;
+  return typeof exit === 'function';
+}
+function syncFsButton() {
+  var btn = document.getElementById('fs-btn');
+  if (!btn) return;
+  var show = canFullscreen() && isTouch && !portraitLock();
+  btn.hidden = !show;
+  if (!show) return;
+  btn.textContent = fullscreenNode() ? '退出全屏' : '全屏';
+}
+function toggleFullscreen() {
+  if (!canFullscreen()) return;
+  var el = document.documentElement;
+  if (fullscreenNode()) {
+    var exit = document.exitFullscreen || document.webkitExitFullscreen;
+    try { exit.call(document); } catch (err) {}
+    return;
+  }
+  var req = el.requestFullscreen || el.webkitRequestFullscreen;
+  try {
+    var ret = req.call(el);
+    if (ret && ret.catch) ret.catch(function () {});
+  } catch (err) {}
+}
+applyVisualViewport();
+if (window.visualViewport && window.visualViewport.addEventListener) {
+  window.visualViewport.addEventListener('resize', applyVisualViewport);
+  window.visualViewport.addEventListener('scroll', applyVisualViewport);
+}
+window.addEventListener('resize', applyVisualViewport);
+window.addEventListener('orientationchange', applyVisualViewport);
+document.addEventListener('fullscreenchange', syncFsButton);
+document.addEventListener('webkitfullscreenchange', syncFsButton);
+var fsBtn = document.getElementById('fs-btn');
+if (fsBtn && fsBtn.addEventListener) {
+  fsBtn.addEventListener('click', function (e) {
+    if (e && e.preventDefault) e.preventDefault();
+    if (e && e.stopPropagation) e.stopPropagation();
+    toggleFullscreen();
+  });
+}
 
 requestAnimationFrame(frame);
 })();

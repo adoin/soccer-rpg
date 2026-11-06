@@ -2,6 +2,8 @@
 * { margin: 0; padding: 0; box-sizing: border-box; }
 html, body {
   height: 100%;
+  height: 100dvh;
+  min-height: 100svh;
   background: #0b1020;
   font-family: "PingFang SC", "Microsoft YaHei", monospace;
   overflow: hidden;
@@ -14,19 +16,20 @@ html, body {
 }
 #wrap {
   position: fixed;
-  top: env(safe-area-inset-top, 0px);
-  right: env(safe-area-inset-right, 0px);
-  bottom: env(safe-area-inset-bottom, 0px);
-  left: env(safe-area-inset-left, 0px);
+  top: var(--vv-top, 0px);
+  left: var(--vv-left, 0px);
+  width: var(--vv-width, 100%);
+  height: var(--vv-height, 100dvh);
   background: #0b1020;
   touch-action: none;
   overscroll-behavior: none;
 }
 #game {
   position: absolute;
-  inset: 0;
-  width: 100%;
-  height: 100%;
+  left: env(safe-area-inset-left, 0px);
+  top: env(safe-area-inset-top, 0px);
+  width: calc(100% - env(safe-area-inset-left, 0px) - env(safe-area-inset-right, 0px));
+  height: calc(100% - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px));
   image-rendering: pixelated;
   image-rendering: crisp-edges;
   cursor: pointer;
@@ -38,7 +41,10 @@ html, body {
 /* 控制层盖在画布上。只有摇杆区和按键吃触摸，其余穿透到球场。 */
 #touch-ui {
   position: fixed;
-  inset: 0;
+  top: var(--vv-top, 0px);
+  left: var(--vv-left, 0px);
+  width: var(--vv-width, 100%);
+  height: var(--vv-height, 100dvh);
   z-index: 40;
   pointer-events: none;
   touch-action: none;
@@ -61,7 +67,7 @@ html, body {
   -webkit-touch-callout: none;
 }
 #stick-hint {
-  position: fixed;
+  position: absolute;
   width: 148px;
   height: 148px;
   margin-left: -74px;
@@ -84,7 +90,7 @@ html, body {
   font: bold 13px "PingFang SC", "Microsoft YaHei", sans-serif;
 }
 #float-stick {
-  position: fixed;
+  position: absolute;
   width: 148px;
   height: 148px;
   margin-left: -74px;
@@ -146,9 +152,9 @@ html, body {
 .vkey-key { color: #ffd94a; font-weight: 700; line-height: 1.1; pointer-events: none; }
 .vkey.held { background: rgba(255,217,74,0.5); }
 #touch-debug {
-  position: fixed;
+  position: absolute;
   left: 50%;
-  bottom: 108px;
+  bottom: 96px;
   transform: translateX(-50%);
   z-index: 6;
   max-width: 62%;
@@ -160,6 +166,41 @@ html, body {
   white-space: pre-wrap;
   text-align: center;
 }
+#fs-btn {
+  position: fixed;
+  z-index: 70;
+  top: calc(var(--vv-top, 0px) + env(safe-area-inset-top, 0px) + 8px);
+  left: calc(var(--vv-left, 0px) + env(safe-area-inset-left, 0px) + 8px);
+  min-width: 72px;
+  height: 36px;
+  padding: 0 12px;
+  border: 2px solid #ffe7a0;
+  border-radius: 8px;
+  background: #e8a923;
+  color: #3a2a00;
+  font: 800 16px/1 "PingFang SC", "Microsoft YaHei", sans-serif;
+  touch-action: manipulation;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+}
+#fs-btn[hidden] { display: none !important; }
+#chrome-sim {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 90;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #20242c;
+  color: #d5dbe8;
+  border-top: 1px solid #5a6578;
+  font: 600 14px/1 "PingFang SC", "Microsoft YaHei", sans-serif;
+  pointer-events: none;
+}
+#chrome-sim[hidden] { display: none !important; }
 #rotate-prompt {
   display: none;
   position: fixed;
