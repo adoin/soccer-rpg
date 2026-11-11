@@ -13,6 +13,9 @@ var cv = document.getElementById('game');
 var ctx = cv.getContext('2d');
 var W = 1280, H = 720;
 ctx.imageSmoothingEnabled = false;
+var menuBg = new Image();
+menuBg.src = 'assets/menu/menu-bg.webp';
+menuBg.onerror = function () { menuBg.onerror = null; menuBg.src = 'assets/menu/menu-bg.jpg'; };
 
 // ---------------- 工具 ----------------
 function clamp(v, lo, hi) { return v < lo ? lo : v > hi ? hi : v; }
@@ -476,6 +479,8 @@ document.addEventListener('keydown', function (e) {
   if (held) keysDown[held] = true;
   if (screen === 'title' || screen === 'career') {
     var ck = (e.key || '').toLowerCase();
+    if (inSettings() && (ck === 'a' || ck === 'arrowleft')) { nudgeSetting(-1); e.preventDefault(); return; }
+    if (inSettings() && (ck === 'd' || ck === 'arrowright')) { nudgeSetting(1); e.preventDefault(); return; }
     if (ck === 'w' || ck === 'arrowup') { stepCareer(-1); e.preventDefault(); return; }
     if (ck === 's' || ck === 'arrowdown') { stepCareer(1); e.preventDefault(); return; }
     if (ck === 'e' || ck === 'enter') { activateCareer(); e.preventDefault(); return; }
@@ -963,8 +968,7 @@ function layoutVKeys() {
     hint.style.marginTop = (-STICK_CSS_R) + 'px';
     hint.style.left = (hs.x - origin.left) + 'px';
     hint.style.top = (hs.y - origin.top) + 'px';
-    var menuOpen = screen === 'career' || (screen === 'title' && ui.titleView && ui.titleView !== 'main');
-    if ('hidden' in hint) hint.hidden = !!stickVec.on || menuOpen;
+    if ('hidden' in hint) hint.hidden = !!stickVec.on || screen !== 'game';
   }
   var layer = document.getElementById('vkey-layer');
   if (!layer || !layer.children) return;
@@ -1077,10 +1081,22 @@ function menuListTarget() {
 function driveStickList() {
   var target = menuListTarget();
   if (!target || !stickVec.on) { stickNav.dir = 0; return; }
+  var now = Date.now();
+  if (inSettings()) {
+    var ax = stickVec.dx;
+    var ay = stickVec.dy;
+    if (Math.abs(ax) > 0.48 && Math.abs(ax) >= Math.abs(ay)) {
+      var hdir = ax > 0 ? 1 : -1;
+      if (stickNav.dir === hdir && now < stickNav.until) return;
+      stickNav.dir = hdir;
+      stickNav.until = now + 360;
+      nudgeSetting(hdir);
+      return;
+    }
+  }
   var dy = stickVec.dy;
   var dir = dy > 0.48 ? -1 : (dy < -0.48 ? 1 : 0);
   if (!dir) { stickNav.dir = 0; return; }
-  var now = Date.now();
   if (stickNav.dir === dir && now < stickNav.until) return;
   stickNav.dir = dir;
   stickNav.until = now + 360;
@@ -2193,8 +2209,64 @@ function askNoteLines() {
   if (ask.mode === 'new') return ['在' + name + '新开生涯？会盖掉现在这份', who, when];
   return ['覆盖' + name + '？', who, when];
 }
+function inSettings() {
+  return (screen === 'title' && ui.titleView === 'settings') || (screen === 'career' && ui.careerView === 'settings');
+}
+function currentHalfOpt() {
+  for (var i = 0; i < HALF_OPTS.length; i++) if (HALF_OPTS[i].value === ui.halfLength) return HALF_OPTS[i];
+  return HALF_OPTS[1];
+}
+function currentMentalityOpt() {
+  for (var i = 0; i < MENTALITY_OPTS.length; i++) if (MENTALITY_OPTS[i].value === ui.mentality) return MENTALITY_OPTS[i];
+  return MENTALITY_OPTS[0];
+}
+function cycleSetting(kind, dir) {
+  var opts = kind === 'half' ? HALF_OPTS : MENTALITY_OPTS;
+  var cur = kind === 'half' ? ui.halfLength : ui.mentality;
+  var i = 0;
+  for (var n = 0; n < opts.length; n++) if (opts[n].value === cur) i = n;
+  i = (i + dir + opts.length) % opts.length;
+  if (kind === 'half') ui.halfLength = opts[i].value;
+  else ui.mentality = opts[i].value;
+  saveSettings();
+}
+function nudgeSetting(dir) {
+  var rows = settingRows();
+  var row = rows[ui.menuSel || 0];
+  if (!row || !row.kind) return;
+  cycleSetting(row.kind, dir);
+}
+function settingRows() {
+  return [
+    { kind: 'half', label: '半场时长', value: currentHalfOpt().label, fn: function () { cycleSetting('half', 1); } },
+    { kind: 'mentality', label: '战术倾向', value: currentMentalityOpt().label, fn: function () { cycleSetting('mentality', 1); } },
+    { label: '返回', back: true, fn: function () { backCareer(); } },
+  ];
+}
+function loadSettings() {
+  try {
+    var raw = localStorage.getItem('soccer-rpg-settings');
+    if (!raw) return;
+    var data = JSON.parse(raw);
+    if (!data || typeof data !== 'object') return;
+    if (HALF_OPTS.some(function (o) { return o.value === data.halfLength; })) ui.halfLength = data.halfLength;
+    if (MENTALITY_OPTS.some(function (o) { return o.value === data.mentality; })) ui.mentality = data.mentality;
+  } catch (e) {}
+}
+function saveSettings() {
+  try {
+    localStorage.setItem('soccer-rpg-settings', JSON.stringify({
+      schema: 1,
+      halfLength: ui.halfLength,
+      mentality: ui.mentality,
+    }));
+  } catch (e) {
+    toast('设置没写上，存储空间可能不够');
+  }
+}
 function titleActions() {
   if (ui.titleView === 'ask') return askRows();
+  if (ui.titleView === 'settings') return settingRows();
   if (ui.titleView === 'new' || ui.titleView === 'load') return saveActionRows(ui.titleView === 'new' ? 'new' : 'load');
   var latest = null;
   var C = careerApi();
@@ -2205,6 +2277,7 @@ function titleActions() {
     { label: '继续（最近存档）', enabled: has, fn: function () { resumeCareer(); } },
     { label: '新建生涯', fn: function () { ui.titleView = 'new'; ui.menuSel = 0; } },
     { label: '读取存档', fn: function () { ui.titleView = 'load'; ui.menuSel = 0; } },
+    { label: '设置', fn: function () { ui.titleView = 'settings'; ui.menuSel = 0; } },
   ];
 }
 function careerRows() {
@@ -2284,6 +2357,7 @@ function careerRows() {
   }
   if (ui.careerView === 'save') return saveActionRows(ui.saveMode || 'save');
   if (ui.careerView === 'save-ask') return askRows();
+  if (ui.careerView === 'settings') return settingRows();
   var nxt = C.nextFixture(careerSave.calendar, careerSave.clubId);
   var rows = [];
   if (nxt) {
@@ -2302,6 +2376,7 @@ function careerRows() {
   rows.push({ label: '保存', fn: function () { ui.careerView = 'save'; ui.saveMode = 'save'; ui.menuSel = 0; } });
   rows.push({ label: '读取', fn: function () { ui.careerView = 'save'; ui.saveMode = 'load'; ui.menuSel = 0; } });
   rows.push({ label: '删除', fn: function () { ui.careerView = 'save'; ui.saveMode = 'delete'; ui.menuSel = 0; } });
+  rows.push({ label: '设置', fn: function () { ui.careerView = 'settings'; ui.menuSel = 0; } });
   rows.push({ label: '返回标题', fn: function () { screen = 'title'; ui.titleView = 'main'; ui.menuSel = 0; } });
   return rows;
 }
@@ -2544,7 +2619,7 @@ function drawCareerColumns(rows, headers, size, small) {
   var backH = Math.max(font + 16, 36);
   var foot = Math.max(18, Math.round(small * 0.8));
   var helpY = H - foot;
-  var bottom = helpY - foot - 6;
+  var bottom = helpY - foot - 52;
   var titleSize = Math.min(size + 4, font + 12);
   var titleY = 12 + titleSize / 2;
   var subY = titleY + titleSize / 2 + small / 2 + 8;
@@ -2619,7 +2694,7 @@ function drawCareerColumns(rows, headers, size, small) {
     if (!row) continue;
     var y = listTop + i * rowH;
     var on = idx === sel;
-    ctx.fillStyle = row.own ? 'rgba(42, 168, 96, 0.5)' : (idx % 2 ? 'rgba(22,34,64,0.72)' : 'rgba(8,12,24,0.15)');
+    ctx.fillStyle = row.own ? 'rgba(32, 120, 72, 0.9)' : (idx % 2 ? 'rgba(12,20,40,0.9)' : 'rgba(8,14,28,0.84)');
     ctx.fillRect(left + 2, y + 1, width - 4, rowH - 2);
     if (row.own) {
       ctx.fillStyle = '#c8ffd8';
@@ -2702,9 +2777,30 @@ function drawCareerColumns(rows, headers, size, small) {
   text(hint, (left + right) / 2, helpY, Math.min(small, font + 1), '#9fb4dd', 'center');
 }
 
+function drawMenuBackdrop() {
+  ctx.fillStyle = '#07101f';
+  ctx.fillRect(0, 0, W, H);
+  if (menuBg && menuBg.complete && menuBg.naturalWidth) {
+    var iw = menuBg.naturalWidth, ih = menuBg.naturalHeight;
+    var scale = Math.max(W / iw, H / ih);
+    var dw = iw * scale, dh = ih * scale;
+    ctx.save();
+    ctx.imageSmoothingEnabled = true;
+    ctx.drawImage(menuBg, (W - dw) / 2, H - dh, dw, dh);
+    ctx.restore();
+  }
+  var g = ctx.createLinearGradient(0, 0, 0, H);
+  g.addColorStop(0, 'rgba(5,8,20,0.78)');
+  g.addColorStop(0.42, 'rgba(6,10,24,0.62)');
+  g.addColorStop(0.72, 'rgba(6,12,26,0.5)');
+  g.addColorStop(1, 'rgba(4,12,18,0.38)');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, W, H);
+}
 function drawCareer() {
   var C = careerApi();
-  ctx.fillStyle = '#0d1430'; ctx.fillRect(0, 0, W, H);
+  if (ui.careerView === 'settings') { drawSettingsScreen(); return; }
+  drawMenuBackdrop();
   if (!C || !careerSave) { text('没有生涯', W / 2, H / 2, 28, '#fff', 'center'); return; }
   var scale = paintScale();
   var size = Math.max(18, Math.ceil(15 / scale));
@@ -2741,13 +2837,13 @@ function drawCareer() {
     if (scroll < 0) scroll = 0;
     if (scroll > rows.length - maxRows) scroll = rows.length - maxRows;
   }
-  var x = isTouch ? 500 : 140;
-  var w = isTouch ? 500 : 1000;
+  var x = careerSafeLeft();
+  var w = Math.max(280, careerSafeRight() - x);
   for (var i = 0; i < maxRows && scroll + i < rows.length; i++) {
     var idx = scroll + i;
     var y = top + i * rowH;
     var on = idx === sel;
-    ctx.fillStyle = on ? 'rgba(255,217,74,0.18)' : 'rgba(8,12,26,0.55)';
+    ctx.fillStyle = on ? 'rgba(255,217,74,0.28)' : 'rgba(8,12,26,0.82)';
     rr(x, y, w, rowH - 4, 6); ctx.fill();
     ctx.save();
     ctx.beginPath();
@@ -2762,12 +2858,12 @@ function drawCareer() {
     ctx.restore();
     (function (n) { addClick(x, y, w, rowH - 4, function () { ui.menuSel = n; activateCareer(); }); })(idx);
   }
-  text('摇杆或上/下选择    确定    取消返回', W / 2, 680, small, '#9fb4dd', 'center');
+  var helpY = H - Math.max(18, Math.round(small * 0.65));
+  text('摇杆或上/下选择    确定    取消返回', W / 2, helpY, Math.min(small, 22), '#d5e4ff', 'center');
 }
 
 function drawSlotScreen(rows, heading) {
-  ctx.fillStyle = '#0d1430';
-  ctx.fillRect(0, 0, W, H);
+  drawMenuBackdrop();
   var small = careerFont(14);
   var titleSize = careerFont(18);
   var left = careerSafeLeft();
@@ -2862,57 +2958,102 @@ function paintSlotRow(row, idx, x, y, w, h, on, small) {
     if (row.enabled !== false && row.fn) row.fn();
   });
 }
+function drawSettingsScreen() {
+  drawMenuBackdrop();
+  var small = careerFont(15);
+  var titleSize = careerFont(22);
+  var left = Math.max(careerSafeLeft(), 80);
+  var right = careerSafeRight();
+  if (right - left < 360) { left = isTouch ? 300 : 180; right = isTouch ? 1000 : W - 180; }
+  var width = Math.min(760, right - left);
+  var x = left + (right - left - width) / 2;
+  text('设置', W / 2, 28 + titleSize / 2, titleSize, '#ffd94a', 'center', true);
+  text('左右或确定切换    取消返回', W / 2, 28 + titleSize + small, small, '#d5e4ff', 'center');
+  var rows = settingRows();
+  var sel = ui.menuSel || 0;
+  if (sel >= rows.length) sel = ui.menuSel = 0;
+  var rowH = small + 36;
+  var gap = Math.max(16, Math.round(small * 0.55));
+  var top = 28 + titleSize + small * 2 + 28;
+  rows.forEach(function (row, i) {
+    var y = top + i * (rowH + gap);
+    var on = i === sel;
+    ctx.fillStyle = on ? 'rgba(255,217,74,0.2)' : 'rgba(8,12,26,0.78)';
+    rr(x, y, width, rowH, 10); ctx.fill();
+    ctx.strokeStyle = on ? '#ffd94a' : '#3d5a99';
+    ctx.lineWidth = on ? 3 : 1.5;
+    ctx.stroke();
+    if (row.kind) {
+      text(row.label, x + 28, y + rowH / 2, small, on ? '#ffd94a' : '#fff', 'left', true);
+      var value = '◀   ' + row.value + '   ▶';
+      text(value, x + width - 28, y + rowH / 2, small, '#fff', 'right', true);
+      addClick(x, y, width * 0.5, rowH, function () { ui.menuSel = i; cycleSetting(row.kind, -1); });
+      addClick(x + width * 0.5, y, width * 0.5, rowH, function () { ui.menuSel = i; cycleSetting(row.kind, 1); });
+    } else {
+      text((on ? '▶ ' : '') + row.label, x + width / 2, y + rowH / 2, small, on ? '#3a2a00' : '#fff', 'center', true);
+      if (on) {
+        ctx.fillStyle = '#ffd94a';
+        rr(x, y, width, rowH, 10); ctx.fill();
+        text('▶ ' + row.label, x + width / 2, y + rowH / 2, small, '#3a2a00', 'center', true);
+      }
+      addClick(x, y, width, rowH, function () { ui.menuSel = i; if (row.fn) row.fn(); });
+    }
+  });
+}
 function drawTitle() {
+  if (ui.titleView === 'settings') { drawSettingsScreen(); return; }
   if (ui.titleView && ui.titleView !== 'main') {
     var slotHeading = ui.titleView === 'new' ? '新建生涯' : ui.titleView === 'load' ? '读取存档' : '请确认';
     drawSlotScreen(titleActions(), slotHeading);
     return;
   }
-  var g = ctx.createLinearGradient(0, 0, 0, H);
-  g.addColorStop(0, '#0d1430'); g.addColorStop(1, '#131c3d');
-  ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
-  // 像素草地装饰
-  ctx.fillStyle = '#1d7a3a'; ctx.fillRect(0, H - 120, W, 120);
-  ctx.fillStyle = '#239244';
-  for (var i = 0; i < 16; i++) ctx.fillRect(i * 80, H - 120, 40, 120);
-
-  text('热 血 足 球 RPG', W / 2, 190, 84, '#ffd94a', 'center', true);
-  text('天使之翼式 · 回合指令制 · 服务器权威判定', W / 2, 260, 24, '#9fb4dd', 'center');
-  text('青鹰高校  vs  烈风学院', W / 2, 320, 30, '#ffffff', 'center', true);
-
-  text('半场时长', W / 2 - 260, 380, 20, '#9fb4dd', 'center');
-  HALF_OPTS.forEach(function (o, i) {
-    var x = W / 2 - 200 + i * 150, y = 400, w = 130, h = 44;
-    var sel = ui.halfLength === o.value;
-    ctx.fillStyle = sel ? '#2b5fe3' : '#1a2340';
-    rr(x, y, w, h, 6); ctx.fill();
-    ctx.strokeStyle = sel ? '#8fb0ff' : '#3d5a99'; ctx.lineWidth = 2; ctx.stroke();
-    text(o.label, x + w / 2, y + h / 2, 20, sel ? '#fff' : '#9fb4dd', 'center', sel);
-    (function (v) { addClick(x, y, w, h, function () { ui.halfLength = v; }); })(o.value);
-  });
-
-  text('战术倾向', W / 2 - 260, 470, 20, '#9fb4dd', 'center');
-  MENTALITY_OPTS.forEach(function (o, i) {
-    var x = W / 2 - 200 + i * 150, y = 490, w = 130, h = 44;
-    var sel = ui.mentality === o.value;
-    ctx.fillStyle = sel ? '#2b8f5f' : '#1a2340';
-    rr(x, y, w, h, 6); ctx.fill();
-    ctx.strokeStyle = sel ? '#9fe8bf' : '#3d5a99'; ctx.lineWidth = 2; ctx.stroke();
-    text(o.label, x + w / 2, y + h / 2, 20, sel ? '#fff' : '#9fb4dd', 'center', sel);
-    (function (v) { addClick(x, y, w, h, function () { ui.mentality = v; }); })(o.value);
-  });
-
+  drawMenuBackdrop();
+  var scale = paintScale();
+  function cssPx(px, min, max) {
+    var n = Math.ceil(px / (scale || 1));
+    if (n < min) n = min;
+    if (n > max) n = max;
+    return n;
+  }
+  var titleSize = cssPx(36, 52, 78);
+  var subSize = cssPx(15, 16, 24);
+  var btnSize = cssPx(17, 18, 26);
+  var gap = cssPx(14, 16, 26);
+  var bh = btnSize + 26;
   var actions = titleActions();
-  var bh = 40, gap = 4, bw = 320;
-  var by0 = 546;
+  var block = actions.length * bh + (actions.length - 1) * gap;
+  var titleY = 28 + titleSize / 2;
+  var subY = titleY + titleSize / 2 + subSize * 0.85;
+  var vsY = subY + subSize + 18;
+  var topLimit = vsY + subSize + 28;
+  var bottomLimit = H - 28;
+  if (topLimit + block > bottomLimit) {
+    gap = Math.max(10, Math.floor((bottomLimit - topLimit - actions.length * bh) / Math.max(1, actions.length - 1)));
+    block = actions.length * bh + (actions.length - 1) * gap;
+  }
+  var by0 = topLimit;
+  if (by0 + block > bottomLimit) by0 = Math.max(topLimit - 8, bottomLimit - block);
+  var left = careerSafeLeft();
+  var right = careerSafeRight();
+  var bw = Math.min(460, Math.max(300, right - left - 48));
+  if (bw > right - left - 24) bw = right - left - 24;
+  var cx = (Math.max(left, 48) + Math.min(right, W - 48)) / 2;
+  text('热 血 足 球 RPG', cx, titleY, titleSize, '#ffd94a', 'center', true);
+  text('天使之翼式 · 回合指令制 · 服务器权威判定', cx, subY, subSize, '#d5e4ff', 'center');
+  text('青鹰高校  vs  烈风学院', cx, vsY, subSize + 6, '#ffffff', 'center', true);
+
+  ctx.fillStyle = 'rgba(6,10,22,0.38)';
+  rr(cx - bw / 2 - 18, by0 - 16, bw + 36, block + 32, 16); ctx.fill();
   actions.forEach(function (it, i) {
-    var bx = W / 2 - bw / 2, by = by0 + i * (bh + gap);
+    var bx = cx - bw / 2, by = by0 + i * (bh + gap);
     var on = (ui.menuSel || 0) === i;
     var off = it.enabled === false;
-    ctx.fillStyle = off ? '#3a4258' : (on ? '#ffd94a' : '#e8a923');
+    ctx.fillStyle = off ? 'rgba(28,34,48,0.72)' : (on ? '#ffd94a' : '#e8a923');
     rr(bx, by, bw, bh, 8); ctx.fill();
-    ctx.strokeStyle = on ? '#fff' : '#fff2c8'; ctx.lineWidth = on ? 3 : 2; ctx.stroke();
-    text((on ? '▶ ' : '') + it.label, W / 2, by + bh / 2, 20, off ? '#9aa3b8' : '#3a2a00', 'center', true);
+    ctx.strokeStyle = off ? '#667084' : (on ? '#fff' : '#fff2c8');
+    ctx.lineWidth = off ? 1.5 : (on ? 3 : 2);
+    ctx.stroke();
+    text((on && !off ? '▶ ' : '') + it.label, cx, by + bh / 2, btnSize, off ? '#8b93a6' : '#3a2a00', 'center', true);
     (function (fn, dis, n) {
       addClick(bx, by, bw, bh, function () {
         ui.menuSel = n;
@@ -3943,7 +4084,7 @@ function drawSettingsOverlay() {
     ctx.fillStyle = sel ? '#2b5fe3' : '#1a2340';
     rr(bx, by, bw, bh, 5); ctx.fill();
     text(o.label, bx + bw / 2, by + bh / 2, 15, sel ? '#fff' : '#9fb4dd', 'center');
-    (function (v) { addClick(bx, by, bw, bh, function () { ui.halfLength = v; }); })(o.value);
+    (function (v) { addClick(bx, by, bw, bh, function () { ui.halfLength = v; saveSettings(); }); })(o.value);
   });
   text('（半场时长在下场比赛生效）', x + 40, y + 210, 14, '#5f7099', 'left');
   text('战术倾向可在暂停菜单中随时切换', x + 40, y + 236, 14, '#5f7099', 'left');
@@ -3978,9 +4119,8 @@ function drawFulltime() {
 function drawToast() {
   if (state && state.lastAction && state.lastAction.duel) return;
   if (!ui.toast || Date.now() > ui.toastUntil) return;
-  var slotUi = (screen === 'title' && ui.titleView && ui.titleView !== 'main') ||
-    (screen === 'career' && (ui.careerView === 'save' || ui.careerView === 'save-ask'));
-  var y = slotUi ? (H - 92) : (H - 40);
+  var menuUi = screen === 'title' || screen === 'career';
+  var y = menuUi ? (H - 78) : (H - 40);
   ctx.font = '17px "PingFang SC","Microsoft YaHei",monospace';
   var tw = ctx.measureText(ui.toast).width + 40;
   ctx.fillStyle = 'rgba(8,12,26,0.92)';
@@ -4174,6 +4314,7 @@ if (fsBtn && fsBtn.addEventListener) {
   });
 }
 
+loadSettings();
 try {
   var bootCareer = careerApi();
   if (bootCareer && bootCareer.ensureMigrated) {

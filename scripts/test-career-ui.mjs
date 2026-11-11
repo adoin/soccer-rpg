@@ -134,7 +134,6 @@ async function run(name, viewport, touchMode) {
   await page.goto(base + '/?debug=1', { waitUntil: 'domcontentloaded' });
   if (touchMode) await touch.init();
   await page.waitForTimeout(700);
-  await tap(page, 505, 422); // 1 分钟半场
   await page.keyboard.press('s'); // 继续是灰的，会落到新建生涯
   await page.keyboard.press('Enter'); // 新建生涯
   await page.waitForFunction(() => window.__touchState().titleView === 'new');
