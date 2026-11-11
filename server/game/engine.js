@@ -122,7 +122,11 @@ function Match(id, options) {
     typeof options.seed === 'number' ? options.seed : (Date.now() ^ (Math.random() * 1e9)) >>> 0
   );
 
-  var teams = T.makeTeams();
+  var teams = (options.homeSquad && options.awaySquad && T.makeCustom)
+    ? T.makeCustom(options.homeSquad, options.awaySquad)
+    : T.makeTeams();
+  this.homeName = options.homeName || T.HOME_NAME;
+  this.awayName = options.awayName || T.AWAY_NAME;
   this.players = teams.home.concat(teams.away);
   this.byId = {};
   var self = this;
@@ -294,7 +298,7 @@ Match.prototype.goal = function (scorer, team) {
     playerName: scorer.name,
     team: team,
     success: true,
-    text: '⚽ ' + scorer.name + ' 破门得分！' + T.HOME_NAME + ' ' + this.score.home + ' - ' + this.score.away + ' ' + T.AWAY_NAME,
+    text: '⚽ ' + scorer.name + ' 破门得分！' + this.homeName + ' ' + this.score.home + ' - ' + this.score.away + ' ' + this.awayName,
     until: Date.now() + 3400,
   });
   this.concedeTeam = team === 'home' ? 'away' : 'home';
@@ -1023,7 +1027,7 @@ Match.prototype.endHalf = function () {
     this.decision = null;
     this.setAction({
       kind: 'halftime', label: '中场休息', playerName: '', team: 'home', success: true,
-      text: '上半场结束：' + T.HOME_NAME + ' ' + this.score.home + ' - ' + this.score.away + ' ' + T.AWAY_NAME,
+      text: '上半场结束：' + this.homeName + ' ' + this.score.home + ' - ' + this.score.away + ' ' + this.awayName,
       until: Date.now() + 7800,
     });
   } else {
@@ -2762,7 +2766,7 @@ Match.prototype.whistleOffside = function (os, passer) {
   this.stageRestart('offside', defendingTeam, sx, sy, taker);
   this.enterStoppage('whistle', 2200, taker.id);
   this.markRestart({ kind: 'offside', team: defendingTeam, x: sx, y: sy, taker: taker, label: '越位 → 任意球', indirect: true });
-  var teamName = defendingTeam === 'home' ? T.HOME_NAME : T.AWAY_NAME;
+  var teamName = defendingTeam === 'home' ? this.homeName : this.awayName;
   this.setAction({
     kind: 'offside',
     label: '越位',
@@ -3181,7 +3185,7 @@ Match.prototype.whistleThrowIn = function (team, bx, by) {
   this.stageRestart('throwin', team, sx, sy, taker);
   this.enterStoppage('whistle', 1400, taker.id);
   this.markRestart({ kind: 'throwin', team: team, x: sx, y: sy, taker: taker, label: '界外球' });
-  var teamName = team === 'home' ? T.HOME_NAME : T.AWAY_NAME;
+  var teamName = team === 'home' ? this.homeName : this.awayName;
   this.setAction({
     kind: 'throwin', label: '界外球', playerName: taker.name, team: team, success: true,
     text: '球出边线，' + teamName + ' 获得界外球（' + taker.name + ' 掷）。',
@@ -3231,7 +3235,7 @@ Match.prototype.whistleGoalKick = function (team) {
   this.separatePlayers();
   this.enterStoppage('whistle', 1600, keeper.id);
   this.markRestart({ kind: 'goalkick', team: team, x: gx, y: FIELD.H / 2, taker: keeper, label: '球门球' });
-  var teamName = team === 'home' ? T.HOME_NAME : T.AWAY_NAME;
+  var teamName = team === 'home' ? this.homeName : this.awayName;
   this.setAction({
     kind: 'goalkick', label: '球门球', playerName: keeper.name, team: team, success: true,
     text: teamName + ' 获得球门球（' + keeper.name + ' 开）。',
@@ -3261,7 +3265,7 @@ Match.prototype.whistleCorner = function (team) {
   this.enterStoppage('whistle', 1800, taker.id);
   this.markRestart({ kind: 'corner', team: team, x: cx, y: cy, taker: taker, label: '角球' });
   this.maybeOpenRestartMenu();
-  var teamName = team === 'home' ? T.HOME_NAME : T.AWAY_NAME;
+  var teamName = team === 'home' ? this.homeName : this.awayName;
   this.setAction({
     kind: 'corner', label: '角球', playerName: taker.name, team: team, success: true,
     text: teamName + ' 获得角球（' + taker.name + ' 主罚）。',
@@ -3415,7 +3419,7 @@ Match.prototype.setupPenalty = function (foul, prefixText) {
     kind: 'penalty', team: team, x: spotX, y: spotY, taker: taker, label: '犯规 → 点球',
   });
   this.maybeOpenRestartMenu();
-  var teamName = team === 'home' ? T.HOME_NAME : T.AWAY_NAME;
+  var teamName = team === 'home' ? this.homeName : this.awayName;
   var sentence = prefixText || '';
   if (sentence.indexOf('获得点球') < 0) sentence += teamName + ' 获得点球。';
   this.setAction({
@@ -3726,6 +3730,8 @@ Match.prototype.serialize = function () {
   var nowMs = Date.now();
   return {
     id: this.id,
+    homeName: this.homeName,
+    awayName: this.awayName,
     phase: this.phase,
     half: this.half,
     halfLabel: this.half === 1 ? '前半' : '后半',

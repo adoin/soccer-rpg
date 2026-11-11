@@ -49,6 +49,9 @@ child.execSync(
 copy(path.join(ROOT, 'shared/constants.js'), path.join(DOCS, 'shared/constants.js'));
 copy(path.join(ROOT, 'shared/teams.js'), path.join(DOCS, 'shared/teams.js'));
 copy(path.join(ROOT, 'shared/kits.js'), path.join(DOCS, 'shared/kits.js')); // ★ 球衣调色板（2026-10-10）
+copy(path.join(ROOT, 'shared/career.js'), path.join(DOCS, 'shared/career.js'));
+copy(path.join(ROOT, 'shared/mods/amateur.js'), path.join(DOCS, 'shared/mods/amateur.js'));
+copy(path.join(ROOT, 'shared/mods/example-cup.js'), path.join(DOCS, 'shared/mods/example-cup.js'));
 copy(path.join(ROOT, 'client/js/sprites.js'), path.join(DOCS, 'js/sprites.js'));
 copy(path.join(ROOT, 'client/js/manga-cutin.js'), path.join(DOCS, 'js/manga-cutin.js')); // ★ 漫画分镜引擎（2026-10-14）
 walk(path.join(ROOT, 'client/css')).forEach(function (f) {
@@ -137,7 +140,7 @@ var adapter = [
   '        var halfLength = parseInt(body.halfLength, 10);',
   '        if (!(halfLength >= 30 && halfLength <= 1200)) halfLength = 180;',
   '        var id = newId();',
-  "        matches[id] = new Match(id, { halfLength: halfLength, mentality: body.mentality || 'balanced' });",
+  "        matches[id] = new Match(id, { halfLength: halfLength, mentality: body.mentality || 'balanced', homeSquad: body.homeSquad, awaySquad: body.awaySquad, homeName: body.homeName, awayName: body.awayName, seed: body.seed });",
   "        return Promise.resolve({ ok: true, matchId: id });",
   '      }',
   "      m = url.match(/^\\/api\\/match\\/([^\\/]+)\\/command$/);",
@@ -232,6 +235,9 @@ html = html
   .replace('src="/shared/constants.js"', 'src="shared/constants.js?v=' + ver + '"')
   .replace('src="/shared/teams.js"', 'src="shared/teams.js?v=' + ver + '"')
   .replace('src="/shared/kits.js"', 'src="shared/kits.js?v=' + ver + '"')
+  .replace('src="/shared/career.js"', 'src="shared/career.js?v=' + ver + '"')
+  .replace('src="/shared/mods/amateur.js"', 'src="shared/mods/amateur.js?v=' + ver + '"')
+  .replace('src="/shared/mods/example-cup.js"', 'src="shared/mods/example-cup.js?v=' + ver + '"')
   .replace('src="js/sprites.js"', 'src="js/sprites.js?v=' + ver + '"')
   .replace('src="js/manga-cutin.js"', 'src="js/manga-cutin.js?v=' + ver + '"')
   .replace('src="js/main.js"', 'src="js/main.js?v=' + ver + '"')

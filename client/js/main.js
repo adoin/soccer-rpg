@@ -483,6 +483,14 @@ cv.addEventListener('click', function (e) {
 document.addEventListener('keydown', function (e) {
   var held = (e.key || '').toLowerCase();
   if (held) keysDown[held] = true;
+  if (screen === 'title' || screen === 'career') {
+    var ck = (e.key || '').toLowerCase();
+    if (ck === 'w' || ck === 'arrowup') { stepCareer(-1); e.preventDefault(); return; }
+    if (ck === 's' || ck === 'arrowdown') { stepCareer(1); e.preventDefault(); return; }
+    if (ck === 'e' || ck === 'enter') { activateCareer(); e.preventDefault(); return; }
+    if (ck === 'q' || ck === 'escape') { backCareer(); e.preventDefault(); return; }
+    return;
+  }
   if (e.key === 'Escape' && screen === 'game') {
     if (state && state.lastAction && state.lastAction.duel) { sendInput({ dismissOverlay: true }); return; }
     if (headMenuOpen()) { headMenuBack(); return; } // 头顶菜单内：Esc = 返回上一步
@@ -734,7 +742,7 @@ function capturePointer(nativeEvent, el) {
   try { el.setPointerCapture(nativeEvent.pointerId); } catch (err) {}
 }
 function controlStickDown(ns, rawId, cx, cy, nativeEvent, el) {
-  if (!isTouch || screen !== 'game' || portraitLock()) return false;
+  if (!isTouch || portraitLock() || (screen !== 'game' && screen !== 'career' && screen !== 'title')) return false;
   noteTouchDbg(nativeEvent && nativeEvent.type ? nativeEvent.type : 'touchstart', cx, cy, 'stick');
   if (nativeEvent && nativeEvent.cancelable) nativeEvent.preventDefault();
   if (nativeEvent && nativeEvent.stopPropagation) nativeEvent.stopPropagation();
@@ -752,7 +760,7 @@ function controlStickDown(ns, rawId, cx, cy, nativeEvent, el) {
   return true;
 }
 function controlKeyDown(ns, rawId, key, nativeEvent, el, cx, cy) {
-  if (!isTouch || screen !== 'game' || portraitLock() || !key) return false;
+  if (!isTouch || portraitLock() || !key || (screen !== 'game' && screen !== 'career' && screen !== 'title')) return false;
   var x = cx != null ? cx : (nativeEvent ? nativeEvent.clientX : 0);
   var y = cy != null ? cy : (nativeEvent ? nativeEvent.clientY : 0);
   noteTouchDbg(nativeEvent && nativeEvent.type ? nativeEvent.type : 'touchstart', x, y, key.id);
@@ -770,7 +778,7 @@ function controlKeyDown(ns, rawId, key, nativeEvent, el, cx, cy) {
   return true;
 }
 function handleDown(ns, rawId, p, nativeEvent, clientX, clientY) {
-  if (!isTouch || screen !== 'game' || portraitLock()) return false;
+  if (!isTouch || portraitLock() || (screen !== 'game' && screen !== 'career' && screen !== 'title')) return false;
   var cx = clientX != null ? clientX : (nativeEvent ? nativeEvent.clientX : null);
   var cy = clientY != null ? clientY : (nativeEvent ? nativeEvent.clientY : null);
   if (typeof showingCutscene === 'function' && showingCutscene() && !headMenuOpen()) skipCutscene();
@@ -1000,7 +1008,7 @@ function layoutVKeys() {
 function syncTouchLayer() {
   var el = document.getElementById('touch-ui');
   if (!el || !('hidden' in el)) return;
-  var on = !!(isTouch && screen === 'game' && !portraitLock());
+  var on = !!(isTouch && (screen === 'game' || screen === 'career' || screen === 'title') && !portraitLock());
   el.hidden = !on;
   if (!on) return;
   ensureVKeyButtons();
@@ -1027,6 +1035,13 @@ function stepSelection(get, set, len, enabled, dir) {
   set(i);
 }
 function menuListTarget() {
+  if ((screen === 'title' || screen === 'career') && typeof careerRowCount === 'function') {
+    return {
+      get: function () { return ui.menuSel || 0; },
+      set: function (i) { ui.menuSel = i; },
+      len: function () { return careerRowCount(); },
+    };
+  }
   var lvl = (typeof hmTop === 'function') ? hmTop() : null;
   if (headMenuOpen() && lvl && lvl.kind !== 'aim') {
     if (lvl.kind === 'confirm') {
@@ -1111,8 +1126,10 @@ function syncEventToast(st) {
 }
 
 // ---------------- 比赛控制 ----------------
-function startMatch() {
-  api.post('/api/match', { halfLength: ui.halfLength, mentality: ui.mentality }).then(function (r) {
+function startMatch(extra) {
+  var body = { halfLength: ui.halfLength, mentality: ui.mentality };
+  if (extra) for (var k in extra) body[k] = extra[k];
+  api.post('/api/match', body).then(function (r) {
     if (!r.ok) { toast('创建比赛失败'); return; }
     matchId = r.matchId;
     screen = 'game';
@@ -1174,6 +1191,7 @@ function refresh() {
       if (!renderPos[p.id]) renderPos[p.id] = { x: p.x, y: p.y };
     });
     syncEventToast(state);
+    finishCareerIfDone();
     // 输入心跳：保持操控输入新鲜（服务器 2 秒无有效操作则 AI 接管）
     sendInput();
   }).catch(function () {});
@@ -1908,6 +1926,271 @@ var MENTALITY_OPTS = [
   { label: '进攻', value: 'attack' },
   { label: '防守', value: 'defend' },
 ];
+// ---------------- 业余联赛生涯 ----------------
+var careerSave = null;
+function careerApi() { return (typeof Career !== 'undefined') ? Career : (typeof window !== 'undefined' ? window.Career : null); }
+function rememberCareer() {
+  var C = careerApi();
+  if (C && careerSave) C.persist(careerSave);
+  window.__career = careerSave;
+}
+function loadCareer() {
+  var C = careerApi();
+  if (!C) return null;
+  careerSave = C.restore();
+  window.__career = careerSave;
+  return careerSave;
+}
+function titleActions() {
+  var rows = [
+    { label: '开始比赛', fn: function () { ui.careerFix = null; startMatch(); } },
+    { label: '新开业余联赛', fn: function () { openNewCareer(); } },
+  ];
+  var C = careerApi();
+  var saved = C ? C.restore() : null;
+  rows.push({ label: saved ? '继续生涯' : '继续生涯（无存档）', enabled: !!saved, fn: function () { resumeCareer(); } });
+  return rows;
+}
+function careerRows() {
+  var C = careerApi();
+  if (!C || !careerSave) return [];
+  if (ui.careerView === 'table') {
+    return C.ranked(careerSave).map(function (r) {
+      return { label: C.teamName(careerSave, r.teamId) + '  ' + r.pts + '分  净胜' + r.gd, fn: function () {} };
+    }).concat([{ label: '返回', fn: function () { ui.careerView = 'hub'; ui.menuSel = 0; } }]);
+  }
+  if (ui.careerView === 'fixtures') {
+    var mine = careerSave.calendar.fixtures.filter(function (f) {
+      return f.homeId === careerSave.clubId || f.awayId === careerSave.clubId;
+    });
+    return mine.map(function (f) {
+      var opp = f.homeId === careerSave.clubId ? f.awayId : f.homeId;
+      var where = f.homeId === careerSave.clubId ? '主' : '客';
+      var tag = f.status === 'played' ? (f.hg + '-' + f.ag) : (f.postponed ? '延期' : '未赛');
+      var comp = f.competitionId === 'example-cup' ? '杯赛' : '联赛';
+      return { label: '第' + (f.date + 1) + '轮 ' + comp + ' ' + where + ' ' + C.teamName(careerSave, opp) + '  ' + tag, fn: function () {} };
+    }).concat([{ label: '返回', fn: function () { ui.careerView = 'hub'; ui.menuSel = 0; } }]);
+  }
+  if (ui.careerView === 'squad') {
+    return careerSave.squad.map(function (p) {
+      var star = careerSave.xi.indexOf(p.id) >= 0 ? '首发 ' : '';
+      return {
+        label: star + p.pos + ' ' + p.name + '  ' + p.age + '岁',
+        sub: '能力 ' + (p.ovr || 0) + '    周薪 ' + p.wage,
+        fn: function () { trySell(p.id); },
+      };
+    }).concat([{ label: '返回', fn: function () { ui.careerView = 'hub'; ui.menuSel = 0; } }]);
+  }
+  if (ui.careerView === 'market') {
+    return careerSave.market.map(function (L) {
+      var p = L.player;
+      return {
+        label: p.pos + ' ' + p.name + '  ' + p.age + '岁  能力' + (p.ovr || 0),
+        sub: '转会费 ' + L.fee + '    周薪 ' + p.wage,
+        fn: function () { tryBuy(L.id); },
+      };
+    }).concat([{ label: '返回', fn: function () { ui.careerView = 'hub'; ui.menuSel = 0; } }]);
+  }
+  if (ui.careerView === 'xi') {
+    return C.XI_SLOTS.map(function (slot, i) {
+      var p = null;
+      careerSave.squad.forEach(function (q) { if (q.id === careerSave.xi[i]) p = q; });
+      return { label: slot.num + ' ' + slot.pos + '  ' + (p ? p.name : '空'), fn: function () { cycleSlot(i); } };
+    }).concat([{ label: '返回', fn: function () { ui.careerView = 'hub'; ui.menuSel = 0; } }]);
+  }
+  if (ui.careerView === 'end') {
+    return [
+      { label: '开始新赛季', fn: function () { rollCareer(); } },
+      { label: '返回标题', fn: function () { screen = 'title'; ui.menuSel = 0; } },
+    ];
+  }
+  var nxt = C.nextFixture(careerSave.calendar, careerSave.clubId);
+  var rows = [];
+  if (nxt) {
+    var opp = nxt.homeId === careerSave.clubId ? nxt.awayId : nxt.homeId;
+    var where = nxt.homeId === careerSave.clubId ? '主场' : '客场';
+    var comp = nxt.competitionId === 'example-cup' ? '示例杯赛' : '业余联赛';
+    rows.push({ label: '开踢 ' + comp + ' ' + where + ' vs ' + C.teamName(careerSave, opp), fn: startCareerMatch });
+  } else {
+    rows.push({ label: '赛季结束，查看排名', fn: function () { ui.careerView = 'end'; ui.menuSel = 0; } });
+  }
+  rows.push({ label: '阵容', fn: function () { ui.careerView = 'squad'; ui.menuSel = 0; } });
+  rows.push({ label: '首发', fn: function () { ui.careerView = 'xi'; ui.menuSel = 0; } });
+  rows.push({ label: '积分榜', fn: function () { ui.careerView = 'table'; ui.menuSel = 0; } });
+  rows.push({ label: '转会', fn: function () { ui.careerView = 'market'; ui.menuSel = 0; } });
+  rows.push({ label: '赛程', fn: function () { ui.careerView = 'fixtures'; ui.menuSel = 0; } });
+  rows.push({ label: '返回标题', fn: function () { screen = 'title'; ui.menuSel = 0; } });
+  return rows;
+}
+function careerRowCount() {
+  if (screen === 'title') return titleActions().length;
+  if (screen === 'career') return careerRows().length;
+  return 0;
+}
+function stepCareer(dir) {
+  stepSelection(function () { return ui.menuSel || 0; }, function (i) { ui.menuSel = i; }, careerRowCount, function (i) {
+    var rows = screen === 'title' ? titleActions() : careerRows();
+    return !rows[i] || rows[i].enabled !== false;
+  }, dir);
+}
+function activateCareer() {
+  var rows = screen === 'title' ? titleActions() : careerRows();
+  var it = rows[ui.menuSel || 0];
+  if (it && it.enabled !== false) it.fn();
+}
+function backCareer() {
+  if (screen === 'career' && ui.careerView && ui.careerView !== 'hub') {
+    ui.careerView = 'hub'; ui.menuSel = 0; return;
+  }
+  if (screen === 'career') { screen = 'title'; ui.menuSel = 0; }
+}
+function openNewCareer() {
+  var C = careerApi();
+  if (!C) { toast('生涯模块没载入'); return; }
+  careerSave = C.newCareer((Date.now() % 99991) >>> 0);
+  rememberCareer();
+  screen = 'career';
+  ui.careerView = 'hub';
+  ui.menuSel = 0;
+  ui.careerFix = null;
+}
+function resumeCareer() {
+  if (!loadCareer()) { toast('没有存档'); return; }
+  screen = 'career';
+  ui.careerView = 'hub';
+  ui.menuSel = 0;
+}
+function tryBuy(id) {
+  var C = careerApi();
+  var r = C.buy(careerSave, id);
+  toast(r.ok ? '已买入' : r.error);
+  if (r.ok) rememberCareer();
+}
+function trySell(id) {
+  var C = careerApi();
+  if (careerSave.xi.indexOf(id) >= 0) { toast('先到首发里换下来'); return; }
+  var r = C.sell(careerSave, id);
+  toast(r.ok ? '已卖出' : r.error);
+  if (r.ok) rememberCareer();
+}
+function cycleSlot(i) {
+  var C = careerApi();
+  var r = C.cycleXI(careerSave, i);
+  toast(r.ok ? ('换成 ' + r.player.name) : r.error);
+  if (r.ok) rememberCareer();
+}
+function rollCareer() {
+  var C = careerApi();
+  C.rollSeason(careerSave);
+  rememberCareer();
+  ui.careerView = 'hub';
+  ui.menuSel = 0;
+  toast('新赛季开始');
+}
+function startCareerMatch() {
+  var C = careerApi();
+  var fx = C.nextFixture(careerSave.calendar, careerSave.clubId);
+  if (!fx) { ui.careerView = 'end'; return; }
+  var homeId = fx.homeId, awayId = fx.awayId;
+  function side(id) {
+    if (id === careerSave.clubId) return C.lineupPlayers(careerSave.squad, careerSave.xi);
+    var team = null;
+    careerSave.teams.forEach(function (t) { if (t.id === id) team = t; });
+    var xi = C.autoXI(team.squad);
+    return C.lineupPlayers(team.squad, xi);
+  }
+  var home = side(homeId), away = side(awayId);
+  if (!home || !away) { toast('阵容不齐，先排首发'); return; }
+  ui.careerFix = fx.id;
+  ui.careerFixDone = false;
+  var userHome = homeId === careerSave.clubId;
+  startMatch({
+    halfLength: ui.halfLength,
+    homeSquad: userHome ? home : away,
+    awaySquad: userHome ? away : home,
+    homeName: C.teamName(careerSave, userHome ? homeId : awayId),
+    awayName: C.teamName(careerSave, userHome ? awayId : homeId),
+    seed: (careerSave.seed + fx.date * 17) >>> 0,
+  });
+}
+function finishCareerIfDone() {
+  var C = careerApi();
+  if (!C || !careerSave || !ui.careerFix || ui.careerFixDone) return;
+  if (!state || state.phase !== 'fulltime') return;
+  ui.careerFixDone = true;
+  var userHome = true;
+  var fx = null;
+  careerSave.calendar.fixtures.forEach(function (f) { if (f.id === ui.careerFix) fx = f; });
+  if (fx) userHome = fx.homeId === careerSave.clubId;
+  var hg = userHome ? state.score.home : state.score.away;
+  var ag = userHome ? state.score.away : state.score.home;
+  ui.careerLast = C.recordResult(careerSave, ui.careerFix, hg, ag);
+  rememberCareer();
+}
+function returnToCareer() {
+  if (ui.refreshTimer) { clearInterval(ui.refreshTimer); ui.refreshTimer = null; }
+  if (matchId) api.del('/api/match/' + matchId).catch(function () {});
+  matchId = null;
+  state = null;
+  screen = 'career';
+  ui.careerView = (ui.careerLast && ui.careerLast.done) ? 'end' : 'hub';
+  ui.menuSel = 0;
+  ui.pauseOpen = false;
+  ui.careerFix = null;
+}
+function drawCareer() {
+  var C = careerApi();
+  ctx.fillStyle = '#0d1430'; ctx.fillRect(0, 0, W, H);
+  if (!C || !careerSave) { text('没有生涯', W / 2, H / 2, 28, '#fff', 'center'); return; }
+  var scale = paintScale();
+  var size = Math.max(18, Math.ceil(15 / scale));
+  var small = Math.max(15, Math.ceil(13 / scale));
+  text(C.teamName(careerSave, careerSave.clubId) + '  第' + careerSave.season + '赛季', 48, 36, size + 6, '#ffd94a', 'left', true);
+  text('预算 ' + careerSave.budget + '    阵容 ' + careerSave.squad.length + '人', 48, 72, small, '#d6e6ff', 'left');
+  if (ui.careerView === 'end') {
+    var list = C.ranked(careerSave);
+    var champ = list[0];
+    text('赛季结束', W / 2, 150, size + 10, '#ffd94a', 'center', true);
+    text('冠军  ' + C.teamName(careerSave, champ.teamId), W / 2, 210, size + 4, '#fff', 'center', true);
+    text('河畔排名  第' + C.rankOf(careerSave, careerSave.clubId) + '名', W / 2, 260, size + 2, '#9dffb0', 'center', true);
+  }
+  var rows = careerRows();
+  var hasSub = rows.some(function (r) { return r.sub; });
+  var rowH = hasSub ? Math.max(56, small * 2 + 14) : Math.max(36, small + 16);
+  var top = ui.careerView === 'end' ? 320 : 110;
+  var maxRows = Math.max(4, Math.floor((500 - top) / rowH));
+  var sel = ui.menuSel || 0;
+  if (sel >= rows.length) sel = ui.menuSel = 0;
+  var scroll = 0;
+  if (rows.length > maxRows) {
+    scroll = sel - Math.floor(maxRows / 2);
+    if (scroll < 0) scroll = 0;
+    if (scroll > rows.length - maxRows) scroll = rows.length - maxRows;
+  }
+  var x = isTouch ? 500 : 140;
+  var w = isTouch ? 500 : 1000;
+  for (var i = 0; i < maxRows && scroll + i < rows.length; i++) {
+    var idx = scroll + i;
+    var y = top + i * rowH;
+    var on = idx === sel;
+    ctx.fillStyle = on ? 'rgba(255,217,74,0.18)' : 'rgba(8,12,26,0.55)';
+    rr(x, y, w, rowH - 4, 6); ctx.fill();
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(x + 8, y, w - 16, rowH - 4);
+    ctx.clip();
+    if (rows[idx].sub) {
+      text((on ? '▶ ' : '') + rows[idx].label, x + 16, y + rowH * 0.34, small, on ? '#ffd94a' : '#fff', 'left', true);
+      text(rows[idx].sub, x + 36, y + rowH * 0.72, Math.max(14, small - 2), '#d6e6ff', 'left');
+    } else {
+      text((on ? '▶ ' : '') + rows[idx].label, x + 16, y + (rowH - 4) / 2, on ? size : small, on ? '#ffd94a' : '#fff', 'left', true);
+    }
+    ctx.restore();
+    (function (n) { addClick(x, y, w, rowH - 4, function () { ui.menuSel = n; activateCareer(); }); })(idx);
+  }
+  text('摇杆或上/下选择    确定    取消返回', W / 2, 680, small, '#9fb4dd', 'center');
+}
+
 function drawTitle() {
   var g = ctx.createLinearGradient(0, 0, 0, H);
   g.addColorStop(0, '#0d1430'); g.addColorStop(1, '#131c3d');
@@ -1943,14 +2226,16 @@ function drawTitle() {
     (function (v) { addClick(x, y, w, h, function () { ui.mentality = v; }); })(o.value);
   });
 
-  var bx = W / 2 - 130, by = 580, bw = 260, bh = 64;
-  ctx.fillStyle = '#e8a923'; rr(bx, by, bw, bh, 8); ctx.fill();
-  ctx.strokeStyle = '#fff2c8'; ctx.lineWidth = 3; ctx.stroke();
-  text('⚽ 开 始 比 赛', W / 2, by + bh / 2, 28, '#3a2a00', 'center', true);
-  addClick(bx, by, bw, bh, startMatch);
-
-  text('电脑：WASD 移动 · J/Shift加速 K减速 · L切换球员 · E指令菜单/确定 · Q取消 · 空格暂停', W / 2, 672, 16, '#5f7099', 'center');
-  text('手机：左摇杆移动 · 确定E 取消Q 上W 下S 切换L · 右上角菜单 · 减速只在键盘K', W / 2, 696, 15, '#5f7099', 'center');
+  var actions = titleActions();
+  actions.forEach(function (it, i) {
+    var bw = 280, bh = 48, bx = W / 2 - bw / 2, by = 548 + i * 54;
+    var on = (ui.menuSel || 0) === i;
+    ctx.fillStyle = it.enabled === false ? '#3a4258' : (on ? '#ffd94a' : '#e8a923');
+    rr(bx, by, bw, bh, 8); ctx.fill();
+    ctx.strokeStyle = on ? '#fff' : '#fff2c8'; ctx.lineWidth = on ? 3 : 2; ctx.stroke();
+    text((on ? '▶ ' : '') + it.label, W / 2, by + bh / 2, 22, it.enabled === false ? '#9aa3b8' : '#3a2a00', 'center', true);
+    (function (fn, dis) { addClick(bx, by, bw, bh, function () { if (!dis) fn(); }); })(it.fn, it.enabled === false);
+  });
 }
 
 // ---------------- 绘制：比赛 ----------------
@@ -1969,7 +2254,7 @@ function drawGame(t) {
   if (isTouch) drawGamepad(); // 移动端/Pad：透明虚拟手柄（画在菜单下层）
   if (ui.pauseOpen) drawPauseMenu();
   drawBottomUI(t);
-  drawCutin();
+  if (!(state && state.phase === 'fulltime')) drawCutin();
   // ★ 被动决策：头顶浮动菜单（无背景、多级嵌套，不遮挡场上内容）
   if (state && state.decision && !ui.pauseOpen && !ui.overlay) drawHeadMenu();
   if (ui.overlay === 'status') drawStatusOverlay();
@@ -2396,13 +2681,13 @@ function drawScoreboard() {
   var y = 8, h = 44;
   // 主队
   ctx.fillStyle = '#1d3fa0'; ctx.fillRect(14, y, 170, h);
-  text('青鹰高校', 99, y + h / 2, 22, '#fff', 'center', true);
+  text((state && state.homeName) || '青鹰高校', 99, y + h / 2, 18, '#fff', 'center', true);
   // 比分
   ctx.fillStyle = '#0a0d18'; ctx.fillRect(184, y, 120, h);
   text(state.score.home + ' - ' + state.score.away, 244, y + h / 2, 26, '#ffd94a', 'center', true);
   // 客队
   ctx.fillStyle = '#a02a2a'; ctx.fillRect(304, y, 170, h);
-  text('烈风学院', 389, y + h / 2, 22, '#fff', 'center', true);
+  text((state && state.awayName) || '烈风学院', 389, y + h / 2, 18, '#fff', 'center', true);
   // 时间
   ctx.fillStyle = '#0a0d18'; ctx.fillRect(484, y, 150, h);
   text(state.halfLabel + '  ' + state.clockLabel, 559, y + h / 2, 22, '#fff', 'center', true);
@@ -2969,19 +3254,26 @@ function drawSettingsOverlay() {
 }
 
 function drawFulltime() {
+  finishCareerIfDone();
   ctx.fillStyle = 'rgba(4,6,14,0.8)'; ctx.fillRect(0, 0, W, H);
   var x = 440, y = 190, w = 400, h = 340;
+  ctx.fillStyle = '#0b1020';
+  ctx.fillRect(x - 6, y - 6, w + 12, h + 12);
   panel(x, y, w, h, '#e8a923');
   text('全场比赛结束', x + w / 2, y + 44, 30, '#ffd94a', 'center', true);
-  text('青鹰高校', x + w / 2 - 110, y + 110, 22, '#7fa8ff', 'center', true);
-  text('烈风学院', x + w / 2 + 110, y + 110, 22, '#ff9a9a', 'center', true);
+  text((state && state.homeName) || '青鹰高校', x + w / 2 - 110, y + 110, 18, '#7fa8ff', 'center', true);
+  text((state && state.awayName) || '烈风学院', x + w / 2 + 110, y + 110, 18, '#ff9a9a', 'center', true);
   text(state.score.home + '  -  ' + state.score.away, x + w / 2, y + 160, 54, '#fff', 'center', true);
   var res = state.score.home > state.score.away ? '🏆 胜利！' : state.score.home < state.score.away ? '失败…' : '平局';
   text(res, x + w / 2, y + 216, 26, '#fff', 'center', true);
   text('射门 ' + state.shots.home + ' - ' + state.shots.away, x + w / 2, y + 250, 16, '#9fb4dd', 'center');
   ctx.fillStyle = '#2b5fe3'; rr(x + w / 2 - 90, y + h - 64, 180, 44, 6); ctx.fill();
-  text('返回标题', x + w / 2, y + h - 42, 19, '#fff', 'center', true);
-  addClick(x + w / 2 - 90, y + h - 64, 180, 44, exitMatch);
+  var backLabel = ui.careerFix ? '返回俱乐部' : '返回标题';
+  text(backLabel, x + w / 2, y + h - 42, 19, '#fff', 'center', true);
+  addClick(x + w / 2 - 90, y + h - 64, 180, 44, function () {
+    if (ui.careerFix) returnToCareer();
+    else exitMatch();
+  });
 }
 
 function drawToast() {
@@ -3023,6 +3315,7 @@ function frameInner(t) {
   driveStickList();
   ctx.clearRect(0, 0, W, H);
   if (screen === 'title') drawTitle();
+  else if (screen === 'career') drawCareer();
   else {
     if (!state) {
       ctx.fillStyle = '#0b1020'; ctx.fillRect(0, 0, W, H);

@@ -137,8 +137,7 @@
 
   // 生成比赛用球员对象（深拷贝 + 运行时字段）
   // 体能为单一资源：maxStamina/stamina = 100（初始满），无精神力字段。
-  function makeTeams() {
-    function build(list, team) {
+  function build(list, team) {
       return list.map(function (p, i) {
         var form = FORMATIONS[DEFAULT_FORMATION];
         var slot = form.slots[p.num];
@@ -189,8 +188,27 @@
         deriveDelivery(o.stats, o.pos, o.num);
         return o;
       });
-    }
+  }
+  function makeTeams() {
     return { home: build(HOME, 'home'), away: build(AWAY, 'away') };
+  }
+
+  // 生涯模式把选好的 11 人交进来。号码必须对上阵型槽（1–11）。
+  function makeCustom(homeList, awayList) {
+    function norm(list) {
+      return (list || []).map(function (p) {
+        return {
+          num: p.num,
+          name: p.name,
+          pos: p.pos,
+          level: p.level || 1,
+          stats: Object.assign({}, p.stats || {}),
+          special: p.special || null,
+          shots: p.shots ? p.shots.slice() : [],
+        };
+      });
+    }
+    return { home: build(norm(homeList), 'home'), away: build(norm(awayList), 'away') };
   }
 
   return {
@@ -198,6 +216,7 @@
     FORMATIONS: FORMATIONS,
     DEFAULT_FORMATION: DEFAULT_FORMATION,
     makeTeams: makeTeams,
+    makeCustom: makeCustom,
     HOME_NAME: '青鹰高校',
     AWAY_NAME: '烈风学院',
     HOME_COLOR: '#2b5fe3',
