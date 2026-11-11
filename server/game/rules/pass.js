@@ -17,6 +17,7 @@
 'use strict';
 
 var FM = require('../../../shared/fm');
+var Receive = require('./receive');
 
 var FIELD_W = 105, FIELD_H = 68;
 
@@ -178,30 +179,42 @@ function passRate(passer, params, land, nearestOppDist) {
   return clamp(rate, 5, 97);
 }
 
-// 球感修正：实际落点向最近队友的理想接球点靠拢。
+// 球感修正：先锁定离瞄准点最近的队友（门将不接），再把落点收到他在飞行时间内
+// 真正跑得到的最远点。提前量用速度和加速度，不再按当前速度盲目前探，也不改传给别人。
 // 返回 { x, y, target }（target 可能为 null）
-function correctLanding(match, passer, ax, ay) {
-  var best = null, bd = 1e9;
+function correctLanding(match, passer, ax, ay, info) {
+  info = info || {};
+  var flightT = (info.flightMs || 650) / 1000;
+  var dx = ax - passer.x, dy = ay - passer.y;
+  var L = Math.hypot(dx, dy) || 1;
+  var ux = dx / L, uy = dy / L;
+  var intended = null, bestScore = 1e9;
   match.players.forEach(function (q) {
-    if (q.team !== passer.team || q.id === passer.id || q.sentOff) return;
-    var d = Math.sqrt(Math.pow(q.x - ax, 2) + Math.pow(q.y - ay, 2));
-    if (d < bd) { bd = d; best = q; }
+    if (q.team !== passer.team || q.id === passer.id || q.sentOff || q.pos === 'GK') return;
+    var dAim = Math.hypot(q.x - ax, q.y - ay);
+    var along = (q.x - passer.x) * ux + (q.y - passer.y) * uy;
+    var px = passer.x + ux * along, py = passer.y + uy * along;
+    var off = Math.hypot(q.x - px, q.y - py);
+    if (dAim > 22 && off > 14) return;
+    if (along < -6 && dAim > 16) return;
+    var score = dAim + off * 0.25;
+    if (score < bestScore) { bestScore = score; intended = q; }
   });
-  if (!best || bd > 14) return { x: ax, y: ay, target: null };
-  var s = passer.stats || {};
-  var touch = (s.firstTouch == null ? 10 : s.firstTouch);
-  var k = 0.35 + 0.45 * (rawTechnique(passer) / 20) * (0.6 + 0.4 * touch / 20);
-  k = clamp(k, 0, 0.85);
-  // ★ 理想接球点：按接应队员的移动方向做提前量（lead），而不是他的当前位置。
-  //   _px/_py 是上一 tick 位置（tick=100ms），提前 0.6 秒（6 tick），钳制在场内。
-  var vx = (best._px != null ? best.x - best._px : 0);
-  var vy = (best._py != null ? best.y - best._py : 0);
-  var idealX = clamp(best.x + vx * 6, 2, FIELD_W - 2);
-  var idealY = clamp(best.y + vy * 6, 2, FIELD_H - 2);
+  if (!intended) return { x: ax, y: ay, target: null };
+  var maxS = Math.min(AIM_MAX, L);
+  var reachS = null;
+  for (var s = maxS; s >= 3; s -= 0.8) {
+    var x = passer.x + ux * s, y = passer.y + uy * s;
+    if (Receive.timeToReach(intended, x, y) + 0.1 <= flightT) { reachS = s; break; }
+  }
+  if (reachS == null) {
+    var alongI = (intended.x - passer.x) * ux + (intended.y - passer.y) * uy;
+    reachS = clamp(alongI, 3, maxS);
+  }
   return {
-    x: ax + (idealX - ax) * k,
-    y: ay + (idealY - ay) * k,
-    target: best,
+    x: clamp(passer.x + ux * reachS, 2, FIELD_W - 2),
+    y: clamp(passer.y + uy * reachS, 2, FIELD_H - 2),
+    target: intended,
   };
 }
 

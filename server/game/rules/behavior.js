@@ -351,7 +351,8 @@ function keeperTarget(match, p) {
   var goalX = p.team === 'home' ? 0 : FIELD_W;
   var inward = p.team === 'home' ? 1 : -1;
   var along = (t.x - goalX) * inward;
-  if (along > 15.5) t.x = goalX + inward * 15.5;
+  var cap = (t.mode === 'sweep' || t.mode === 'onevone') ? 18.2 : 16.5;
+  if (along > cap) t.x = goalX + inward * cap;
   if (along < 0.8) t.x = goalX + inward * 0.8;
   t.y = clamp(t.y, FIELD_H / 2 - 16, FIELD_H / 2 + 16);
   return t;
@@ -470,7 +471,7 @@ function holdOffBall(players, ball, skip) {
 }
 
 // 队友之间保持大约 8 米。这是转向力，不是 0.92 米的身体碰撞。
-function separateTeammates(players) {
+function separateTeammates(players, protectId) {
   var MIN = 8;
   var list = [];
   for (var i = 0; i < players.length; i++) {
@@ -480,6 +481,7 @@ function separateTeammates(players) {
     for (var b = a + 1; b < list.length; b++) {
       var p = list[a], q = list[b];
       if (p.team !== q.team) continue;
+      if (protectId && (p.id === protectId || q.id === protectId)) continue;
       var dx = q.x - p.x, dy = q.y - p.y;
       var d = Math.sqrt(dx * dx + dy * dy);
       if (d >= MIN) continue;

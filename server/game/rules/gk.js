@@ -14,6 +14,7 @@
 'use strict';
 
 var FM = require('../../../shared/fm');
+var Ball = require('./ballPhysics');
 
 var FIELD_W = 105, FIELD_H = 68;
 var GOAL_Y = FIELD_H / 2;
@@ -157,7 +158,7 @@ function hasHelp(match, gk, ball) {
   for (var i = 0; i < match.players.length; i++) {
     var q = match.players[i];
     if (q.team !== gk.team || q.sentOff || q.pos === 'GK' || q.id === gk.id) continue;
-    if (Math.hypot(q.x - ball.x, q.y - ball.y) < 7.5) return true;
+    if (Math.hypot(q.x - ball.x, q.y - ball.y) < 12) return true;
   }
   return false;
 }
@@ -223,7 +224,7 @@ function oneOnOneTarget(match, gk) {
   var goalX = goalXOf(gk.team);
   var inward = inwardOf(gk.team);
   var along = (ball.x - goalX) * inward;
-  if (along < 6 || along > 22) return null;
+  if (along < 6 || along > 18) return null;
   if (Math.abs(ball.y - GOAL_Y) > 16) return null;
   if (hasHelp(match, gk, ball)) return null;
   var one = clamp(FM.v(gk, 'oneOnOne') / 100, 0, 1);
@@ -236,6 +237,9 @@ function oneOnOneTarget(match, gk) {
   var len = Math.hypot(dx, dy) || 1;
   var blockX = clamp(bx + dx / len * standOff, 2, FIELD_W - 2);
   var blockY = clamp(by + dy / len * standOff, 8, FIELD_H - 8);
+  var blockAlong = (blockX - goalX) * inward;
+  if (blockAlong > 16.5) blockX = goalX + inward * 16.5;
+  if (blockAlong < 1.2) blockX = goalX + inward * 1.2;
   var gap = Math.hypot(gk.x - att.x, gk.y - att.y);
   var tGk = Math.hypot(gk.x - blockX, gk.y - blockY) / sprintSpeed(gk);
   // 对手跑到门将身边才形成射门，不是跑到封堵点（封堵点本来就在他身前）
@@ -257,35 +261,91 @@ function oneOnOneTarget(match, gk) {
   };
 }
 
+// 自由球值得弃门的那个点：已经在地上就用现在的位置；还在天上就用落点。
+// 只留在禁区里或刚出禁区的那段。大脚飞过头顶、人到不了的点不算。
+function sweepPoint(ball, goalX, inward) {
+  var z = ball.z || 0;
+  var vz = ball.vz || 0;
+  var vx = ball.vx || 0;
+  var vy = ball.vy || 0;
+  if (z > 0.85 || Math.abs(vz) > 2.2) {
+    var g = 9.81;
+    var disc = vz * vz + 2 * g * Math.max(0, z);
+    var t = (vz + Math.sqrt(Math.max(0, disc))) / g;
+    if (!(t > 0.05) || t > 3.2) return null;
+    return { x: ball.x + vx * t, y: ball.y + vy * t, t: t };
+  }
+  if (Math.hypot(vx, vy) < 1.4) return { x: ball.x, y: ball.y, t: 0.08 };
+  var mu = Ball.SURFACES.grass.rollMu;
+  for (var i = 0; i <= 16; i++) {
+    var rt = i * 0.12;
+    var pos = Ball.rollPosition(ball.x, ball.y, vx, vy, rt, mu);
+    var along = (pos.x - goalX) * inward;
+    if (along < 4 || along > 18.2) continue;
+    if (Math.abs(pos.y - GOAL_Y) > 20) continue;
+    return { x: pos.x, y: pos.y, t: Math.max(0.08, rt) };
+  }
+  return null;
+}
+
 function sweepTarget(match, gk) {
   var ball = match.ball;
   if (!ball || ball.ownerId) return null;
   var goalX = goalXOf(gk.team);
   var inward = inwardOf(gk.team);
-  var along = (ball.x - goalX) * inward;
-  if (along < 4 || along > 34) return null;
-  if (Math.abs(ball.y - GOAL_Y) > 22) return null;
-  var rush = clamp(FM.v(gk, 'rushing') / 100, 0, 1);
-  var dist = Math.hypot(gk.x - ball.x, gk.y - ball.y);
-  var maxDist = 8 + rush * 16;
-  if (dist > maxDist) return null;
+  var point = sweepPoint(ball, goalX, inward);
+  if (!point) return null;
+  var along = (point.x - goalX) * inward;
+  if (along < 4 || along > 18.2) return null;
+  if (Math.abs(point.y - GOAL_Y) > 20) return null;
   var vx = ball.vx || 0;
-  var leaving = vx * inward > 2.5 && along > 16;
-  if (leaving) return null;
+  if (vx * inward > 2.5 && along > 14) return null;
+  var rush = clamp(FM.v(gk, 'rushing') / 100, 0, 1);
+  var dist = Math.hypot(gk.x - point.x, gk.y - point.y);
   var tGk = dist / sprintSpeed(gk);
-  var tOpp = nearestOpponentTime(match, gk, ball.x, ball.y);
+  if (point.t > 0.25 && tGk > point.t + 0.08) return null;
+  var tOpp = nearestOpponentTime(match, gk, point.x, point.y);
   var command = clamp(FM.v(gk, 'command') / 100, 0, 1);
   var need = 0.28 - rush * 0.22 + command * 0.08;
   if (tGk + Math.max(0.04, need) >= tOpp) return null;
   return {
-    x: clamp(ball.x, 2, FIELD_W - 2),
-    y: clamp(ball.y, 6, FIELD_H - 6),
+    x: clamp(point.x, 2, FIELD_W - 2),
+    y: clamp(point.y, GOAL_Y - 16, GOAL_Y + 16),
     mode: 'sweep',
     sprint: true,
     speedMul: 0.98,
     set: false,
     crouch: false,
     spread: false,
+  };
+}
+
+// 对方门将把球抱在手里：本方门将回到门线上，不跟出去。
+function opponentKeeperHold(match, gk) {
+  var ball = match.ball;
+  if (!ball || !ball.ownerId || !match.byId) return null;
+  var o = match.byId[ball.ownerId];
+  if (!o || o.pos !== 'GK' || o.team === gk.team || o.sentOff) return null;
+  var goalX = goalXOf(gk.team);
+  var inward = inwardOf(gk.team);
+  var depth = 1.35;
+  var y = clamp(GOAL_Y + ((ball.y || GOAL_Y) - GOAL_Y) * 0.04, GOAL_Y - 2.2, GOAL_Y + 2.2);
+  var along = (gk.x - goalX) * inward;
+  return {
+    x: clamp(goalX + inward * depth, 1.2, FIELD_W - 1.2),
+    y: y,
+    mode: 'line',
+    sprint: along > depth + 2,
+    speedMul: 0.98,
+    depth: depth,
+    set: false,
+    crouch: false,
+    spread: false,
+    tight: 0,
+    nearY: GOAL_Y,
+    farY: GOAL_Y,
+    crossAct: null,
+    recover: true,
   };
 }
 
@@ -339,6 +399,8 @@ function crossPlan(match, gk, ball, goalX) {
 
 function position(match, gk) {
   var ball = match.ball || { x: FIELD_W / 2, y: GOAL_Y, z: 0, ownerId: null };
+  var held = opponentKeeperHold(match, gk);
+  if (held) return held;
   var duel = oneOnOneTarget(match, gk);
   if (duel) return duel;
   var sweep = sweepTarget(match, gk);
@@ -349,7 +411,7 @@ function position(match, gk) {
   var ballDist = Math.hypot(bx - goalX, by - GOAL_Y);
   var pos01 = positioning01(gk);
   var depth = idealDepth(ballDist, pos01) + sweeperBonus(match, gk);
-  depth = clamp(depth, 0.7, 14);
+  depth = clamp(depth, 0.7, 16.5);
   var mode = ballDist > 55 ? 'line' : 'angle';
 
   var cross = crossPlan(match, gk, ball, goalX);

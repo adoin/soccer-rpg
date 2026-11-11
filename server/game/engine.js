@@ -361,7 +361,7 @@ Match.prototype.startShotFlight = function (p, keeper, o) {
   // 两名回追的防守球员（不含门将）：离落点最近的对方球员
   var chasers = [];
   var cands = this.players.filter(function (q) {
-    return q.team !== p.team && q.id !== keeper.id && !q.sentOff;
+    return q.team !== p.team && q.id !== keeper.id && q.pos !== 'GK' && !q.sentOff;
   });
   cands.sort(function (a, b) {
     var da = (a.x - x1) * (a.x - x1) + (a.y - y1) * (a.y - y1);
@@ -530,18 +530,22 @@ Match.prototype.startPassFlight = function (p, o) {
   var peak = (Pass.HEIGHTS[o.height] || Pass.HEIGHTS.mid).peak;
   var dx = o.x1 - p.x, dy = o.y1 - p.y;
   var dist = Math.sqrt(dx * dx + dy * dy) || 1;
+  var recvId = o.receiverId || null;
+  if (recvId && this.byId[recvId] && this.byId[recvId].pos === 'GK') recvId = null;
   this.passFlight = {
     passerId: p.id, team: p.team,
     x0: p.x, y0: p.y, x1: o.x1, y1: o.y1,
     startAt: this.now, durMs: o.durMs,
     peak: peak, ballSpeed: dist / (o.durMs / 1000), // 米/秒，供拦截难度用
     height: o.height || 'mid',
-    receiverId: o.receiverId || null, // 意向接应者（跑落点用），不代表结果
+    receiverId: recvId, // 意向接应者（跑落点用），不代表结果。门将不离开球门去接。
     holderId: o.holderId || null,   // 收步者：不参与进攻，落点结算时排除
     spin: o.spin || 0,
   };
   this.ball.ownerId = null;
-  this.ball.receive = null;
+  this.ball.receive = recvId
+    ? { id: recvId, team: p.team, until: this.now + o.durMs + 4000 }
+    : null;
   this.ball.x = p.x; this.ball.y = p.y; this.ball.z = 0;
   this.ball.vz = 0;
   this.ball.vx = 0; this.ball.vy = 0;
@@ -675,11 +679,12 @@ Match.prototype.moveFlightPlayers = function (pf, dt) {
   this.players.forEach(function (p) {
     if (p.sentOff) return;
     if (self.now < p.frozenUntil) { p._vx = 0; p._vy = 0; return; }
-    if (p.id === pf.receiverId) {
-      var runTo = Receive.flightRunTarget(pf, p);
-      self.moveToward(p, runTo.x, runTo.y, self.playerSpeed(p, true), dt);
-    } else if (p.pos === 'GK') {
+    if (p.pos === 'GK') {
       self.keeperStep(p, dt);
+    } else if (p.id === pf.receiverId) {
+      var runTo = Receive.interceptForFlight(pf, p, self.now);
+      if (self.stickAway(p, runTo)) self.controlMove(p, dt);
+      else self.arriveToward(p, runTo.x, runTo.y, self.playerSpeed(p, true), dt);
     } else if (chaser && p.id === chaser.id) {
       self.moveToward(p, self.ball.x, self.ball.y, self.playerSpeed(p, true) * 0.9, dt);
     } else {
@@ -691,7 +696,7 @@ Match.prototype.moveFlightPlayers = function (pf, dt) {
     }
     self.updateEnergy(p, dt);
   });
-  Behavior.separateTeammates(this.players);
+  Behavior.separateTeammates(this.players, pf.receiverId);
 };
 
 Match.prototype.releaseFreeze = function () {
@@ -795,6 +800,13 @@ Match.prototype.tick = function () {
       gkWait._gkWall = 0;
       this.keeperDistribute(gkWait, 'gk-punt');
     }
+    var holdDt = this.config.tickMs / 1000;
+    var holdSelf = this;
+    this.players.forEach(function (gp) {
+      if (gp.pos !== 'GK' || gp.sentOff) return;
+      if (gkWait && gp.id === gkWait.id) return;
+      holdSelf.keeperStep(gp, holdDt);
+    });
   }
   if (this.paused || this.decision) return;
   if (this.overlayUntilWall && Date.now() < this.overlayUntilWall) return;
@@ -865,10 +877,15 @@ Match.prototype.tick = function () {
         }
         for (var ci = 0; ci < sf.chasers.length; ci++) {
           var ch = this.byId[sf.chasers[ci]];
-          if (ch && !ch.sentOff && this.now >= ch.frozenUntil) {
+          if (ch && !ch.sentOff && ch.pos !== 'GK' && this.now >= ch.frozenUntil) {
             this.moveToward(ch, this.ball.x, this.ball.y, this.playerSpeed(ch, true), dt);
           }
         }
+        var shotSelf = this;
+        this.players.forEach(function (gp) {
+          if (gp.pos !== 'GK' || gp.sentOff || gp.id === sf.keeperId) return;
+          shotSelf.keeperStep(gp, dt);
+        });
       }
       if (this.now >= this.phaseUntil) this.finishShotFlight();
       break;
@@ -947,7 +964,29 @@ Match.prototype.tick = function () {
     this.separatePlayers();
     this.holdRestart();
   }
+  this.leashKeepers();
   this.ensureControl();
+};
+
+// 门将每拍结束都拴回本方球门。扑救那一下除外。扫荡最多到禁区外沿。
+Match.prototype.leashKeepers = function () {
+  var self = this;
+  var sf = this.shotFlight;
+  this.players.forEach(function (p) {
+    if (p.pos !== 'GK' || p.sentOff) return;
+    if (sf && sf.keeperId === p.id) return;
+    var goalX = p.team === 'home' ? 0 : FIELD.W;
+    var inward = p.team === 'home' ? 1 : -1;
+    var along = (p.x - goalX) * inward;
+    var sweeping = p._gkMode === 'sweep' || p._gkMode === 'onevone';
+    var max = sweeping ? 18.3 : 16.6;
+    if (along > max) {
+      p.x = goalX + inward * max;
+      if ((p._vx || 0) * inward > 0) p._vx = 0;
+    }
+    if (p.y < FIELD.H / 2 - 18) p.y = FIELD.H / 2 - 18;
+    if (p.y > FIELD.H / 2 + 18) p.y = FIELD.H / 2 + 18;
+  });
 };
 
 // ---------- 死球恢复（越位 / 犯规哨声 / 点球之后） ----------
@@ -1137,7 +1176,23 @@ Match.prototype.looseBallCut = function (winner, z0) {
 Match.prototype.keeperStep = function (p, dt) {
   var kt = Behavior.keeperTarget(this, p);
   var mul = kt.speedMul == null ? 0.55 : kt.speedMul;
+  var goalX = p.team === 'home' ? 0 : FIELD.W;
+  var inward = p.team === 'home' ? 1 : -1;
+  var maxAlong = (kt.mode === 'sweep' || kt.mode === 'onevone') ? 18 : 16.5;
+  var alongT = (kt.x - goalX) * inward;
+  if (alongT > maxAlong) kt.x = goalX + inward * maxAlong;
+  if (alongT < 0.6) kt.x = goalX + inward * 0.6;
+  var alongNow = (p.x - goalX) * inward;
+  if (alongNow > alongT + 1.6 && kt.mode !== 'sweep' && kt.mode !== 'onevone') {
+    mul = Math.max(mul, 0.98);
+    kt.sprint = true;
+  }
   this.moveToward(p, kt.x, kt.y, this.playerSpeed(p, !!kt.sprint) * mul, dt);
+  var along = (p.x - goalX) * inward;
+  if (along > maxAlong) {
+    p.x = goalX + inward * maxAlong;
+    if ((p._vx || 0) * inward > 0) p._vx = 0;
+  }
   p.gkSet = !!kt.set;
   p.gkCrouch = !!kt.crouch;
   p.gkSpread = !!kt.spread;
@@ -1158,6 +1213,38 @@ Match.prototype.recoverToward = function (p, tx, ty, dt) {
   p.y = clamp(p.y, 1, FIELD.H - 1);
 };
 
+Match.prototype.arriveToward = function (p, tx, ty, speed, dt) {
+  var dx = tx - p.x, dy = ty - p.y;
+  var d = Math.sqrt(dx * dx + dy * dy);
+  if (d < 0.45) {
+    p._vx = (p._vx || 0) * 0.35;
+    p._vy = (p._vy || 0) * 0.35;
+    if (Math.hypot(p._vx, p._vy) < 0.4) { p._vx = 0; p._vy = 0; }
+    return true;
+  }
+  var spd = speed;
+  if (d < 2.2) spd = Math.max(1.1, speed * (d / 2.2));
+  return this.moveToward(p, tx, ty, spd, dt);
+};
+Match.prototype.receivePoint = function (p) {
+  if (!p || p.sentOff || p.pos === 'GK') return null;
+  var pf = this.passFlight;
+  if (pf && pf.receiverId === p.id) return Receive.interceptForFlight(pf, p, this.now);
+  var recv = this.ball.receive;
+  if (recv && recv.id === p.id && this.now < recv.until && !this.ball.ownerId) {
+    return Receive.interceptForBall(this.ball, p);
+  }
+  return null;
+};
+Match.prototype.stickAway = function (p, pt) {
+  var c = this.control;
+  if (!c || !pt || c.playerId !== p.id || p.team !== 'home') return false;
+  var mag = Math.hypot(c.dx || 0, c.dy || 0);
+  if (mag < 0.42) return false;
+  var dx = pt.x - p.x, dy = pt.y - p.y;
+  var d = Math.hypot(dx, dy) || 1;
+  return ((c.dx || 0) * dx + (c.dy || 0) * dy) / (mag * d) < 0.15;
+};
 Match.prototype.moveToward = function (p, tx, ty, speed, dt) {
   var dx = tx - p.x, dy = ty - p.y;
   var d = Math.sqrt(dx * dx + dy * dy);
@@ -1193,7 +1280,17 @@ Match.prototype.controlMove = function (p, dt) {
   var c = this.control;
   // 人类只推动本方。控制 id 一旦落到客队，这一下也不能把对手踢起来。
   if (!p || p.team !== 'home' || p.sentOff) return false;
+  if (p.pos === 'GK') {
+    this.keeperStep(p, dt);
+    return true;
+  }
   if (p.id !== c.playerId) return false;
+  var recvPt = this.receivePoint(p);
+  if (recvPt && !this.stickAway(p, recvPt)) {
+    this.arriveToward(p, recvPt.x, recvPt.y, this.playerSpeed(p, true), dt);
+    this.respectRestart(p);
+    return true;
+  }
   // ★ 手机手柄按住不动时 touchmove 不触发、无新输入——但 dx/dy 非零就是"正在操作"，
   //   不能算无操作而 AI 接管（否则按住方向 2 秒后 AI 抢走闷头往前带，用户再推也没用）。
   //   只有方向归零且 2 秒无新输入，才判无操作。
@@ -1353,6 +1450,11 @@ Match.prototype.simulate = function (dt) {
     var recv = this.ball.receive;
     if (recv && this.now < recv.until && recv.id && this.byId[recv.id] && !this.byId[recv.id].sentOff) {
       chaseIds[recv.id] = 'recv';
+      Object.keys(chaseIds).forEach(function (id) {
+        if (id === recv.id) return;
+        var mate = self.byId[id];
+        if (mate && mate.team === recv.team) delete chaseIds[id];
+      });
     }
     if (this.now < (this._transitionUntil || 0)) {
       var only = null, onlyD = 1e9;
@@ -1379,8 +1481,10 @@ Match.prototype.simulate = function (dt) {
       } else if (chaseIds[p.id]) {
         var tx = self.ball.x, ty = self.ball.y;
         if (chaseIds[p.id] === 'recv') {
-          var meet = Receive.meetPoint(self.ball, p, self.playerSpeed(p, true));
-          tx = meet.x; ty = meet.y;
+          var meet = Receive.interceptForBall(self.ball, p);
+          self.arriveToward(p, meet.x, meet.y, self.playerSpeed(p, true), dt);
+          self.updateEnergy(p, dt);
+          return;
         }
         self.moveToward(p, tx, ty, self.playerSpeed(p, true) * 0.95, dt);
       } else {
@@ -1411,6 +1515,11 @@ Match.prototype.simulate = function (dt) {
 
   if (carrier.pos === 'GK') {
     this.keeperHoldStep(carrier, dt);
+    var holdSelf = this;
+    this.players.forEach(function (p) {
+      if (p.id === carrier.id || p.sentOff || p.pos !== 'GK') return;
+      holdSelf.keeperStep(p, dt);
+    });
     return;
   }
 
@@ -1962,7 +2071,7 @@ Match.prototype.resolveAction = function (p, commandId, rate, params) {
       var ax = clamp(land.x + (this.rng() * 2 - 1) * land.r, 2, FIELD.W - 2);
       var ay = clamp(land.y + (this.rng() * 2 - 1) * land.r, 2, FIELD.H - 2);
       // ★ 球感修正：实际落点向最近队友的理想接球点靠拢
-      var corr = Pass.correctLanding(this, p, ax, ay);
+      var corr = Pass.correctLanding(this, p, ax, ay, { flightMs: land.flightMs, height: pp.height });
       var target = corr.target;
       var techName = Pass.TECHNIQUES[pp.technique].name;
       var kindName = land.dist > 26 ? '长传' : '短传'; // 距离即力量：远为长传、近为短传
@@ -3686,6 +3795,18 @@ Match.prototype.ensureControl = function () {
   var c = this.control;
   if (!c) return;
   var cur = c.playerId ? this.byId[c.playerId] : null;
+  if (cur && cur.team === 'home' && cur.pos === 'GK') {
+    var gkKick = this.restart && this.restart.kind === 'goalkick' && this.restart.team === 'home';
+    if (!gkKick) {
+      var outId = this.selectControlled(null);
+      if (outId && outId !== c.playerId) {
+        c.playerId = outId;
+        // 刚从门将交出来，不算玩家正贴着人上抢，避免立刻弹出防守菜单。
+        c.activeStamp = this.now - 3000;
+      }
+    }
+    return;
+  }
   if (cur && cur.team === 'home' && !cur.sentOff) return;
   var carrier = this.carrier();
   if (carrier && carrier.team === 'home' && carrier.pos !== 'GK' && !carrier.sentOff) {

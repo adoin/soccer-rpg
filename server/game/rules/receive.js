@@ -36,21 +36,138 @@ function touchScore(p, isReceiver) {
     + FM.v(p, 'offBall') * 0.15;
 }
 
-// 飞行中接球人要跑的点：人还在落点后面时，往前多跑一两米去踩滚动的球。
-// 人已经在落点上（3 米内）就停在落点，避免自己把球跑过。
-function flightRunTarget(pf, player) {
-  var dx = pf.x1 - pf.x0, dy = pf.y1 - pf.y0;
-  var len = Math.hypot(dx, dy) || 1;
-  var lead = { low: 2.4, mid: 1.5, high: 0.7, vhigh: 0.3 }[pf.height] || 1.2;
-  if (player) {
-    var d = Math.hypot(player.x - pf.x1, player.y - pf.y1);
-    if (d < 3.2) lead = 0;
-    else lead *= Math.min(1, (d - 3.2) / 6);
+function accelOf(p) {
+  return 25 * (0.55 + FM.v(p, 'acceleration') / 100);
+}
+
+// 考虑到当前速度和加速度，跑到 (tx,ty) 要几秒。背对目标要先掉速。
+function timeToReach(p, tx, ty, speed) {
+  speed = speed || sprintSpeed(p);
+  var dx = tx - p.x, dy = ty - p.y;
+  var d = Math.hypot(dx, dy);
+  if (d < 0.28) return 0;
+  var acc = accelOf(p);
+  var closing = ((p._vx || 0) * dx + (p._vy || 0) * dy) / d;
+  var v0 = closing > 0 ? Math.min(speed, closing) : 0;
+  var turn = closing < -0.4 ? 0.18 : (closing < 0.4 ? 0.08 : 0);
+  var tAcc = Math.max(0, (speed - v0) / acc);
+  var dAcc = v0 * tAcc + 0.5 * acc * tAcc * tAcc;
+  var t;
+  if (d <= dAcc) {
+    var disc = v0 * v0 + 2 * acc * d;
+    t = (-v0 + Math.sqrt(Math.max(0, disc))) / acc;
+  } else {
+    t = tAcc + (d - dAcc) / speed;
   }
+  return t + turn;
+}
+
+function controlRadius(p) {
+  var skill = (FM.v(p, 'firstTouch') + FM.v(p, 'technique')) / 2;
+  if (!(skill >= 0)) skill = 50;
+  return 0.75 + (skill / 100) * 0.5;
+}
+
+function pickIntercept(p, samples) {
+  var margin = 0.1;
+  var i;
+  for (i = 0; i < samples.length; i++) {
+    var s = samples[i];
+    if (s.z > 0.65) continue;
+    if (timeToReach(p, s.x, s.y) + margin <= s.t + 0.02) return s;
+  }
+  var best = samples[samples.length - 1];
+  var late = 1e9;
+  for (i = 0; i < samples.length; i++) {
+    var q = samples[i];
+    if (q.z > 0.65) continue;
+    var l = timeToReach(p, q.x, q.y) - q.t;
+    if (l < late) { late = l; best = q; }
+  }
+  return best || { x: p.x, y: p.y, z: 0, t: 0 };
+}
+
+function interceptForFlight(pf, player, now) {
+  var dur = (pf.durMs || 600) / 1000;
+  var elapsed = Math.max(0, ((now == null ? pf.startAt : now) - pf.startAt) / 1000);
+  var remain = Math.max(0.04, dur - elapsed);
+  var samples = [];
+  var n = Math.max(2, Math.ceil(remain / 0.08));
+  var i;
+  for (i = 0; i <= n; i++) {
+    var t = remain * i / n;
+    var k = dur > 0 ? (elapsed + t) / dur : 1;
+    if (k < 0) k = 0;
+    if (k > 1) k = 1;
+    var x = pf.x0 + (pf.x1 - pf.x0) * k;
+    var y = pf.y0 + (pf.y1 - pf.y0) * k;
+    var z = (k <= 0.001 || k >= 0.999) ? 0 : 4 * (pf.peak || 0) * k * (1 - k);
+    if (z < 0.65) samples.push({ x: x, y: y, z: z, t: t });
+  }
+  samples.push({ x: pf.x1, y: pf.y1, z: 0, t: remain });
+  var roll = residualRoll(pf);
+  var mu = Ball.SURFACES.grass.rollMu;
+  for (var j = 1; j <= 18; j++) {
+    var rt = j * 0.12;
+    var pos = Ball.rollPosition(pf.x1, pf.y1, roll.vx, roll.vy, rt, mu);
+    samples.push({ x: pos.x, y: pos.y, z: 0, t: remain + rt });
+    if (Math.hypot(pos.vx, pos.vy) < 0.3) break;
+  }
+  var hit = pickIntercept(player, samples);
   return {
-    x: clamp(pf.x1 + dx / len * lead, 2, FIELD_W - 2),
-    y: clamp(pf.y1 + dy / len * lead, 2, FIELD_H - 2),
+    x: clamp(hit.x, 1.5, FIELD_W - 1.5),
+    y: clamp(hit.y, 1.5, FIELD_H - 1.5),
+    t: hit.t,
   };
+}
+
+function interceptForBall(ball, p) {
+  var samples = [];
+  var z = ball.z || 0;
+  var vz = ball.vz || 0;
+  var vx = ball.vx || 0;
+  var vy = ball.vy || 0;
+  if (z > 0.35 || Math.abs(vz) > 1.1) {
+    var land = loftedLand(ball);
+    if (land) {
+      samples.push({ x: land.x, y: land.y, z: 0, t: land.t });
+      var grip = Ball.SURFACES.grass.bounceGrip;
+      for (var j = 1; j <= 16; j++) {
+        var rt = j * 0.12;
+        var pos = Ball.rollPosition(land.x, land.y, vx * grip, vy * grip, rt, Ball.SURFACES.grass.rollMu);
+        samples.push({ x: pos.x, y: pos.y, z: 0, t: land.t + rt });
+        if (Math.hypot(pos.vx, pos.vy) < 0.3) break;
+      }
+    }
+  }
+  if (!samples.length) {
+    if (Math.hypot(vx, vy) < 0.3) samples.push({ x: ball.x, y: ball.y, z: 0, t: 0.05 });
+    else {
+      for (var i = 0; i <= 28; i++) {
+        var t = i * 0.1;
+        var pos2 = Ball.rollPosition(ball.x, ball.y, vx, vy, t, Ball.SURFACES.grass.rollMu);
+        samples.push({ x: pos2.x, y: pos2.y, z: 0, t: Math.max(0.05, t) });
+        if (Math.hypot(pos2.vx, pos2.vy) < 0.3) break;
+      }
+    }
+  }
+  var hit = pickIntercept(p, samples);
+  return {
+    x: clamp(hit.x, 1.5, FIELD_W - 1.5),
+    y: clamp(hit.y, 1.5, FIELD_H - 1.5),
+    t: hit.t,
+  };
+}
+
+// 飞行中接球人要跑的点：落在他来得及先于皮球到达的路线上，不再顺着惯性冲过落点。
+function flightRunTarget(pf, player) {
+  if (!player) {
+    return {
+      x: clamp(pf.x1, 2, FIELD_W - 2),
+      y: clamp(pf.y1, 2, FIELD_H - 2),
+    };
+  }
+  return interceptForFlight(pf, player, pf.startAt || 0);
 }
 
 // 到达 (tx,ty) 需要的秒数。已经朝目标跑时用当前速度分量抬一点，避免起跑罚太重。
@@ -177,8 +294,20 @@ function claim(match) {
     var inBox = p.pos === 'GK' && match.inPenaltyArea && match.inPenaltyArea(p.x, p.y, p.team);
     var band = Ball.controlBand(ball.z || 0, p.pos === 'GK', inBox);
     if (!band) continue;
-    var reach = band === 'foot' ? 0.95 : band === 'chest' ? 1.05 : 1.2;
+    if (p.pos === 'GK') {
+      var gX = p.team === 'home' ? 0 : FIELD_W;
+      var along = Math.abs(ball.x - gX);
+      if (along > 20) continue;
+    }
+    var reach = controlRadius(p);
+    if (band === 'chest') reach = Math.max(reach, 1.0);
+    if (band === 'header') reach = Math.max(reach, 1.1);
+    if (p.id === recv) reach += 0.12;
     var d = Math.hypot(p.x - ball.x, p.y - ball.y);
+    var rel = Math.hypot((ball.vx || 0) - (p._vx || 0), (ball.vy || 0) - (p._vy || 0));
+    var skill = (FM.v(p, 'firstTouch') + FM.v(p, 'technique')) / 2;
+    var maxRel = 3.2 + (skill / 100) * 8.5;
+    if (rel > maxRel && d > 0.4) continue;
     if (land && land.t > 0.2) {
       var dLand = Math.hypot(p.x - land.x, p.y - land.y);
       var lowAtBall = (ball.z || 0) < 1.2 && d <= 1.15;
@@ -203,6 +332,10 @@ module.exports = {
   sprintSpeed: sprintSpeed,
   touchScore: touchScore,
   flightRunTarget: flightRunTarget,
+  timeToReach: timeToReach,
+  controlRadius: controlRadius,
+  interceptForFlight: interceptForFlight,
+  interceptForBall: interceptForBall,
   timeTo: timeTo,
   residualRoll: residualRoll,
   meetPoint: meetPoint,
