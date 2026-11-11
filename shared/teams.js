@@ -34,6 +34,57 @@
         9:  { u: 50, y: 34, pos: 'FW', line: 'ST' }, // 中锋
       },
     },
+    '4-4-2': {
+      id: '4-4-2',
+      refU: 32,
+      slots: {
+        1: { u: 6, y: 34, pos: 'GK', line: 'GK' },
+        2: { u: 18, y: 12, pos: 'DF', line: 'DF' },
+        3: { u: 15, y: 26, pos: 'DF', line: 'DF' },
+        4: { u: 15, y: 42, pos: 'DF', line: 'DF' },
+        5: { u: 18, y: 56, pos: 'DF', line: 'DF' },
+        6: { u: 32, y: 18, pos: 'MF', line: 'DM' },
+        8: { u: 32, y: 50, pos: 'MF', line: 'DM' },
+        7: { u: 36, y: 10, pos: 'MF', line: 'AM' },
+        11: { u: 36, y: 58, pos: 'MF', line: 'AM' },
+        10: { u: 48, y: 26, pos: 'FW', line: 'ST' },
+        9: { u: 48, y: 42, pos: 'FW', line: 'ST' },
+      },
+    },
+    '4-3-3': {
+      id: '4-3-3',
+      refU: 30,
+      slots: {
+        1: { u: 6, y: 34, pos: 'GK', line: 'GK' },
+        2: { u: 18, y: 12, pos: 'DF', line: 'DF' },
+        3: { u: 15, y: 26, pos: 'DF', line: 'DF' },
+        4: { u: 15, y: 42, pos: 'DF', line: 'DF' },
+        5: { u: 18, y: 56, pos: 'DF', line: 'DF' },
+        6: { u: 30, y: 22, pos: 'MF', line: 'DM' },
+        8: { u: 30, y: 46, pos: 'MF', line: 'DM' },
+        10: { u: 36, y: 34, pos: 'MF', line: 'AM' },
+        7: { u: 48, y: 12, pos: 'FW', line: 'ST' },
+        9: { u: 50, y: 34, pos: 'FW', line: 'ST' },
+        11: { u: 48, y: 56, pos: 'FW', line: 'ST' },
+      },
+    },
+    '3-5-2': {
+      id: '3-5-2',
+      refU: 28,
+      slots: {
+        1: { u: 6, y: 34, pos: 'GK', line: 'GK' },
+        3: { u: 16, y: 24, pos: 'DF', line: 'DF' },
+        4: { u: 15, y: 34, pos: 'DF', line: 'DF' },
+        5: { u: 16, y: 44, pos: 'DF', line: 'DF' },
+        2: { u: 28, y: 10, pos: 'MF', line: 'DM' },
+        6: { u: 30, y: 24, pos: 'MF', line: 'DM' },
+        8: { u: 30, y: 44, pos: 'MF', line: 'DM' },
+        11: { u: 28, y: 58, pos: 'MF', line: 'DM' },
+        7: { u: 40, y: 34, pos: 'MF', line: 'AM' },
+        9: { u: 50, y: 26, pos: 'FW', line: 'ST' },
+        10: { u: 50, y: 42, pos: 'FW', line: 'ST' },
+      },
+    },
   };
   var DEFAULT_FORMATION = '4-2-3-1';
 
@@ -139,9 +190,9 @@
   // 体能为单一资源：maxStamina/stamina = 100（初始满），无精神力字段。
   function build(list, team) {
       return list.map(function (p, i) {
-        var form = FORMATIONS[DEFAULT_FORMATION];
-        var slot = form.slots[p.num];
-        var home = FORMATION_HOME[p.num];
+        var form = FORMATIONS[p.formation] || FORMATIONS[DEFAULT_FORMATION];
+        var slot = form.slots[p.num] || form.slots[String(p.num)];
+        var home = slot ? { x: slot.u, y: slot.y } : (FORMATION_HOME[p.num] || { x: 40, y: 34 });
         return {
           id: (team === 'home' ? 'h' : 'a') + p.num,
           idx: i,
@@ -157,7 +208,12 @@
           level: p.level,
           stats: Object.assign({}, p.stats),
           maxStamina: 100,
-          stamina: 100,
+          stamina: p.stamina != null ? p.stamina : 100,
+          condition: p.condition != null ? p.condition : 100,
+          morale: p.morale != null ? p.morale : 70,
+          penTaker: !!p.penTaker,
+          fkTaker: !!p.fkTaker,
+          cornerTaker: !!p.cornerTaker,
           special: p.special ? { name: p.special.name } : null,
           // 每人都会突然加速。假动作和防守技能是学过才出现在菜单里的。
           moves: ({ 5: ['feint'], 7: ['feint'], 10: ['feint'], 11: ['feint'] })[p.num] || [],
@@ -205,6 +261,13 @@
           stats: Object.assign({}, p.stats || {}),
           special: p.special || null,
           shots: p.shots ? p.shots.slice() : [],
+          formation: p.formation || null,
+          stamina: p.stamina,
+          condition: p.condition,
+          morale: p.morale,
+          penTaker: !!p.penTaker,
+          fkTaker: !!p.fkTaker,
+          cornerTaker: !!p.cornerTaker,
         };
       });
     }

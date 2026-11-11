@@ -47,7 +47,8 @@ Career.registerMod({
 | `transferMarket` | 赛程定了之后 | `{ save, rng }`。可往 `save.market` 加挂牌 |
 | `onMatchPlayed` | 玩家这场记完分 | `{ save, fixture, hg, ag }` |
 | `growPlayers` | 每场之后，以及升季时 | `{ save, players, when: 'match' \| 'season' }`。直接改 `players[].stats` |
-| `youthIntake` | 赛季开始的最后 | `{ save, rng }`。往 `save.squad` 加人，注意 `Career.MAX_SQUAD` |
+| `youthIntake` | 赛季开始的最后 | `{ save, rng }`。往 `save.squad` 加人，注意 `Career.MAX_SQUAD`。青训营走 `club` mod，不占这 22 人 |
+| `onLoad` | 读档迁完之后 | `{ save }`。补经营字段，不冲掉旧阵容 |
 | `serialize` | 写入某个存档槽时 | `{ save }`。返回这个 mod 自己的状态（会放进 `modState[id]`） |
 | `deserialize` | 从槽位读进游戏时 | `{ save, data }`。`data` 是上次 serialize 的结果 |
 

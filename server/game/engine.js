@@ -153,6 +153,11 @@ function Match(id, options) {
   this.phaseUntil = 1500;  // 当前阶段结束时间
   this.paused = false;     // 用户暂停（暂停菜单）
   this.mentality = options.mentality || 'balanced'; // 均衡 / 进攻 / 防守
+  var tacDefault = { formation: '4-2-3-1', press: 'normal', line: 'normal', pass: 'mixed', tempo: 'normal', width: 'normal' };
+  this.tacticsHome = Object.assign({}, tacDefault, options.tactics || {});
+  this.tacticsAway = Object.assign({}, tacDefault, options.awayTactics || {});
+  this.bench = { home: (options.homeBench || []).slice(), away: (options.awayBench || []).slice() };
+  this.subsLeft = { home: options.subs == null ? 3 : options.subs, away: options.subs == null ? 3 : options.subs };
 
   this.decision = null;     // 等待用户决策时的指令选项
   this.lastAction = null;   // 最近一次结算事件（供客户端播放动画/横幅）
@@ -956,6 +961,10 @@ Match.prototype.tick = function () {
     case 'penalty':
       // 死球阶段：等哨声流程走完再恢复。选人菜单打开时不能把定位球清掉。
       this.now += dt * 1000;
+      this.players.forEach(function (p) {
+        if (p.sentOff) return;
+        p.stamina = Math.min(p.maxStamina || 100, (p.stamina || 0) + 0.6);
+      });
       if (this.decision) break;
       if (this.now >= this.phaseUntil) this.resumeStoppage();
       break;
@@ -1069,6 +1078,7 @@ Match.prototype.endHalf = function () {
       text: '上半场结束：' + this.homeName + ' ' + this.score.home + ' - ' + this.score.away + ' ' + this.awayName,
       until: Date.now() + 7800,
     });
+    this.autoSub('away');
   } else {
     this.phase = 'fulltime';
     this.decision = null;
@@ -1389,6 +1399,7 @@ Match.prototype.updateEnergy = function (p, dt) {
   // ★ 身体对抗：1.2 米内有对手紧贴（动静都算，拼抢消耗）
   if (this.nearestOpponent(p).dist < T.CONTACT_DIST) p.stamina -= T.CONTACT_DRAIN * dt;
   p.stamina = clamp(p.stamina, 0, p.maxStamina);
+  if (p.stamina < 18) p.exhaustRisk = true;
 };
 
 // shape-lock-v1：球权变化后 5 秒锁定锚点。只有丢球方最近的一个人反抢，其余人拉开回阵型。
@@ -1538,7 +1549,9 @@ Match.prototype.simulate = function (dt) {
       // ★ 行为层·持球者：被紧逼时减速护球并向空侧微调，不再无脑直线冲门
       //   ★ 盘带差的带球本身就慢（dribbleFactor），不再是人人一个速度
       var adj = Behavior.carrierAdjust(self, carrier);
-      self.moveToward(carrier, adj.tx, adj.ty, cSpeed * adj.spMul * self.dribbleFactor(carrier), dt);
+      var tempo = ((carrier.team === 'home' ? self.tacticsHome : self.tacticsAway) || {}).tempo || 'normal';
+      var tempoMul = tempo === 'fast' ? 1.1 : (tempo === 'slow' ? 0.84 : 1);
+      self.moveToward(carrier, adj.tx, adj.ty, cSpeed * adj.spMul * self.dribbleFactor(carrier) * tempoMul, dt);
     }
   }
   this.updateEnergy(carrier, dt);
@@ -1560,8 +1573,15 @@ Match.prototype.simulate = function (dt) {
   if (countering) {
     if (self._counterId) pressing[self._counterId] = true;
   } else {
+    var pressName = ((carrier.team === 'home' ? self.tacticsAway : self.tacticsHome) || {}).press || 'normal';
+    var pressN = pressName === 'high' ? 2 : (pressName === 'low' ? 0 : 1);
     sortedOpp.forEach(function (q, idx) {
-      if (idx === 0 && self.now >= q.beatenUntil && self.now >= q.frozenUntil) pressing[q.id] = true;
+      if (self.now < q.beatenUntil || self.now < q.frozenUntil) return;
+      if (pressN === 0) {
+        if (idx === 0 && dist(q, carrier) < 7) pressing[q.id] = true;
+        return;
+      }
+      if (idx < pressN) pressing[q.id] = true;
     });
   }
   // 全队按 4-2-3-1 槽位整体平移。只有 pressing 里的 1～2 人离开阵型去抢球。
@@ -2323,7 +2343,12 @@ Match.prototype.bestPassTarget = function (p) {
     var forward = (q.x - p.x) * dir;
     var open = self.nearestOpponent(q).dist;
     var runBonus = (q._task === 'run' ? FM.v(q, 'offBall') / 100 : 0) * vis * 8;
-    var score = forward * 1.5 + open * 2.0 + runBonus;
+    var distPass = Math.hypot(q.x - p.x, q.y - p.y);
+    var style = ((p.team === 'home' ? self.tacticsHome : self.tacticsAway) || {}).pass || 'mixed';
+    var styleScore = 0;
+    if (style === 'short') styleScore = distPass > 22 ? -(distPass - 22) * 2.2 : 4;
+    else if (style === 'long') styleScore = distPass * 0.45 - (distPass < 14 ? 8 : 0);
+    var score = forward * 1.5 + open * 2.0 + runBonus + styleScore;
     if (score > bestScore) { bestScore = score; best = q; }
   });
   return best || p;
@@ -2638,9 +2663,15 @@ Match.prototype.takerColumns = function (p, kind) {
 
 Match.prototype.takerScore = function (p, kind) {
   var cols = this.takerColumns(p, kind);
-  if (kind === 'penalty') return cols[0].v * 0.62 + cols[1].v * 0.38;
-  if (kind === 'corner') return cols[0].v * 0.40 + cols[1].v * 0.25 + cols[2].v * 0.35;
-  return cols[0].v * 0.35 + cols[1].v * 0.25 + cols[2].v * 0.40;
+  var base = kind === 'penalty'
+    ? cols[0].v * 0.62 + cols[1].v * 0.38
+    : (kind === 'corner'
+      ? cols[0].v * 0.40 + cols[1].v * 0.25 + cols[2].v * 0.35
+      : cols[0].v * 0.35 + cols[1].v * 0.25 + cols[2].v * 0.40);
+  if (kind === 'penalty' && p.penTaker) base += 40;
+  if (kind === 'corner' && p.cornerTaker) base += 40;
+  if (kind !== 'penalty' && kind !== 'corner' && p.fkTaker) base += 40;
+  return base;
 };
 
 Match.prototype.takerCandidates = function (team, kind) {
@@ -3759,6 +3790,8 @@ Match.prototype.setInput = function (data) {
   c.sprint = !!data.sprint; c.slow = !!data.slow;
   c.stamp = this.now;
   if (data.dismissOverlay && (this.overlayActive() || this.pendingOutcome)) this.releaseFreeze();
+  if (data.tacticsPatch) return this.patchTactics('home', data.tacticsPatch);
+  if (data.substitute) return this.substitute(data.substitute.offId, data.substitute.bench | 0);
   if (data.cancelMenu) this.cancelVoluntaryDecision();
   if (data.menu && this.phase === 'play') this.tryManualDecision(); // ★ E 键手动呼出决策菜单
   if (c.dx !== 0 || c.dy !== 0 || c.sprint || c.slow) c.activeStamp = this.now;
@@ -3840,6 +3873,77 @@ Match.prototype.setMentality = function (m) {
   if (['balanced', 'attack', 'defend'].indexOf(m) >= 0) this.mentality = m;
 };
 
+Match.prototype.patchTactics = function (team, patch) {
+  var slot = team === 'away' ? this.tacticsAway : this.tacticsHome;
+  patch = patch || {};
+  ['press', 'line', 'pass', 'tempo', 'width', 'formation'].forEach(function (k) {
+    if (patch[k]) slot[k] = patch[k];
+  });
+  if (patch.formation) {
+    var form = T.FORMATIONS[patch.formation];
+    if (form) {
+      this.players.forEach(function (p) {
+        if (p.team !== (team === 'away' ? 'away' : 'home')) return;
+        var s = form.slots[p.num];
+        if (!s) return;
+        p.formation = form.id;
+        p.formU = s.u;
+        p.formY = s.y;
+        p.hx = p.team === 'home' ? s.u : FIELD.W - s.u;
+        p.hy = s.y;
+      });
+    }
+  }
+  return { ok: true, tactics: slot };
+};
+
+Match.prototype.substitute = function (offId, benchIndex) {
+  var off = this.byId[offId];
+  if (!off || off.team !== 'home' || off.sentOff) return { ok: false, error: '换不下这个人' };
+  var list = this.bench.home || [];
+  var on = list[benchIndex];
+  if (!on) return { ok: false, error: '替补席没有这个人' };
+  if (this.subsLeft.home <= 0) return { ok: false, error: '换人名额用完了' };
+  if ((off.pos === 'GK') !== (on.pos === 'GK')) return { ok: false, error: '门将只能和门将换' };
+  var old = { name: off.name, stats: off.stats, condition: off.condition, morale: off.morale, pos: off.pos };
+  off.name = on.name;
+  off.stats = Object.assign({}, on.stats || {});
+  off.condition = on.condition == null ? 80 : on.condition;
+  off.morale = on.morale == null ? 70 : on.morale;
+  off.stamina = Math.max(30, Math.round(off.condition));
+  off.maxStamina = 100;
+  list.splice(benchIndex, 1);
+  list.push({ name: old.name, pos: old.pos, stats: old.stats, condition: Math.max(20, Math.round((off.stamina / 100) * 40)) });
+  this.subsLeft.home -= 1;
+  return { ok: true, name: on.name, left: this.subsLeft.home };
+};
+
+Match.prototype.autoSub = function (team) {
+  var list = team === 'home' ? this.bench.home : this.bench.away;
+  var left = team === 'home' ? this.subsLeft.home : this.subsLeft.away;
+  if (!list || !list.length || left <= 0) return;
+  var worst = null;
+  this.players.forEach(function (p) {
+    if (p.team !== team || p.sentOff || p.pos === 'GK') return;
+    if (p.stamina > 38) return;
+    if (!worst || p.stamina < worst.stamina) worst = p;
+  });
+  if (!worst) return;
+  var idx = -1;
+  for (var i = 0; i < list.length; i++) {
+    if (list[i].pos !== 'GK') { idx = i; break; }
+  }
+  if (idx < 0) return;
+  var on = list[idx];
+  worst.name = on.name;
+  worst.stats = Object.assign({}, on.stats || {});
+  worst.stamina = Math.max(45, Math.round(on.condition || 75));
+  worst.condition = on.condition || 75;
+  list.splice(idx, 1);
+  if (team === 'home') this.subsLeft.home -= 1;
+  else this.subsLeft.away -= 1;
+};
+
 function fmtClock(sec) {
   var m = Math.floor(sec / 60), s = Math.floor(sec % 60);
   return (m < 10 ? '0' + m : '' + m) + ':' + (s < 10 ? '0' + s : '' + s);
@@ -3900,6 +4004,9 @@ Match.prototype.serialize = function () {
       y: +this.refereePos.y.toFixed(2),
     },
     controlledId: this.control.playerId, // 当前被玩家直接操控的球员
+    bench: (this.bench && this.bench.home) || [],
+    subsLeft: this.subsLeft ? this.subsLeft.home : 3,
+    tactics: this.tacticsHome || null,
     controlActive: (this.now - this.control.activeStamp) <= 2000, // 2 秒内有有效操作→玩家实控，否则 AI 接管
     ball: { x: +this.ball.x.toFixed(2), y: +this.ball.y.toFixed(2),
       z: +(this.ball.z || 0).toFixed(2), ownerId: this.ball.ownerId },

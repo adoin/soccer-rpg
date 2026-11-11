@@ -7,7 +7,7 @@
 })(typeof self !== 'undefined' ? self : this, function () {
   'use strict';
 
-  var SCHEMA = 1;
+  var SCHEMA = 2;
   var SLOT_SCHEMA = 2;
   var SAVE_KEY = 'soccer-rpg-career';
   var INDEX_KEY = 'soccer-rpg-saves';
@@ -15,7 +15,12 @@
   var MIN_SQUAD = 16;
   var MAX_SQUAD = 22;
   // 生涯正文从 schema 1 往上爬。现在就是 1，以后加步骤写在这里。
-  var CAREER_MIGRATIONS = {};
+  var CAREER_MIGRATIONS = {
+    1: function (career) {
+      career.schema = 2;
+      return career;
+    },
+  };
   var HOOKS = [
     'competitions',   // 登记联赛 / 杯赛规则
     'onSeasonStart',  // 生成赛季：球队、积分榜、联赛赛程
@@ -24,6 +29,7 @@
     'onMatchPlayed',  // 一场打完
     'growPlayers',    // 成长 / 衰退
     'youthIntake',    // 青训入队
+    'onLoad',         // 读档之后补经营字段
     'serialize',      // 把 mod 自己的状态交出来，写进存档
     'deserialize',    // 读档时把 mod 状态还回去
   ];
@@ -251,18 +257,25 @@
     { num: 9, pos: 'FW' },
   ];
 
+  function blocked(p) {
+    if (!p) return true;
+    if (p.ban > 0) return true;
+    if (p.injury && p.injury.matches > 0) return true;
+    if (p.loan && p.loan.dir === 'out') return true;
+    return false;
+  }
   function autoXI(squad) {
     var used = {};
     var ids = [];
     XI_SLOTS.forEach(function (slot) {
       var pick = null;
       squad.forEach(function (p) {
-        if (used[p.id] || p.pos !== slot.pos) return;
+        if (used[p.id] || p.pos !== slot.pos || blocked(p)) return;
         if (!pick || (p.ovr || 0) > (pick.ovr || 0)) pick = p;
       });
       if (!pick) {
         squad.forEach(function (p) {
-          if (used[p.id] || p.pos === 'GK') return;
+          if (used[p.id] || p.pos === 'GK' || blocked(p)) return;
           if (!pick) pick = p;
         });
       }
@@ -277,7 +290,7 @@
     if (!slot) return { ok: false, error: '没有这个位置' };
     var cur = save.xi[slotIndex];
     var pool = save.squad.filter(function (p) {
-      if (p.pos !== slot.pos) return false;
+      if (p.pos !== slot.pos || blocked(p)) return false;
       var at = save.xi.indexOf(p.id);
       return at < 0 || at === slotIndex;
     });
@@ -289,24 +302,44 @@
     return { ok: true, player: next };
   }
 
-  function lineupPlayers(squad, xi) {
+  function lineupPlayers(squad, xi, slots) {
+    slots = slots || XI_SLOTS;
     var out = [];
-    for (var i = 0; i < XI_SLOTS.length; i++) {
+    for (var i = 0; i < slots.length; i++) {
       var p = find(squad, xi[i]);
-      if (!p) return null;
+      if (!p || blocked(p)) return null;
+      var cond = p.condition == null ? 100 : p.condition;
       out.push({
-        num: XI_SLOTS[i].num,
+        num: slots[i].num,
         name: p.name,
-        pos: XI_SLOTS[i].pos,
+        pos: slots[i].pos,
         level: p.level || 1,
         stats: p.stats,
         special: null,
         shots: [],
+        formation: slots[i].formation || null,
+        condition: cond,
+        morale: p.morale == null ? 70 : p.morale,
+        stamina: Math.max(15, Math.round(cond)),
       });
     }
     return out;
   }
 
+  function sidePower(team) {
+    var s = team ? (team.strength || 5) : 5;
+    var squad = (team && team.squad) || [];
+    if (!squad.length) return s;
+    var n = 0, cond = 0;
+    squad.forEach(function (p) {
+      if (p.ban > 0) return;
+      if (p.injury && p.injury.matches > 0) return;
+      cond += p.condition == null ? 100 : p.condition;
+      n++;
+    });
+    if (!n) return s * 0.7;
+    return s * (0.7 + 0.3 * (cond / n) / 100);
+  }
   function simRestOfDate(save, date, skipId) {
     var rng = mulberry32((save.seed + date * 97 + save.season * 13) >>> 0);
     save.calendar.fixtures.forEach(function (f) {
@@ -314,8 +347,8 @@
       if (f.competitionId !== 'amateur-league') return;
       var th = find(save.teams, f.homeId);
       var ta = find(save.teams, f.awayId);
-      var sh = th ? th.strength : 5;
-      var sa = ta ? ta.strength : 5;
+      var sh = sidePower(th);
+      var sa = sidePower(ta);
       var lean = (sh - sa) * 0.35;
       var hg = clamp(Math.floor(rng() * 3 + lean + 0.4), 0, 5);
       var ag = clamp(Math.floor(rng() * 3 - lean + 0.4), 0, 5);
@@ -642,6 +675,7 @@
     var info = readSlot(storage, slotId);
     if (!info.ok || info.empty || info.damaged) return info;
     info.warnings = applyModPack(info.career, info.pack || {});
+    emit('onLoad', { save: info.career });
     try {
       var storageRef = resolveStorage(storage);
       var idx = loadIndex(storageRef);

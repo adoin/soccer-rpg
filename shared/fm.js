@@ -4,10 +4,20 @@
 // 公式量级与旧体系兼容（1-20 × 5 ≈ 旧 40~85 区间）。
 'use strict';
 
+function fitness(p) {
+  if (!p) return 1;
+  var st = 1;
+  if (p.stamina != null && p.maxStamina) {
+    st = 0.55 + 0.45 * Math.max(0, Math.min(1, p.stamina / p.maxStamina));
+  }
+  var cond = p.condition == null ? 1 : (0.84 + 0.16 * Math.max(0, Math.min(100, p.condition)) / 100);
+  var mor = p.morale == null ? 1 : (0.94 + 0.06 * Math.max(0, Math.min(100, p.morale)) / 100);
+  return st * cond * mor;
+}
 function v(p, key) {
   var s = p.stats || {};
   var x = s[key];
-  return (x == null ? 10 : x) * 5;
+  return (x == null ? 10 : x) * 5 * fitness(p);
 }
 function avg(p, keys) {
   var s = 0;
@@ -17,6 +27,7 @@ function avg(p, keys) {
 
 module.exports = {
   v: v,
+  fitness: fitness,
   avg: avg,
   // 绝对速度（跑动、追击、回追）
   speed:   function (p) { return avg(p, ['pace', 'acceleration']); },

@@ -74,22 +74,35 @@
           teams: 8,
           points: { win: 3, draw: 1, loss: 0 },
           tiebreak: ['pts', 'gd', 'gf'],
+          window: 'always',
+          gate: 800,
+          prize: 400,
+          sponsor: 1500,
+          boardRank: 4,
         });
       },
       onSeasonStart: function (ctx) {
         var save = ctx.save;
         var rng = ctx.rng;
-        save.clubId = 'riverside';
-        save.budget = save.budget && ctx.rollover ? save.budget : 35000;
+        save.clubId = save.clubId || 'riverside';
+        if (!ctx.rollover) save.budget = 35000;
+        var kept = ctx.rollover && save.squad && save.squad.length >= 11 ? save.squad : null;
         save.teams = CLUBS.map(function (c) {
           return { id: c.id, name: c.name, strength: c.strength, squad: makeSquad(rng, c) };
         });
-        var mine = null;
-        save.teams.forEach(function (t) { if (t.id === save.clubId) mine = t; });
-        save.squad = mine.squad.map(function (p) {
-          var q = JSON.parse(JSON.stringify(p));
-          return q;
-        });
+        if (kept) {
+          save.squad = kept;
+          save.teams.forEach(function (t) {
+            if (t.id === save.clubId) t.squad = kept;
+          });
+        } else {
+          var mine = null;
+          save.teams.forEach(function (t) { if (t.id === save.clubId) mine = t; });
+          save.squad = mine.squad.map(function (p) { return JSON.parse(JSON.stringify(p)); });
+          save.teams.forEach(function (t) {
+            if (t.id === save.clubId) t.squad = save.squad;
+          });
+        }
         save.xi = Career.autoXI(save.squad);
         save.calendar = Career.blankCalendar();
         Career.doubleRoundRobin(save.calendar, 'amateur-league', CLUBS.map(function (c) { return c.id; }));

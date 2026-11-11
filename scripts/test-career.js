@@ -52,7 +52,7 @@ console.log('== 赛程插入和延期 ==');
 console.log('== 业余联赛和示例 mod ==');
 (function () {
   var save = Career.newCareer(7);
-  ok(save.schema === 1 && save.clubId === 'riverside', '新生涯');
+  ok(save.schema === Career.SCHEMA && save.clubId === 'riverside', '新生涯');
   ok(save.teams.length === 8, '8 支球队', save.teams.length);
   ok(save.squad.length >= 16 && save.squad.length <= 22, '阵容人数', save.squad.length);
   ok(save.xi.length === 11 && save.xi.indexOf(null) < 0, '首发 11 人');
@@ -138,7 +138,7 @@ console.log('== 记分和存档 ==');
   var mem = { bag: {}, setItem: function (k, v) { this.bag[k] = v; }, getItem: function (k) { return this.bag[k] || null; }, removeItem: function (k) { delete this.bag[k]; } };
   ok(Career.persist(save, mem), '写入存档');
   var back = Career.restore(mem);
-  ok(back && back.schema === 1 && back.results.length === 1 && back.budget === save.budget, '读档一致');
+  ok(back && back.schema === Career.SCHEMA && back.results.length === 1 && back.budget === save.budget, '读档一致');
   var idx = JSON.parse(mem.getItem(Career.INDEX_KEY));
   idx.legacyMigrated = false;
   mem.setItem(Career.INDEX_KEY, JSON.stringify(idx));

@@ -422,11 +422,16 @@ function blockShift(match, team) {
   if (front > 98) { front = 98; back = Math.max(10, front - depth); }
   if (match.mentality === 'attack') { back += attack ? 2 : 0; front += attack ? 2 : 0; }
   if (match.mentality === 'defend') { back -= 2; front -= 2; }
+  var tac = (team === 'home' ? match.tacticsHome : match.tacticsAway) || {};
+  if (tac.line === 'high') { back += 6; front += 4; }
+  if (tac.line === 'deep') { back -= 6; front -= 4; }
   back = clamp(back, 4, 62);
   if (!attack) front = Math.min(front, ballU - 2);
   if (front < back + 10) back = Math.max(4, front - 12);
   front = clamp(front, back + 10, 100);
   var width = attack ? 1.02 : 0.9;
+  if (tac.width === 'wide') width += 0.14;
+  if (tac.width === 'narrow') width -= 0.12;
   var yShift = clamp((ballY - FIELD_H / 2) * (attack ? 0.34 : 0.22), -7, 7);
   return { du: 0, back: back, front: front, depth: front - back, width: width, yShift: yShift, attack: attack, refU: form.refU };
 }

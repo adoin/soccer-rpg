@@ -41,7 +41,19 @@ app.post('/api/match', function (req, res) {
   var halfLength = parseInt(body.halfLength, 10);
   if (!(halfLength >= 30 && halfLength <= 1200)) halfLength = 180;
   var id = crypto.randomBytes(8).toString('hex');
-  var m = new Match(id, { halfLength: halfLength, mentality: body.mentality || 'balanced' });
+  var m = new Match(id, {
+    halfLength: halfLength,
+    mentality: body.mentality || 'balanced',
+    homeSquad: body.homeSquad,
+    awaySquad: body.awaySquad,
+    homeBench: body.homeBench,
+    awayBench: body.awayBench,
+    tactics: body.tactics,
+    awayTactics: body.awayTactics,
+    homeName: body.homeName,
+    awayName: body.awayName,
+    seed: body.seed,
+  });
   matches.set(id, m);
   res.json({ ok: true, matchId: id });
 });
