@@ -349,7 +349,8 @@ function sendInput(extra) {
   api.post('/api/match/' + matchId + '/input', body).catch(function () {});
 }
 function noteTutorialInput() {
-  if (ui.tutorialDone || ui.tutorialArmed || ui.hintClosed) return;
+  if (ui.tutorialDone || ui.hintClosed || ui.tutorialSeenInput) return;
+  ui.tutorialSeenInput = true;
   ui.tutorialArmed = true;
   ui.tutorialUntil = Date.now() + 4000;
 }
@@ -489,6 +490,15 @@ document.addEventListener('keydown', function (e) {
     if (ck === 's' || ck === 'arrowdown') { stepCareer(1); e.preventDefault(); return; }
     if (ck === 'e' || ck === 'enter') { activateCareer(); e.preventDefault(); return; }
     if (ck === 'q' || ck === 'escape') { backCareer(); e.preventDefault(); return; }
+    return;
+  }
+  if (screen === 'game' && state && state.phase === 'fulltime') {
+    var fk0 = (e.key || '').toLowerCase();
+    if (fk0 === 'e' || fk0 === 'enter' || fk0 === ' ' || fk0 === 'q' || fk0 === 'escape') {
+      if (ui.careerFix) returnToCareer();
+      else exitMatch();
+      e.preventDefault();
+    }
     return;
   }
   if (e.key === 'Escape' && screen === 'game') {
@@ -963,7 +973,7 @@ function layoutVKeys() {
     hint.style.marginTop = (-STICK_CSS_R) + 'px';
     hint.style.left = (hs.x - origin.left) + 'px';
     hint.style.top = (hs.y - origin.top) + 'px';
-    if ('hidden' in hint) hint.hidden = !!stickVec.on;
+    if ('hidden' in hint) hint.hidden = !!stickVec.on || screen === 'career';
   }
   var layer = document.getElementById('vkey-layer');
   if (!layer || !layer.children) return;
@@ -1143,9 +1153,10 @@ function startMatch(extra) {
     contacts = {}; idMap = {}; recentDown = [];
     for (var k in keys) keys[k] = false;
     ui.pauseOpen = false; ui.overlay = null; ui.choosing = false; ui.exitArm = 0;
-    ui.tutorialUntil = 0;
-    ui.tutorialArmed = false;
+    ui.tutorialUntil = Date.now() + 6000;
+    ui.tutorialArmed = true;
     ui.tutorialDone = false;
+    ui.tutorialSeenInput = false;
     ui.hintClosed = false;
     refresh();
     // ★ 状态轮询从 300ms 提到 120ms（与服务器 tick 对齐）：直接操控时按键→画面的延迟明显缩短
@@ -1955,9 +1966,19 @@ function careerRows() {
   var C = careerApi();
   if (!C || !careerSave) return [];
   if (ui.careerView === 'table') {
-    return C.ranked(careerSave).map(function (r) {
-      return { label: C.teamName(careerSave, r.teamId) + '  ' + r.pts + '分  净胜' + r.gd, fn: function () {} };
-    }).concat([{ label: '返回', fn: function () { ui.careerView = 'hub'; ui.menuSel = 0; } }]);
+    return C.ranked(careerSave).map(function (r, i) {
+      var gd = r.gd > 0 ? ('+' + r.gd) : String(r.gd);
+      return {
+        cells: {
+          rank: String(i + 1),
+          name: C.teamName(careerSave, r.teamId),
+          p: String(r.p), w: String(r.w), d: String(r.d), l: String(r.l),
+          gf: String(r.gf), ga: String(r.ga), gd: gd, pts: String(r.pts),
+        },
+        own: r.teamId === careerSave.clubId,
+        fn: function () {},
+      };
+    }).concat([{ back: true, label: '返回', fn: function () { ui.careerView = 'hub'; ui.menuSel = 0; } }]);
   }
   if (ui.careerView === 'fixtures') {
     var mine = careerSave.calendar.fixtures.filter(function (f) {
@@ -1973,23 +1994,35 @@ function careerRows() {
   }
   if (ui.careerView === 'squad') {
     return careerSave.squad.map(function (p) {
-      var star = careerSave.xi.indexOf(p.id) >= 0 ? '首发 ' : '';
       return {
-        label: star + p.pos + ' ' + p.name + '  ' + p.age + '岁',
-        sub: '能力 ' + (p.ovr || 0) + '    周薪 ' + p.wage,
+        cells: {
+          pos: p.pos,
+          name: p.name,
+          age: String(p.age),
+          ovr: String(p.ovr || 0),
+          wage: String(p.wage),
+          fee: String(p.fee || 0),
+          xi: careerSave.xi.indexOf(p.id) >= 0 ? '是' : '·',
+        },
         fn: function () { trySell(p.id); },
       };
-    }).concat([{ label: '返回', fn: function () { ui.careerView = 'hub'; ui.menuSel = 0; } }]);
+    }).concat([{ back: true, label: '返回', fn: function () { ui.careerView = 'hub'; ui.menuSel = 0; } }]);
   }
   if (ui.careerView === 'market') {
     return careerSave.market.map(function (L) {
       var p = L.player;
       return {
-        label: p.pos + ' ' + p.name + '  ' + p.age + '岁  能力' + (p.ovr || 0),
-        sub: '转会费 ' + L.fee + '    周薪 ' + p.wage,
+        cells: {
+          pos: p.pos,
+          name: p.name,
+          age: String(p.age),
+          ovr: String(p.ovr || 0),
+          wage: String(p.wage),
+          fee: String(L.fee),
+        },
         fn: function () { tryBuy(L.id); },
       };
-    }).concat([{ label: '返回', fn: function () { ui.careerView = 'hub'; ui.menuSel = 0; } }]);
+    }).concat([{ back: true, label: '返回', fn: function () { ui.careerView = 'hub'; ui.menuSel = 0; } }]);
   }
   if (ui.careerView === 'xi') {
     return C.XI_SLOTS.map(function (slot, i) {
@@ -2138,6 +2171,285 @@ function returnToCareer() {
   ui.pauseOpen = false;
   ui.careerFix = null;
 }
+// career-table-v1：积分榜、阵容、转会用固定列宽。数字右对齐，队名单独一列，本队高亮和光标分开。
+var CAREER_COLS = {
+  table: [
+    { key: 'rank', label: '名次', align: 'right' },
+    { key: 'name', label: '球队', align: 'left' },
+    { key: 'p', label: '赛', align: 'right' },
+    { key: 'w', label: '胜', align: 'right' },
+    { key: 'd', label: '平', align: 'right' },
+    { key: 'l', label: '负', align: 'right' },
+    { key: 'gf', label: '进', align: 'right' },
+    { key: 'ga', label: '失', align: 'right' },
+    { key: 'gd', label: '净胜', align: 'right' },
+    { key: 'pts', label: '积分', align: 'right' },
+  ],
+  squad: [
+    { key: 'pos', label: '位置', align: 'left' },
+    { key: 'name', label: '姓名', align: 'left' },
+    { key: 'age', label: '年龄', align: 'right' },
+    { key: 'ovr', label: '能力', align: 'right' },
+    { key: 'wage', label: '周薪', align: 'right' },
+    { key: 'fee', label: '转会费', align: 'right' },
+    { key: 'xi', label: '首发', align: 'left' },
+  ],
+  market: [
+    { key: 'pos', label: '位置', align: 'left' },
+    { key: 'name', label: '姓名', align: 'left' },
+    { key: 'age', label: '年龄', align: 'right' },
+    { key: 'ovr', label: '能力', align: 'right' },
+    { key: 'wage', label: '周薪', align: 'right' },
+    { key: 'fee', label: '转会费', align: 'right' },
+  ],
+};
+var CAREER_VIEW_NAME = { table: '积分榜', squad: '阵容', market: '转会', fixtures: '赛程', xi: '首发' };
+
+function careerSafeLeft() {
+  return isTouch ? 28 : 44;
+}
+function careerSafeRight() {
+  if (!isTouch) return W - 36;
+  var edge = W - 28;
+  VKEYS.forEach(function (b) {
+    var x = b.x - b.r - 20;
+    if (x < edge) edge = x;
+  });
+  return Math.floor(edge);
+}
+function careerFont(css) {
+  var scale = paintScale();
+  return Math.max(15, Math.ceil(css / (scale || 1)));
+}
+function layoutCareerCols(headers, data, width) {
+  var font = careerFont(14);
+  var minFont = careerFont(11);
+  if (minFont > font) minFont = font;
+  var face = '"PingFang SC","Microsoft YaHei",monospace';
+  var cols = [];
+  var guard = 0;
+  while (guard < 16) {
+    guard++;
+    ctx.font = 'bold ' + font + 'px ' + face;
+    var pad = Math.max(6, Math.round(font * 0.5));
+    var wantBadge = data.some(function (row) { return row.own; });
+    cols = headers.map(function (h) {
+      var w = ctx.measureText(h.label).width;
+      data.forEach(function (row) {
+        var s = row.cells && row.cells[h.key] != null ? String(row.cells[h.key]) : '';
+        var tw = ctx.measureText(s).width;
+        if (tw > w) w = tw;
+      });
+      var content = Math.ceil(w + pad);
+      var floor = Math.ceil(font * (h.label.length >= 2 ? 2.7 : 2.2));
+      if (h.key === 'name') floor = content + (wantBadge ? Math.ceil(font * 1.45) : 0);
+      return { key: h.key, label: h.label, align: h.align, w: Math.max(content, floor) };
+    });
+    var sum = 0;
+    cols.forEach(function (c) { sum += c.w; });
+    if (sum <= width || font <= minFont) {
+      if (sum > width && sum > 0) {
+        var fit = width / sum;
+        var used = 0;
+        cols.forEach(function (c, i) {
+          c.w = i === cols.length - 1 ? Math.max(8, width - used) : Math.max(8, Math.floor(c.w * fit));
+          used += c.w;
+        });
+        if (used > width && cols.length) cols[cols.length - 1].w -= used - width;
+      } else {
+        var extra = width - sum;
+        var nameCol = null;
+        cols.forEach(function (c) { if (c.key === 'name') nameCol = c; });
+        var others = cols.filter(function (c) { return c !== nameCol; });
+        var nameShare = nameCol && others.length ? Math.round(extra * 0.28) : extra;
+        var rest = extra - nameShare;
+        var each = others.length ? Math.floor(rest / others.length) : 0;
+        var leftover = others.length ? rest - each * others.length : 0;
+        if (nameCol) nameCol.w += nameShare;
+        others.forEach(function (c, i) { c.w += each + (i === others.length - 1 ? leftover : 0); });
+      }
+      break;
+    }
+    font -= 1;
+  }
+  var x = 0;
+  cols.forEach(function (c) { c.x = x; x += c.w; });
+  return { cols: cols, font: font };
+}
+function drawCareerColumns(rows, headers, size, small) {
+  var C = careerApi();
+  var data = [];
+  var back = null;
+  rows.forEach(function (r) { if (r.back) back = r; else data.push(r); });
+  var left = careerSafeLeft();
+  var right = careerSafeRight();
+  if (right - left < 280) { left = isTouch ? 300 : 48; right = isTouch ? 1000 : W - 36; }
+  var width = right - left;
+  var lay = layoutCareerCols(headers, data, width);
+  var font = lay.font;
+  var headerH = font + 16;
+  var rowH = font + 12;
+  var backH = Math.max(font + 16, 36);
+  var foot = Math.max(18, Math.round(small * 0.8));
+  var helpY = H - foot;
+  var bottom = helpY - foot - 6;
+  var titleSize = Math.min(size + 4, font + 12);
+  var titleY = 12 + titleSize / 2;
+  var subY = titleY + titleSize / 2 + small / 2 + 8;
+  var top = subY + small / 2 + 12;
+  var buttonY = bottom - backH;
+  var listTop = top + headerH;
+  var listRoom = buttonY - 8 - listTop;
+  var visible = data.length ? Math.max(1, Math.floor(listRoom / rowH)) : 0;
+  if (visible > data.length) visible = data.length;
+  var sel = ui.menuSel || 0;
+  if (sel > data.length) sel = ui.menuSel = 0;
+  var onBack = sel === data.length;
+  var dataSel = onBack ? Math.max(0, data.length - 1) : sel;
+  var scroll = 0;
+  if (data.length > visible) {
+    scroll = dataSel - Math.floor((visible - 1) / 2);
+    if (scroll < 0) scroll = 0;
+    if (scroll > data.length - visible) scroll = data.length - visible;
+  }
+  var unit = ui.careerView === 'table' ? '队' : '人';
+  var posText = onBack ? ('共' + data.length + unit) : ((data.length ? sel + 1 : 0) + '/' + data.length);
+  if (scroll > 0) posText = '↑ ' + posText;
+  if (scroll + visible < data.length) posText += ' ↓';
+
+  var viewName = CAREER_VIEW_NAME[ui.careerView] || '';
+  var title = (C ? C.teamName(careerSave, careerSave.clubId) : '') + '  第' + careerSave.season + '赛季' + (viewName ? '  ·  ' + viewName : '');
+  ctx.font = 'bold ' + small + 'px "PingFang SC","Microsoft YaHei",monospace';
+  var pillW = Math.ceil(ctx.measureText(posText).width + small * 1.15);
+  var pillH = small + 8;
+  var pillX = right - pillW;
+  var pillY = subY - pillH / 2;
+  ctx.fillStyle = 'rgba(255,217,74,0.16)';
+  rr(pillX, pillY, pillW, pillH, 6); ctx.fill();
+  ctx.strokeStyle = 'rgba(255,217,74,0.75)';
+  ctx.lineWidth = 1.5;
+  ctx.stroke();
+  text(posText, pillX + pillW / 2, subY, small, '#ffd94a', 'center', true);
+
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(8, 0, Math.max(0, pillX - 16), subY + small);
+  ctx.clip();
+  text(title, left, titleY, titleSize, '#ffd94a', 'left', true);
+  text('预算 ' + careerSave.budget + '    阵容 ' + careerSave.squad.length + '人', left, subY, small, '#d6e6ff', 'left');
+  ctx.restore();
+
+  ctx.fillStyle = 'rgba(6,10,22,0.82)';
+  rr(left, top, width, headerH + Math.max(visible, 1) * rowH, 8); ctx.fill();
+  ctx.fillStyle = '#16244a';
+  ctx.fillRect(left + 2, top + 2, width - 4, headerH - 2);
+  ctx.strokeStyle = 'rgba(255,217,74,0.55)';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(left + 10, top + headerH);
+  ctx.lineTo(left + width - 10, top + headerH);
+  ctx.stroke();
+  var cellPad = Math.max(6, Math.round(font * 0.28));
+  lay.cols.forEach(function (col) {
+    var tx = col.align === 'right' ? left + col.x + col.w - cellPad : left + col.x + cellPad;
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(left + col.x + 1, top, col.w - 2, headerH);
+    ctx.clip();
+    text(col.label, tx, top + headerH / 2, font, '#ffd94a', col.align === 'right' ? 'right' : 'left', true);
+    ctx.restore();
+  });
+
+  var posColor = { GK: '#e8b923', DF: '#8eb7ff', MF: '#8ee0b0', FW: '#ff9b9b' };
+  for (var i = 0; i < visible; i++) {
+    var idx = scroll + i;
+    var row = data[idx];
+    if (!row) continue;
+    var y = listTop + i * rowH;
+    var on = idx === sel;
+    ctx.fillStyle = row.own ? 'rgba(42, 168, 96, 0.5)' : (idx % 2 ? 'rgba(22,34,64,0.72)' : 'rgba(8,12,24,0.15)');
+    ctx.fillRect(left + 2, y + 1, width - 4, rowH - 2);
+    if (row.own) {
+      ctx.fillStyle = '#c8ffd8';
+      ctx.fillRect(left + 2, y + 5, 6, rowH - 10);
+    }
+    if (on) {
+      ctx.strokeStyle = '#ffd94a';
+      ctx.lineWidth = 2;
+      ctx.strokeRect(left + 3, y + 2, width - 6, rowH - 4);
+    }
+    lay.cols.forEach(function (col) {
+      var raw = row.cells && row.cells[col.key] != null ? String(row.cells[col.key]) : '';
+      var color = on ? '#fff6cc' : '#f3f6ff';
+      var bold = !!(on || row.own);
+      if (col.key === 'gd') {
+        var n = parseInt(raw, 10) || 0;
+        color = n > 0 ? '#b8ffc8' : n < 0 ? '#ffb0b0' : '#9fb4dd';
+      } else if (col.key === 'pts') {
+        color = '#ffd94a';
+        bold = true;
+      } else if (col.key === 'pos' && posColor[raw]) {
+        color = posColor[raw];
+        bold = true;
+      } else if (col.key === 'name' && row.own) {
+        color = '#f4fff7';
+      }
+      if (col.key === 'name' && on) color = '#ffd94a';
+      var tx = col.align === 'right' ? left + col.x + col.w - cellPad : left + col.x + cellPad;
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(left + col.x + 1, y, col.w - 2, rowH);
+      ctx.clip();
+      text(raw, tx, y + rowH / 2, font, color, col.align === 'right' ? 'right' : 'left', bold);
+      if (col.key === 'name' && row.own) {
+        ctx.font = 'bold ' + font + 'px "PingFang SC","Microsoft YaHei",monospace';
+        var nw = ctx.measureText(raw).width;
+        var bw = Math.round(font * 1.15);
+        var bh = Math.round(font * 0.76);
+        var bx = tx + nw + Math.round(font * 0.22);
+        if (bx + bw < left + col.x + col.w - 2) {
+          ctx.fillStyle = '#ffd94a';
+          rr(bx, y + rowH / 2 - bh / 2, bw, bh, 4);
+          ctx.fill();
+          text('我', bx + bw / 2, y + rowH / 2, Math.max(12, Math.round(font * 0.6)), '#3a2a00', 'center', true);
+        }
+      }
+      ctx.restore();
+    });
+    (function (n, ry) {
+      addClick(left, ry, width, rowH, function () { ui.menuSel = n; activateCareer(); });
+    })(idx, y);
+  }
+  ctx.strokeStyle = 'rgba(170,196,240,0.16)';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  lay.cols.forEach(function (col, ci) {
+    if (!ci) return;
+    ctx.moveTo(left + col.x + 0.5, top + 6);
+    ctx.lineTo(left + col.x + 0.5, top + headerH + Math.max(visible, 1) * rowH - 6);
+  });
+  ctx.stroke();
+  if (!data.length) text('名单是空的', left + width / 2, top + headerH + 24, font, '#9fb4dd', 'center');
+
+  if (back) {
+    var bw = Math.min(width, Math.max(200, Math.round(font * 7)));
+    var bx = left + (width - bw) / 2;
+    ctx.fillStyle = onBack ? '#2b5fe3' : '#10182e';
+    rr(bx, buttonY, bw, backH - 4, 8); ctx.fill();
+    ctx.strokeStyle = onBack ? '#ffd94a' : '#8eb0e6';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    text((onBack ? '▶ ' : '') + '返回', bx + bw / 2, buttonY + (backH - 4) / 2, font, onBack ? '#ffd94a' : '#d5e4ff', 'center', true);
+    addClick(bx, buttonY, bw, backH - 4, function () {
+      ui.menuSel = data.length;
+      activateCareer();
+    });
+  }
+  var hint = '摇杆或上/下选择    确定    取消返回';
+  if (data.length > visible) hint = '摇杆上下翻行    ' + (scroll + 1) + '-' + (scroll + visible) + '/' + data.length + '    取消返回';
+  text(hint, (left + right) / 2, helpY, Math.min(small, font + 1), '#9fb4dd', 'center');
+}
+
 function drawCareer() {
   var C = careerApi();
   ctx.fillStyle = '#0d1430'; ctx.fillRect(0, 0, W, H);
@@ -2145,7 +2457,13 @@ function drawCareer() {
   var scale = paintScale();
   var size = Math.max(18, Math.ceil(15 / scale));
   var small = Math.max(15, Math.ceil(13 / scale));
-  text(C.teamName(careerSave, careerSave.clubId) + '  第' + careerSave.season + '赛季', 48, 36, size + 6, '#ffd94a', 'left', true);
+  var rows = careerRows();
+  if (CAREER_COLS[ui.careerView]) {
+    drawCareerColumns(rows, CAREER_COLS[ui.careerView], size, small);
+    return;
+  }
+  var viewName = CAREER_VIEW_NAME[ui.careerView] || '';
+  text(C.teamName(careerSave, careerSave.clubId) + '  第' + careerSave.season + '赛季' + (viewName ? '  ·  ' + viewName : ''), 48, 36, size + 6, '#ffd94a', 'left', true);
   text('预算 ' + careerSave.budget + '    阵容 ' + careerSave.squad.length + '人', 48, 72, small, '#d6e6ff', 'left');
   if (ui.careerView === 'end') {
     var list = C.ranked(careerSave);
@@ -2154,7 +2472,6 @@ function drawCareer() {
     text('冠军  ' + C.teamName(careerSave, champ.teamId), W / 2, 210, size + 4, '#fff', 'center', true);
     text('河畔排名  第' + C.rankOf(careerSave, careerSave.clubId) + '名', W / 2, 260, size + 2, '#9dffb0', 'center', true);
   }
-  var rows = careerRows();
   var hasSub = rows.some(function (r) { return r.sub; });
   var rowH = hasSub ? Math.max(56, small * 2 + 14) : Math.max(36, small + 16);
   var top = ui.careerView === 'end' ? 320 : 110;
@@ -2253,7 +2570,7 @@ function drawGame(t) {
   drawPauseButton();
   if (isTouch) drawGamepad(); // 移动端/Pad：透明虚拟手柄（画在菜单下层）
   if (ui.pauseOpen) drawPauseMenu();
-  drawBottomUI(t);
+  if (!(state && state.phase === 'fulltime')) drawBottomUI(t);
   if (!(state && state.phase === 'fulltime')) drawCutin();
   // ★ 被动决策：头顶浮动菜单（无背景、多级嵌套，不遮挡场上内容）
   if (state && state.decision && !ui.pauseOpen && !ui.overlay) drawHeadMenu();
@@ -2845,6 +3162,10 @@ var CMD_ICONS = { dribble: '💨', burst: '💨', pass: '➡️', protect: '🛡
 
 function hintMessage() {
   if (ui.tutorialArmed && !ui.tutorialDone && ui.tutorialUntil && Date.now() >= ui.tutorialUntil) ui.tutorialDone = true;
+  if (state && state.phase === 'fulltime') {
+    ui.tutorialDone = true;
+    return null;
+  }
   if (ui.hintClosed) return null;
   if (!state) return null;
   var restarting = state.restart && (state.phase === 'whistle' || state.phase === 'penalty' || state.phase === 'decision' || state.restart.held);
@@ -2871,11 +3192,22 @@ function hintMessage() {
 }
 
 function drawIdleHint(x, y, w, h) {
+  if (state && state.phase === 'fulltime') return;
   var msg = hintMessage();
   if (!msg) return;
+  var tip = isTouch ? '拖摇杆移动，右侧按键同键盘。' : 'WASD 移动绿圈球员，E 选指令。';
+  var alpha = 1;
+  if (msg === tip && ui.tutorialArmed && ui.tutorialUntil) {
+    var left = ui.tutorialUntil - Date.now();
+    if (left < 1000) alpha = Math.max(0, left / 1000);
+  }
+  if (alpha <= 0.02) return;
+  ctx.save();
+  ctx.globalAlpha = alpha;
   panel(x, y, w, h);
   text(msg, x + 16, y + h / 2, 16, '#9fb4dd', 'left');
   text('×', x + w - 18, y + h / 2, 18, '#ffd94a', 'center', true);
+  ctx.restore();
   addClick(x, y, w, h, function () { ui.hintClosed = true; ui.tutorialUntil = 0; });
 }
 
@@ -3255,7 +3587,7 @@ function drawSettingsOverlay() {
 
 function drawFulltime() {
   finishCareerIfDone();
-  ctx.fillStyle = 'rgba(4,6,14,0.8)'; ctx.fillRect(0, 0, W, H);
+  ctx.fillStyle = 'rgba(4,6,14,0.92)'; ctx.fillRect(0, 0, W, H);
   var x = 440, y = 190, w = 400, h = 340;
   ctx.fillStyle = '#0b1020';
   ctx.fillRect(x - 6, y - 6, w + 12, h + 12);
@@ -3374,6 +3706,9 @@ if (DEBUG) {
       sel: lvl ? lvl.sel : null,
       stack: ui.hmenu && ui.hmenu.stack ? ui.hmenu.stack.map(function (l) { return l.kind + '#' + l.sel; }).join('>') : '',
       phase: state ? state.phase : null,
+      screen: screen,
+      careerView: ui.careerView || '',
+      menuSel: ui.menuSel || 0,
       dec: state && state.decision ? (state.decision.kind || 'command') : null,
       hint: typeof hintMessage === 'function' ? hintMessage() : null,
       pad: { dx: pad.dx, dy: pad.dy },

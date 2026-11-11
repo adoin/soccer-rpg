@@ -64,6 +64,21 @@ function makeTouch(page) {
   };
 }
 
+async function nudgeCursorOffClub(page) {
+  for (let i = 0; i < 4; i++) {
+    const onOwn = await page.evaluate(() => {
+      const t = window.__touchState();
+      if (!t || t.careerView !== 'table') return false;
+      const ranked = window.Career.ranked(window.__career);
+      const row = ranked[t.menuSel];
+      return !!(row && row.teamId === window.__career.clubId);
+    });
+    if (!onOwn) return;
+    await page.keyboard.press('s');
+    await page.waitForTimeout(80);
+  }
+}
+
 async function fastForward(page) {
   return await page.evaluate(() => {
     var m = window.__matches[Object.keys(window.__matches)[0]];
@@ -144,13 +159,18 @@ async function run(name, viewport, touchMode) {
   await page.keyboard.press('s');
   await page.keyboard.press('s');
   await page.keyboard.press('Enter'); // 积分榜
+  await page.waitForFunction(() => window.__touchState().careerView === 'table');
+  await nudgeCursorOffClub(page);
   await page.waitForTimeout(250);
   await page.screenshot({ path: path.join(OUT, 'career-table-' + name + '.png') });
   await page.keyboard.press('q');
   await page.waitForTimeout(150);
   await page.keyboard.press('s'); // 从开踢到阵容（sel 回到 0 后按一次）
   await page.keyboard.press('Enter');
-  await page.waitForTimeout(250);
+  await page.waitForFunction(() => window.__touchState().careerView === 'squad');
+  await page.keyboard.press('s');
+  await page.keyboard.press('s');
+  await page.waitForTimeout(200);
   await page.screenshot({ path: path.join(OUT, 'career-squad-' + name + '.png') });
   await page.keyboard.press('q');
   await page.waitForTimeout(150);
@@ -184,14 +204,23 @@ async function run(name, viewport, touchMode) {
   const phase = await fastForward(page);
   assert(phase === 'fulltime', name + ' 比赛没踢完 ' + phase);
   await page.waitForFunction(() => window.__career && window.__career.results && window.__career.results.length >= 1, null, { timeout: 5000 });
+  const ft = await page.evaluate(() => window.__touchState());
+  assert(ft.phase === 'fulltime', name + ' 全场阶段丢了 ' + JSON.stringify(ft));
+  assert(!ft.hint, name + ' 全场还挂着提示 ' + ft.hint);
   await page.screenshot({ path: path.join(OUT, 'career-fulltime-' + name + '.png') });
-  await tap(page, 640, 466);
-  await page.waitForFunction(() => window.__career && window.__career.table.some(function (r) { return r.teamId === 'riverside' && r.p >= 1; }), null, { timeout: 4000 });
+  await page.keyboard.press('Enter');
+  await page.waitForFunction(() => window.__touchState().screen === 'career', null, { timeout: 4000 });
   await page.keyboard.press('s');
   await page.keyboard.press('s');
   await page.keyboard.press('s');
   await page.keyboard.press('Enter');
-  await page.waitForTimeout(300);
+  await page.waitForFunction(() => {
+    const t = window.__touchState();
+    return t.screen === 'career' && t.careerView === 'table' &&
+      window.__career.table.some(function (r) { return r.teamId === 'riverside' && r.p >= 1; });
+  }, null, { timeout: 4000 });
+  await nudgeCursorOffClub(page);
+  await page.waitForTimeout(250);
   await page.screenshot({ path: path.join(OUT, 'career-table-after-' + name + '.png') });
 
   await page.reload({ waitUntil: 'domcontentloaded' });
