@@ -963,7 +963,8 @@ function layoutVKeys() {
     hint.style.marginTop = (-STICK_CSS_R) + 'px';
     hint.style.left = (hs.x - origin.left) + 'px';
     hint.style.top = (hs.y - origin.top) + 'px';
-    if ('hidden' in hint) hint.hidden = !!stickVec.on || screen === 'career';
+    var menuOpen = screen === 'career' || (screen === 'title' && ui.titleView && ui.titleView !== 'main');
+    if ('hidden' in hint) hint.hidden = !!stickVec.on || menuOpen;
   }
   var layer = document.getElementById('vkey-layer');
   if (!layer || !layer.children) return;
@@ -1040,6 +1041,10 @@ function menuListTarget() {
       get: function () { return ui.menuSel || 0; },
       set: function (i) { ui.menuSel = i; },
       len: function () { return careerRowCount(); },
+      enabled: function (i) {
+        var rows = screen === 'title' ? titleActions() : careerRows();
+        return !rows[i] || rows[i].enabled !== false;
+      },
     };
   }
   var lvl = (typeof hmTop === 'function') ? hmTop() : null;
@@ -1930,27 +1935,277 @@ var MENTALITY_OPTS = [
 // ---------------- 业余联赛生涯 ----------------
 var careerSave = null;
 function careerApi() { return (typeof Career !== 'undefined') ? Career : (typeof window !== 'undefined' ? window.Career : null); }
-function rememberCareer() {
+function rememberCareer(why) {
   var C = careerApi();
-  if (C && careerSave) C.persist(careerSave);
   window.__career = careerSave;
+  if (!C || !careerSave) return { ok: false };
+  var wrote = C.writeSlot(null, 'auto', careerSave);
+  if (!wrote.ok) toast(wrote.error || '自动保存失败', 2800);
+  else if (why === 'auto') toast('已自动保存', 1500);
+  return wrote;
 }
 function loadCareer() {
   var C = careerApi();
   if (!C) return null;
-  careerSave = C.restore();
+  var latest = C.latestSlot();
+  if (!latest || latest.empty || latest.damaged || !latest.career) return null;
+  var loaded = C.loadSlot(null, latest.slot);
+  if (!loaded.ok || !loaded.career) return null;
+  careerSave = loaded.career;
   window.__career = careerSave;
+  ui.slotFocus = loaded.slot;
   return careerSave;
 }
-function titleActions() {
-  var rows = [
-    { label: '开始比赛', fn: function () { ui.careerFix = null; startMatch(); } },
-    { label: '新开业余联赛', fn: function () { openNewCareer(); } },
-  ];
+function formatSaveTime(ms) {
+  if (!ms) return '';
+  var d = new Date(ms);
+  if (isNaN(d.getTime())) return '';
+  function pad(n) { return (n < 10 ? '0' : '') + n; }
+  return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()) + ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes());
+}
+function slotRecords() {
   var C = careerApi();
-  var saved = C ? C.restore() : null;
-  rows.push({ label: saved ? '继续生涯' : '继续生涯（无存档）', enabled: !!saved, fn: function () { resumeCareer(); } });
+  if (!C) return [];
+  try { return C.listSlots(); } catch (e) { return []; }
+}
+function slotRowView(info) {
+  var title = info.label || info.slot;
+  if (info.damaged) return { title: title, sub: '存档损坏  ·  ' + (info.error || '无法读取'), time: '', tone: 'bad' };
+  if (info.empty) return { title: title, sub: '空位', time: '', tone: 'empty' };
+  var s = info.summary || {};
+  var rank = s.rank ? ('第' + s.rank + '名') : '未排名';
+  return {
+    title: title,
+    time: formatSaveTime(info.savedAt),
+    tone: 'ok',
+    sub: (s.clubName || '未知球队') + '  第' + (s.season || 1) + '赛季  ' + rank + '  ·  ' + (s.round || '赛季结束') + '   预算 ' + (s.budget != null ? s.budget : 0),
+  };
+}
+function focusedSlotId() {
+  var rows = screen === 'title' ? titleActions() : careerRows();
+  var sel = ui.menuSel || 0;
+  if (rows[sel] && rows[sel].slotId) return rows[sel].slotId;
+  return ui.slotFocus || 'auto';
+}
+function downloadSave(filename, text) {
+  try {
+    var blob = new Blob([text], { type: 'application/json' });
+    var a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(function () { try { URL.revokeObjectURL(a.href); } catch (e) {} }, 1500);
+  } catch (e) {
+    toast('导出失败');
+  }
+}
+function exportFocused() {
+  var C = careerApi();
+  if (!C) return;
+  var id = focusedSlotId();
+  ui.slotFocus = id;
+  var r = C.exportSlot(null, id);
+  if (!r.ok) { toast(r.error || '导不出'); return; }
+  downloadSave(r.filename, r.text);
+  toast('已导出 ' + C.slotTitle(id));
+}
+function importFocused() {
+  var id = focusedSlotId();
+  ui.slotFocus = id;
+  var input = document.createElement('input');
+  input.type = 'file';
+  input.accept = 'application/json,.json,text/plain';
+  input.onchange = function () {
+    var file = input.files && input.files[0];
+    if (!file) return;
+    var reader = new FileReader();
+    reader.onload = function () {
+      var text = String(reader.result || '');
+      var C = careerApi();
+      var peek = C.peekImport(text);
+      if (!peek.ok) { toast(peek.error || '读不了这个文件'); return; }
+      var existing = C.readSlot(null, id);
+      if (existing && !existing.empty && !existing.damaged) {
+        openSaveAsk('import', { slot: id, text: text, summary: peek.summary, savedAt: peek.savedAt, empty: false, damaged: false });
+        return;
+      }
+      var r = C.importSlot(null, id, text);
+      toast(r.ok ? ('已导入到' + C.slotTitle(id)) : (r.error || '导入失败'));
+    };
+    reader.readAsText(file);
+  };
+  input.click();
+}
+function saveActionRows(mode) {
+  var rows = slotRecords().map(function (info) {
+    var view = slotRowView(info);
+    var enabled = true;
+    if (mode === 'load' && (info.empty || info.damaged)) enabled = false;
+    if (mode === 'delete' && info.empty) enabled = false;
+    return {
+      slotId: info.slot,
+      slotInfo: info,
+      label: view.title,
+      sub: view.sub,
+      time: view.time,
+      tone: view.tone,
+      enabled: enabled,
+      fn: function () { activateSlot(mode, info); },
+    };
+  });
+  if (mode === 'save' || mode === 'load' || mode === 'new') {
+    rows.push({ label: '导出选中的存档', utility: true, fn: exportFocused });
+    rows.push({ label: '导入到选中的位置', utility: true, fn: importFocused });
+  }
+  rows.push({
+    back: true,
+    label: '返回',
+    fn: function () {
+      ui.saveAsk = null;
+      if (screen === 'title') { ui.titleView = 'main'; ui.menuSel = 0; }
+      else { ui.careerView = 'hub'; ui.menuSel = 0; }
+    },
+  });
   return rows;
+}
+function askRows() {
+  var ask = ui.saveAsk || {};
+  var danger = ask.mode === 'delete';
+  return [
+    { label: danger ? '确定删除' : '确定覆盖', danger: danger, fn: confirmSaveAsk },
+    { label: '取消', fn: cancelSaveAsk },
+  ];
+}
+function openSaveAsk(mode, info) {
+  ui.saveAsk = { mode: mode, slot: info.slot, info: info, text: info.text || '', summary: info.summary || null };
+  ui.menuSel = 0;
+  if (screen === 'title') {
+    ui.titleReturn = ui.titleView === 'ask' ? (ui.titleReturn || 'new') : (ui.titleView || 'new');
+    ui.titleView = 'ask';
+  } else {
+    ui.careerView = 'save-ask';
+  }
+}
+function cancelSaveAsk() {
+  ui.saveAsk = null;
+  ui.menuSel = 0;
+  if (screen === 'title') ui.titleView = ui.titleReturn || 'new';
+  else ui.careerView = 'save';
+}
+function confirmSaveAsk() {
+  var ask = ui.saveAsk;
+  if (!ask) return;
+  var C = careerApi();
+  if (ask.mode === 'delete') {
+    var removed = C.deleteSlot(null, ask.slot);
+    toast(removed.ok ? ('已删除' + C.slotTitle(ask.slot)) : (removed.error || '删不掉'));
+    cancelSaveAsk();
+    return;
+  }
+  if (ask.mode === 'new') { createInto(ask.slot); return; }
+  if (ask.mode === 'save') { commitManualSave(ask.slot); return; }
+  if (ask.mode === 'import') {
+    var imported = C.importSlot(null, ask.slot, ask.text);
+    toast(imported.ok ? ('已导入到' + C.slotTitle(ask.slot)) : (imported.error || '导入失败'));
+    cancelSaveAsk();
+  }
+}
+function activateSlot(mode, info) {
+  var C = careerApi();
+  if (!C) return;
+  ui.slotFocus = info.slot;
+  if (mode === 'load') {
+    if (info.empty) { toast('这个位置是空的'); return; }
+    if (info.damaged) { toast(info.error || '这份存档损坏了'); return; }
+    var loaded = C.loadSlot(null, info.slot);
+    if (!loaded.ok || !loaded.career) { toast((loaded && loaded.error) || '读不出来'); return; }
+    adoptCareer(loaded);
+    return;
+  }
+  if (mode === 'delete') {
+    if (info.empty) { toast('这个位置是空的'); return; }
+    openSaveAsk('delete', info);
+    return;
+  }
+  if ((mode === 'save' || mode === 'new') && !info.empty && !info.damaged) {
+    openSaveAsk(mode, info);
+    return;
+  }
+  if (mode === 'new') createInto(info.slot);
+  else commitManualSave(info.slot);
+}
+function createInto(slotId) {
+  var C = careerApi();
+  if (!C) { toast('生涯模块没载入'); return; }
+  careerSave = C.newCareer((Date.now() % 99991) >>> 0);
+  var wrote = C.writeSlot(null, slotId, careerSave);
+  if (!wrote.ok) { toast(wrote.error || '新档没写上'); return; }
+  if (slotId !== 'auto') {
+    var auto = C.writeSlot(null, 'auto', careerSave);
+    if (!auto.ok) toast(auto.error || '自动存档没写上', 2800);
+  }
+  ui.saveAsk = null;
+  ui.titleView = 'main';
+  ui.slotFocus = slotId;
+  screen = 'career';
+  ui.careerView = 'hub';
+  ui.menuSel = 0;
+  ui.careerFix = null;
+  window.__career = careerSave;
+  toast('新档已写入' + C.slotTitle(slotId));
+}
+function commitManualSave(slotId) {
+  var C = careerApi();
+  if (!C || !careerSave) { toast('没有进行中的生涯'); return; }
+  var wrote = C.writeSlot(null, slotId, careerSave);
+  if (!wrote.ok) { toast(wrote.error || '保存失败', 2800); return; }
+  ui.saveAsk = null;
+  ui.slotFocus = slotId;
+  ui.careerView = 'hub';
+  ui.menuSel = 0;
+  toast('已保存到' + C.slotTitle(slotId));
+}
+function adoptCareer(loaded) {
+  careerSave = loaded.career;
+  window.__career = careerSave;
+  ui.slotFocus = loaded.slot;
+  ui.saveAsk = null;
+  ui.titleView = 'main';
+  screen = 'career';
+  ui.careerView = 'hub';
+  ui.menuSel = 0;
+  var warn = loaded.warnings && loaded.warnings.length ? ('  ' + loaded.warnings[0]) : '';
+  toast('已读取' + (loaded.label || '') + warn, warn ? 3200 : 1600);
+}
+function askNoteLines() {
+  var ask = ui.saveAsk;
+  if (!ask) return [];
+  var C = careerApi();
+  var name = C ? C.slotTitle(ask.slot) : ask.slot;
+  var info = ask.info || {};
+  var s = info.summary || ask.summary || {};
+  var when = formatSaveTime(info.savedAt || ask.savedAt);
+  var who = s.clubName ? (s.clubName + '  第' + (s.season || 1) + '赛季' + (s.rank ? ('  第' + s.rank + '名') : '')) : '';
+  if (ask.mode === 'delete') return ['删除' + name + '？删了就找不回来', who, when];
+  if (ask.mode === 'import') return ['把备份导入' + name + '？会盖掉现在这份', who, when];
+  if (ask.mode === 'new') return ['在' + name + '新开生涯？会盖掉现在这份', who, when];
+  return ['覆盖' + name + '？', who, when];
+}
+function titleActions() {
+  if (ui.titleView === 'ask') return askRows();
+  if (ui.titleView === 'new' || ui.titleView === 'load') return saveActionRows(ui.titleView === 'new' ? 'new' : 'load');
+  var latest = null;
+  var C = careerApi();
+  if (C) { try { latest = C.latestSlot(); } catch (e) {} }
+  var has = !!(latest && latest.career);
+  return [
+    { label: '开始比赛', fn: function () { ui.careerFix = null; startMatch(); } },
+    { label: '继续（最近存档）', enabled: has, fn: function () { resumeCareer(); } },
+    { label: '新建生涯', fn: function () { ui.titleView = 'new'; ui.menuSel = 0; } },
+    { label: '读取存档', fn: function () { ui.titleView = 'load'; ui.menuSel = 0; } },
+  ];
 }
 function careerRows() {
   var C = careerApi();
@@ -2024,9 +2279,11 @@ function careerRows() {
   if (ui.careerView === 'end') {
     return [
       { label: '开始新赛季', fn: function () { rollCareer(); } },
-      { label: '返回标题', fn: function () { screen = 'title'; ui.menuSel = 0; } },
+      { label: '返回标题', fn: function () { screen = 'title'; ui.titleView = 'main'; ui.menuSel = 0; } },
     ];
   }
+  if (ui.careerView === 'save') return saveActionRows(ui.saveMode || 'save');
+  if (ui.careerView === 'save-ask') return askRows();
   var nxt = C.nextFixture(careerSave.calendar, careerSave.clubId);
   var rows = [];
   if (nxt) {
@@ -2042,7 +2299,10 @@ function careerRows() {
   rows.push({ label: '积分榜', fn: function () { ui.careerView = 'table'; ui.menuSel = 0; } });
   rows.push({ label: '转会', fn: function () { ui.careerView = 'market'; ui.menuSel = 0; } });
   rows.push({ label: '赛程', fn: function () { ui.careerView = 'fixtures'; ui.menuSel = 0; } });
-  rows.push({ label: '返回标题', fn: function () { screen = 'title'; ui.menuSel = 0; } });
+  rows.push({ label: '保存', fn: function () { ui.careerView = 'save'; ui.saveMode = 'save'; ui.menuSel = 0; } });
+  rows.push({ label: '读取', fn: function () { ui.careerView = 'save'; ui.saveMode = 'load'; ui.menuSel = 0; } });
+  rows.push({ label: '删除', fn: function () { ui.careerView = 'save'; ui.saveMode = 'delete'; ui.menuSel = 0; } });
+  rows.push({ label: '返回标题', fn: function () { screen = 'title'; ui.titleView = 'main'; ui.menuSel = 0; } });
   return rows;
 }
 function careerRowCount() {
@@ -2062,38 +2322,40 @@ function activateCareer() {
   if (it && it.enabled !== false) it.fn();
 }
 function backCareer() {
+  if (screen === 'title' && ui.titleView === 'ask') { cancelSaveAsk(); return; }
+  if (screen === 'title' && ui.titleView && ui.titleView !== 'main') {
+    ui.titleView = 'main'; ui.menuSel = 0; ui.saveAsk = null; return;
+  }
+  if (screen === 'career' && ui.careerView === 'save-ask') { cancelSaveAsk(); return; }
   if (screen === 'career' && ui.careerView && ui.careerView !== 'hub') {
     ui.careerView = 'hub'; ui.menuSel = 0; return;
   }
-  if (screen === 'career') { screen = 'title'; ui.menuSel = 0; }
+  if (screen === 'career') { screen = 'title'; ui.titleView = 'main'; ui.menuSel = 0; }
 }
 function openNewCareer() {
-  var C = careerApi();
-  if (!C) { toast('生涯模块没载入'); return; }
-  careerSave = C.newCareer((Date.now() % 99991) >>> 0);
-  rememberCareer();
-  screen = 'career';
-  ui.careerView = 'hub';
+  ui.titleView = 'new';
   ui.menuSel = 0;
-  ui.careerFix = null;
 }
 function resumeCareer() {
-  if (!loadCareer()) { toast('没有存档'); return; }
-  screen = 'career';
-  ui.careerView = 'hub';
-  ui.menuSel = 0;
+  var C = careerApi();
+  if (!C) { toast('没有存档'); return; }
+  var latest = C.latestSlot();
+  if (!latest || !latest.career) { toast('没有存档'); return; }
+  var loaded = C.loadSlot(null, latest.slot);
+  if (!loaded.ok || !loaded.career) { toast((loaded && loaded.error) || '没有存档'); return; }
+  adoptCareer(loaded);
 }
 function tryBuy(id) {
   var C = careerApi();
   var r = C.buy(careerSave, id);
-  toast(r.ok ? '已买入' : r.error);
+  toast(r.ok ? '已买入 · 已自动保存' : r.error);
   if (r.ok) rememberCareer();
 }
 function trySell(id) {
   var C = careerApi();
   if (careerSave.xi.indexOf(id) >= 0) { toast('先到首发里换下来'); return; }
   var r = C.sell(careerSave, id);
-  toast(r.ok ? '已卖出' : r.error);
+  toast(r.ok ? '已卖出 · 已自动保存' : r.error);
   if (r.ok) rememberCareer();
 }
 function cycleSlot(i) {
@@ -2105,10 +2367,10 @@ function cycleSlot(i) {
 function rollCareer() {
   var C = careerApi();
   C.rollSeason(careerSave);
-  rememberCareer();
+  rememberCareer('auto');
   ui.careerView = 'hub';
   ui.menuSel = 0;
-  toast('新赛季开始');
+  if (ui.toast === '已自动保存') toast('新赛季开始 · 已自动保存');
 }
 function startCareerMatch() {
   var C = careerApi();
@@ -2148,7 +2410,7 @@ function finishCareerIfDone() {
   var hg = userHome ? state.score.home : state.score.away;
   var ag = userHome ? state.score.away : state.score.home;
   ui.careerLast = C.recordResult(careerSave, ui.careerFix, hg, ag);
-  rememberCareer();
+  rememberCareer('auto');
 }
 function returnToCareer() {
   if (ui.refreshTimer) { clearInterval(ui.refreshTimer); ui.refreshTimer = null; }
@@ -2448,6 +2710,11 @@ function drawCareer() {
   var size = Math.max(18, Math.ceil(15 / scale));
   var small = Math.max(15, Math.ceil(13 / scale));
   var rows = careerRows();
+  if (ui.careerView === 'save' || ui.careerView === 'save-ask') {
+    var saveHeading = ui.careerView === 'save-ask' ? '请确认' : (ui.saveMode === 'load' ? '读取存档' : ui.saveMode === 'delete' ? '删除存档' : '保存生涯');
+    drawSlotScreen(rows, saveHeading);
+    return;
+  }
   if (CAREER_COLS[ui.careerView]) {
     drawCareerColumns(rows, CAREER_COLS[ui.careerView], size, small);
     return;
@@ -2498,7 +2765,109 @@ function drawCareer() {
   text('摇杆或上/下选择    确定    取消返回', W / 2, 680, small, '#9fb4dd', 'center');
 }
 
+function drawSlotScreen(rows, heading) {
+  ctx.fillStyle = '#0d1430';
+  ctx.fillRect(0, 0, W, H);
+  var small = careerFont(14);
+  var titleSize = careerFont(18);
+  var left = careerSafeLeft();
+  var right = careerSafeRight();
+  if (right - left < 280) { left = 36; right = isTouch ? 1000 : W - 36; }
+  var width = right - left;
+  var foot = Math.max(16, Math.round(small * 0.7));
+  var helpY = H - foot;
+  var bottom = helpY - Math.round(small * 0.8) - 48;
+  text(heading, left, 14 + titleSize / 2, titleSize, '#ffd94a', 'left', true);
+  var note = (ui.titleView === 'ask' || ui.careerView === 'save-ask') ? askNoteLines() : [];
+  var y = 18 + titleSize;
+  note.forEach(function (line) {
+    if (!line) return;
+    text(line, left, y + small / 2, small, '#ffd0d0', 'left', true);
+    y += small + 6;
+  });
+  y += 8;
+  var sel = ui.menuSel || 0;
+  if (sel >= rows.length) sel = ui.menuSel = 0;
+  if (rows[sel] && rows[sel].slotId) ui.slotFocus = rows[sel].slotId;
+  function rowH(row) {
+    if (!row.slotId) return small + 22;
+    if (row.tone === 'ok') return small * 3 + 22;
+    return small * 2 + 20;
+  }
+  var heights = rows.map(rowH);
+  var room = Math.max(40, bottom - y);
+  var start = 0;
+  var usedBefore = 0;
+  for (var i = 0; i < sel; i++) usedBefore += heights[i] + 8;
+  var fitBefore = 0;
+  var acc = 0;
+  for (var k = sel; k >= 0; k--) {
+    var next = acc + heights[k] + (k === sel ? 0 : 8);
+    if (k < sel && next > room) break;
+    if (k === sel && heights[k] > room) break;
+    acc = next;
+    fitBefore = k;
+  }
+  start = fitBefore;
+  var cursor = y;
+  var shown = 0;
+  for (var n = start; n < rows.length; n++) {
+    var h = heights[n];
+    if (cursor + h > bottom && shown > 0) break;
+    paintSlotRow(rows[n], n, left, cursor, width, h, n === sel, small);
+    cursor += h + 8;
+    shown++;
+  }
+  var pos = rows.length ? ((sel + 1) + '/' + rows.length) : '0/0';
+  if (start > 0) pos = '↑ ' + pos;
+  if (start + shown < rows.length) pos += ' ↓';
+  var posW = small * 4;
+  text(pos, right, 14 + titleSize / 2, small, '#ffd94a', 'right', true);
+  text('摇杆或上/下选择    确定    取消返回', (left + right) / 2, helpY, Math.min(small, 22), '#9fb4dd', 'center');
+  void posW;
+}
+function paintSlotRow(row, idx, x, y, w, h, on, small) {
+  var danger = !!row.danger;
+  var bad = row.tone === 'bad';
+  var off = row.enabled === false;
+  ctx.fillStyle = on ? (danger ? '#8d2424' : 'rgba(255,217,74,0.18)') : (bad ? 'rgba(90,24,24,0.55)' : 'rgba(8,14,32,0.88)');
+  rr(x, y, w, h, 8); ctx.fill();
+  ctx.strokeStyle = on ? '#ffd94a' : (danger ? '#e07a7a' : '#3d5a99');
+  ctx.lineWidth = on ? 3 : 1.5;
+  ctx.stroke();
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(x + 10, y + 2, w - 20, h - 4);
+  ctx.clip();
+  if (row.slotId && row.tone === 'ok') {
+    text(row.label, x + 16, y + small * 0.72, small, on ? '#ffd94a' : '#fff', 'left', true);
+    if (row.time) text(row.time, x + w - 16, y + small * 0.72, Math.max(13, small - 2), '#d7e6ff', 'right');
+    var parts = String(row.sub || '').split('  ·  ');
+    text(parts[0] || '', x + 16, y + small * 1.85, small, '#f4f7ff', 'left', true);
+    text(parts[1] || '', x + 16, y + small * 2.9, Math.max(13, small - 1), '#9fb4dd', 'left');
+  } else if (row.slotId) {
+    text(row.label, x + 16, y + h * 0.34, small, bad ? '#ffb4b4' : (off ? '#8ea0c4' : '#fff'), 'left', true);
+    text(row.sub || '', x + 16, y + h * 0.72, Math.max(13, small - 1), bad ? '#ffd0d0' : '#9fb4dd', 'left');
+  } else {
+    if (!danger && on) {
+      ctx.fillStyle = '#ffd94a';
+      rr(x, y, w, h, 8); ctx.fill();
+    }
+    text((on ? '▶ ' : '') + row.label, x + w / 2, y + h / 2, small, (!danger && on) ? '#3a2a00' : '#fff', 'center', true);
+  }
+  ctx.restore();
+  addClick(x, y, w, h, function () {
+    ui.menuSel = idx;
+    if (row.slotId) ui.slotFocus = row.slotId;
+    if (row.enabled !== false && row.fn) row.fn();
+  });
+}
 function drawTitle() {
+  if (ui.titleView && ui.titleView !== 'main') {
+    var slotHeading = ui.titleView === 'new' ? '新建生涯' : ui.titleView === 'load' ? '读取存档' : '请确认';
+    drawSlotScreen(titleActions(), slotHeading);
+    return;
+  }
   var g = ctx.createLinearGradient(0, 0, 0, H);
   g.addColorStop(0, '#0d1430'); g.addColorStop(1, '#131c3d');
   ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
@@ -2534,14 +2903,22 @@ function drawTitle() {
   });
 
   var actions = titleActions();
+  var bh = 40, gap = 4, bw = 320;
+  var by0 = 546;
   actions.forEach(function (it, i) {
-    var bw = 280, bh = 48, bx = W / 2 - bw / 2, by = 548 + i * 54;
+    var bx = W / 2 - bw / 2, by = by0 + i * (bh + gap);
     var on = (ui.menuSel || 0) === i;
-    ctx.fillStyle = it.enabled === false ? '#3a4258' : (on ? '#ffd94a' : '#e8a923');
+    var off = it.enabled === false;
+    ctx.fillStyle = off ? '#3a4258' : (on ? '#ffd94a' : '#e8a923');
     rr(bx, by, bw, bh, 8); ctx.fill();
     ctx.strokeStyle = on ? '#fff' : '#fff2c8'; ctx.lineWidth = on ? 3 : 2; ctx.stroke();
-    text((on ? '▶ ' : '') + it.label, W / 2, by + bh / 2, 22, it.enabled === false ? '#9aa3b8' : '#3a2a00', 'center', true);
-    (function (fn, dis) { addClick(bx, by, bw, bh, function () { if (!dis) fn(); }); })(it.fn, it.enabled === false);
+    text((on ? '▶ ' : '') + it.label, W / 2, by + bh / 2, 20, off ? '#9aa3b8' : '#3a2a00', 'center', true);
+    (function (fn, dis, n) {
+      addClick(bx, by, bw, bh, function () {
+        ui.menuSel = n;
+        if (!dis) fn();
+      });
+    })(it.fn, off, i);
   });
 }
 
@@ -3601,12 +3978,15 @@ function drawFulltime() {
 function drawToast() {
   if (state && state.lastAction && state.lastAction.duel) return;
   if (!ui.toast || Date.now() > ui.toastUntil) return;
+  var slotUi = (screen === 'title' && ui.titleView && ui.titleView !== 'main') ||
+    (screen === 'career' && (ui.careerView === 'save' || ui.careerView === 'save-ask'));
+  var y = slotUi ? (H - 92) : (H - 40);
   ctx.font = '17px "PingFang SC","Microsoft YaHei",monospace';
   var tw = ctx.measureText(ui.toast).width + 40;
   ctx.fillStyle = 'rgba(8,12,26,0.92)';
-  rr(W / 2 - tw / 2, H - 40, tw, 32, 6); ctx.fill();
+  rr(W / 2 - tw / 2, y, tw, 32, 6); ctx.fill();
   ctx.strokeStyle = '#3d5a99'; ctx.lineWidth = 1.5; ctx.stroke();
-  text(ui.toast, W / 2, H - 24, 17, '#ffd94a', 'center');
+  text(ui.toast, W / 2, y + 16, 17, '#ffd94a', 'center');
 }
 
 // ---------------- 主循环 ----------------
@@ -3697,7 +4077,10 @@ if (DEBUG) {
       stack: ui.hmenu && ui.hmenu.stack ? ui.hmenu.stack.map(function (l) { return l.kind + '#' + l.sel; }).join('>') : '',
       phase: state ? state.phase : null,
       screen: screen,
+      titleView: ui.titleView || 'main',
       careerView: ui.careerView || '',
+      saveMode: ui.saveMode || '',
+      slotFocus: ui.slotFocus || '',
       menuSel: ui.menuSel || 0,
       dec: state && state.decision ? (state.decision.kind || 'command') : null,
       hint: typeof hintMessage === 'function' ? hintMessage() : null,
@@ -3790,6 +4173,14 @@ if (fsBtn && fsBtn.addEventListener) {
     toggleFullscreen();
   });
 }
+
+try {
+  var bootCareer = careerApi();
+  if (bootCareer && bootCareer.ensureMigrated) {
+    var bootNote = bootCareer.ensureMigrated(null);
+    if (bootNote && bootNote.damaged) toast('旧存档损坏，没有迁进自动存档', 3200);
+  }
+} catch (bootErr) {}
 
 requestAnimationFrame(frame);
 })();

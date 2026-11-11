@@ -135,7 +135,10 @@ async function run(name, viewport, touchMode) {
   if (touchMode) await touch.init();
   await page.waitForTimeout(700);
   await tap(page, 505, 422); // 1 分钟半场
-  await tap(page, 640, 626); // 新开业余联赛（第二颗按钮）
+  await page.keyboard.press('s'); // 继续是灰的，会落到新建生涯
+  await page.keyboard.press('Enter'); // 新建生涯
+  await page.waitForFunction(() => window.__touchState().titleView === 'new');
+  await page.keyboard.press('Enter'); // 空的自动存档
   await page.waitForFunction(() => window.__career && window.__career.clubId === 'riverside', null, { timeout: 5000 });
   await page.waitForTimeout(300);
   await page.screenshot({ path: path.join(OUT, 'career-hub-' + name + '.png') });
@@ -225,7 +228,8 @@ async function run(name, viewport, touchMode) {
 
   await page.reload({ waitUntil: 'domcontentloaded' });
   await page.waitForTimeout(600);
-  await tap(page, 640, 680);
+  await page.keyboard.press('s');
+  await page.keyboard.press('Enter'); // 继续（最近存档）
   await page.waitForFunction(() => window.__career && window.__career.results && window.__career.results.length >= 1, null, { timeout: 5000 });
   await page.screenshot({ path: path.join(OUT, 'career-continue-' + name + '.png') });
   if (logs.length) console.log(name, 'pageerrors', logs.join(' | '));

@@ -10,9 +10,11 @@
 
   function clamp(v, lo, hi) { return v < lo ? lo : v > hi ? hi : v; }
 
+  var cupState = { played: 0 };
   var mod = {
     id: 'example-cup',
     name: '示例杯赛与年龄曲线',
+    version: 1,
     hooks: {
       schedule: function (ctx) {
         var save = ctx.save;
@@ -57,6 +59,9 @@
         };
         save.squad.push(p);
       },
+      onMatchPlayed: function () { cupState.played += 1; },
+      serialize: function () { return { played: cupState.played, cup: 'example-cup', version: 1 }; },
+      deserialize: function (ctx) { cupState.played = (ctx && ctx.data && ctx.data.played) || 0; },
     },
   };
 

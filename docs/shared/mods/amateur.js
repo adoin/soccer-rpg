@@ -64,6 +64,7 @@
   var mod = {
     id: 'amateur-league',
     name: '业余联赛',
+    version: 1,
     hooks: {
       competitions: function (ctx) {
         ctx.competitions.push({
@@ -109,6 +110,12 @@
           fa.fee = Math.max(300, fa.fee - 800);
           save.market.push({ id: 'm-' + fa.id, fee: fa.fee, wage: fa.wage, player: fa });
         }
+      },
+      serialize: function () {
+        return { league: 'amateur-league', version: 1 };
+      },
+      deserialize: function (ctx) {
+        if (ctx && ctx.data && ctx.data.league && ctx.data.league !== 'amateur-league') return;
       },
     },
   };

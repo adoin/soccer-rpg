@@ -139,10 +139,98 @@ console.log('== 记分和存档 ==');
   ok(Career.persist(save, mem), '写入存档');
   var back = Career.restore(mem);
   ok(back && back.schema === 1 && back.results.length === 1 && back.budget === save.budget, '读档一致');
-  mem.setItem(Career.SAVE_KEY, JSON.stringify({ schema: 99 }));
-  ok(Career.restore(mem) === null, '版本不对就丢弃');
+  var idx = JSON.parse(mem.getItem(Career.INDEX_KEY));
+  idx.legacyMigrated = false;
+  mem.setItem(Career.INDEX_KEY, JSON.stringify(idx));
+  mem.setItem(Career.SAVE_KEY, '{坏掉');
+  var kept = Career.restore(mem);
+  ok(kept && kept.results.length === 1, '损坏的旧档不会冲掉自动存档');
   var line = Career.lineupPlayers(save.squad, save.xi);
   ok(line && line.length === 11 && line[0].num === 1 && line[0].stats.pace <= 8, '首发带上业余能力', line && line[0].stats.pace);
+})();
+
+console.log('== 多槽存档 ==');
+(function () {
+  function memStore() {
+    return {
+      bag: {},
+      setItem: function (k, v) { this.bag[k] = String(v); },
+      getItem: function (k) { return Object.prototype.hasOwnProperty.call(this.bag, k) ? this.bag[k] : null; },
+      removeItem: function (k) { delete this.bag[k]; },
+    };
+  }
+  var save = Career.newCareer(4);
+  var fx = Career.nextFixture(save.calendar, save.clubId);
+  Career.recordResult(save, fx.id, 1, 0);
+  var mem = memStore();
+  var wrote = Career.writeSlot(mem, '2', save);
+  ok(wrote.ok && wrote.slot === '2', '写入手动 2', wrote.error);
+  var loaded = Career.loadSlot(mem, '2');
+  ok(loaded.ok && loaded.career.budget === save.budget && loaded.career.results.length === 1, '手动槽往返');
+  ok(loaded.summary && loaded.summary.clubName === '河畔业余' && loaded.summary.rank > 0 && loaded.summary.season === 1, '摘要有队名、赛季和排名', JSON.stringify(loaded.summary));
+  ok(typeof loaded.savedAt === 'number' && loaded.savedAt > 0, '有保存时间');
+  ok(loaded.pack && loaded.pack.modState['example-cup'] && loaded.pack.modState['example-cup'].cup === 'example-cup', 'mod 状态写进槽位');
+  ok(loaded.pack.mods.some(function (m) { return m.id === 'amateur-league' && m.version === 1; }), 'mod 版本写进槽位');
+  var played = loaded.pack.modState['example-cup'].played;
+  Career.loadSlot(mem, '2');
+  ok(played === 0 || played > 0, '读档不会抛');
+  var raw = JSON.parse(mem.getItem(Career.slotKey('2')));
+  raw.mods.push({ id: 'gone-mod', version: 3, name: '不存在的杯赛' });
+  mem.setItem(Career.slotKey('2'), JSON.stringify(raw));
+  var warned = Career.loadSlot(mem, '2');
+  ok(warned.ok && warned.warnings.some(function (w) { return w.indexOf('gone-mod') >= 0 || w.indexOf('不存在的杯赛') >= 0; }), '缺少模组会警告', (warned.warnings || []).join('|'));
+
+  save.budget = 1234;
+  ok(Career.writeSlot(mem, '2', save).ok && Career.readSlot(mem, '2').career.budget === 1234, '覆盖手动槽');
+  var exported = Career.exportSlot(mem, '2');
+  ok(exported.ok && exported.text.indexOf('"slot":"2"') >= 0, '手动槽可导出', exported.error);
+  var round = Career.importSlot(mem, '1', exported.text);
+  ok(round.ok && Career.readSlot(mem, '1').career.clubId === 'riverside' && Career.readSlot(mem, '1').career.budget === 1234, '导入 JSON 进手动 1', round.error);
+  ok(Career.deleteSlot(mem, '2').ok && Career.readSlot(mem, '2').empty, '删除后变空位');
+
+  mem.setItem(Career.slotKey('1'), '{');
+  var bad = Career.readSlot(mem, '1');
+  ok(bad.damaged && !bad.ok, '损坏的槽位标出来', bad.error);
+  var listed = Career.listSlots(mem);
+  ok(listed.length === 4 && listed.filter(function (s) { return s.slot === '1'; })[0].damaged, '列表里坏槽不崩');
+  mem.setItem(Career.slotKey('3'), JSON.stringify({ schema: 99, career: { schema: 1 } }));
+  var future = Career.readSlot(mem, '3');
+  ok(future.damaged && /版本/.test(future.error || ''), '认不出的版本标损坏', future.error);
+
+  var legacy = memStore();
+  var old = Career.newCareer(8);
+  old.budget = 2222;
+  legacy.setItem(Career.SAVE_KEY, JSON.stringify(old));
+  var slots = Career.listSlots(legacy);
+  var auto = slots.filter(function (s) { return s.slot === 'auto'; })[0];
+  ok(auto && !auto.empty && auto.career.budget === 2222 && auto.career.seed === old.seed, '旧键迁进自动存档');
+  ok(legacy.getItem(Career.SAVE_KEY) == null, '迁走后删掉旧键');
+
+  var junk = memStore();
+  junk.setItem(Career.SAVE_KEY, JSON.stringify({ schema: 99 }));
+  ok(Career.restore(junk) === null, '无法识别的旧档不进游戏');
+  ok(Career.listSlots(junk).every(function (s) { return s.empty; }), '坏旧档不会写成槽位');
+  var jidx = JSON.parse(junk.getItem(Career.INDEX_KEY));
+  ok(jidx.legacyDamaged === true, '旧档被标成损坏');
+
+  var quota = {
+    bag: {},
+    setItem: function (k, v) {
+      if (String(k).indexOf('save-1') >= 0) {
+        var err = new Error('quota');
+        err.name = 'QuotaExceededError';
+        throw err;
+      }
+      this.bag[k] = String(v);
+    },
+    getItem: function (k) { return Object.prototype.hasOwnProperty.call(this.bag, k) ? this.bag[k] : null; },
+    removeItem: function (k) { delete this.bag[k]; },
+  };
+  var denied = Career.writeSlot(quota, '1', save);
+  ok(!denied.ok && denied.quota && /空间/.test(denied.error), '空间不够有提示', denied.error);
+
+  var badFile = Career.peekImport('nope');
+  ok(!badFile.ok, '坏文本拒绝导入', badFile.error);
 })();
 
 if (failures) {

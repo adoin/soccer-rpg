@@ -48,6 +48,8 @@ Career.registerMod({
 | `onMatchPlayed` | 玩家这场记完分 | `{ save, fixture, hg, ag }` |
 | `growPlayers` | 每场之后，以及升季时 | `{ save, players, when: 'match' \| 'season' }`。直接改 `players[].stats` |
 | `youthIntake` | 赛季开始的最后 | `{ save, rng }`。往 `save.squad` 加人，注意 `Career.MAX_SQUAD` |
+| `serialize` | 写入某个存档槽时 | `{ save }`。返回这个 mod 自己的状态（会放进 `modState[id]`） |
+| `deserialize` | 从槽位读进游戏时 | `{ save, data }`。`data` 是上次 serialize 的结果 |
 
 ## 赛程不是死列表
 
@@ -81,4 +83,10 @@ Career.registerMod({
 
 ## 存档
 
-`localStorage` 键 `soccer-rpg-career`，`schema` 必须是 `Career.SCHEMA`（现在是 1）。对不上就当作没有存档。`Career.persist` / `Career.restore`。
+生涯正文的 `schema` 是 `Career.SCHEMA`（现在是 1）。槽位信封是 `Career.SLOT_SCHEMA`（现在是 2）：一个索引键 `soccer-rpg-saves`，再加每个槽自己的键 `soccer-rpg-save-auto`、`soccer-rpg-save-1`、`soccer-rpg-save-2`、`soccer-rpg-save-3`。自动档 1 个，手动档 3 个。
+
+信封里有 `savedAt`、给列表用的 `summary`、当时启用的 `mods`（id 和 version），以及 `modState`。读档时如果某个 mod id 不在，会给出「缺少模组」警告，游戏本身不崩。槽位损坏或版本认不出时标成损坏，不往下解释。
+
+以前的单键 `soccer-rpg-career` 会在第一次打开时迁进自动存档，迁成功就删掉旧键。迁不了就标损坏，不动已经有的自动档。
+
+`Career.writeSlot(storage, slotId, career)`、`readSlot`、`loadSlot`、`listSlots`、`deleteSlot`、`exportSlot`、`importSlot`。`persist` / `restore` 仍可用，分别写和读最近一份好档（写入走自动档）。空间不够时返回 `{ ok: false, quota: true, error: '存储空间不够，存档没写上' }`。
