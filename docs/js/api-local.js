@@ -74,7 +74,7 @@ window.__makeLocalApi = function () {
         var halfLength = parseInt(body.halfLength, 10);
         if (!(halfLength >= 30 && halfLength <= 1200)) halfLength = 180;
         var id = newId();
-        matches[id] = new Match(id, { halfLength: halfLength, mentality: body.mentality || 'balanced' });
+        matches[id] = new Match(id, { halfLength: halfLength, mentality: body.mentality || 'balanced', homeSquad: body.homeSquad, awaySquad: body.awaySquad, homeName: body.homeName, awayName: body.awayName, seed: body.seed });
         return Promise.resolve({ ok: true, matchId: id });
       }
       m = url.match(/^\/api\/match\/([^\/]+)\/command$/);
