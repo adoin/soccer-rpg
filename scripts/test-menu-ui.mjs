@@ -94,6 +94,8 @@ async function run(name, viewport, touchMode) {
   await page.keyboard.press('q');
   await press(page, 's', 6);
   await page.keyboard.press('Enter');
+  await page.waitForFunction(() => window.__touchState().careerView === 'files');
+  await page.keyboard.press('Enter');
   await page.waitForFunction(() => window.__touchState().careerView === 'save');
   await shots(page, 'menu-saves-' + name + '.png');
   if (logs.length) console.log(name, 'pageerrors', logs.join(' | '));

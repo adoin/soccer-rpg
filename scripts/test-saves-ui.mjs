@@ -145,6 +145,8 @@ async function run(name, viewport, touchMode) {
 
   await press(page, 's', 6);
   await page.keyboard.press('Enter');
+  await page.waitForFunction(() => window.__touchState().careerView === 'files');
+  await page.keyboard.press('Enter');
   await page.waitForFunction(() => window.__touchState().careerView === 'save' && window.__touchState().saveMode === 'save');
   await shots(page, 'save-list-' + name + '.png');
   await press(page, 's', 2);
@@ -170,7 +172,10 @@ async function run(name, viewport, touchMode) {
   await page.keyboard.press('Enter');
   await page.waitForFunction(() => window.__career && window.__career.results && window.__career.results.length >= 1 && window.__touchState().screen === 'career');
 
-  await press(page, 's', 8);
+  await press(page, 's', 6);
+  await page.keyboard.press('Enter');
+  await page.waitForFunction(() => window.__touchState().careerView === 'files');
+  await press(page, 's', 2);
   await page.keyboard.press('Enter');
   await page.waitForFunction(() => window.__touchState().saveMode === 'delete');
   await page.keyboard.press('s');

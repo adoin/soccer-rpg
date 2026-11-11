@@ -2358,6 +2358,14 @@ function careerRows() {
   if (ui.careerView === 'save') return saveActionRows(ui.saveMode || 'save');
   if (ui.careerView === 'save-ask') return askRows();
   if (ui.careerView === 'settings') return settingRows();
+  if (ui.careerView === 'files') {
+    return [
+      { label: '保存', fn: function () { ui.careerView = 'save'; ui.saveMode = 'save'; ui.menuSel = 0; } },
+      { label: '读取', fn: function () { ui.careerView = 'save'; ui.saveMode = 'load'; ui.menuSel = 0; } },
+      { label: '删除', fn: function () { ui.careerView = 'save'; ui.saveMode = 'delete'; ui.menuSel = 0; } },
+      { label: '返回', fn: function () { ui.careerView = 'hub'; ui.menuSel = 0; } },
+    ];
+  }
   var nxt = C.nextFixture(careerSave.calendar, careerSave.clubId);
   var rows = [];
   if (nxt) {
@@ -2373,9 +2381,7 @@ function careerRows() {
   rows.push({ label: '积分榜', fn: function () { ui.careerView = 'table'; ui.menuSel = 0; } });
   rows.push({ label: '转会', fn: function () { ui.careerView = 'market'; ui.menuSel = 0; } });
   rows.push({ label: '赛程', fn: function () { ui.careerView = 'fixtures'; ui.menuSel = 0; } });
-  rows.push({ label: '保存', fn: function () { ui.careerView = 'save'; ui.saveMode = 'save'; ui.menuSel = 0; } });
-  rows.push({ label: '读取', fn: function () { ui.careerView = 'save'; ui.saveMode = 'load'; ui.menuSel = 0; } });
-  rows.push({ label: '删除', fn: function () { ui.careerView = 'save'; ui.saveMode = 'delete'; ui.menuSel = 0; } });
+  rows.push({ label: '存档', fn: function () { ui.careerView = 'files'; ui.menuSel = 0; } });
   rows.push({ label: '设置', fn: function () { ui.careerView = 'settings'; ui.menuSel = 0; } });
   rows.push({ label: '返回标题', fn: function () { screen = 'title'; ui.titleView = 'main'; ui.menuSel = 0; } });
   return rows;
@@ -2530,7 +2536,7 @@ var CAREER_COLS = {
     { key: 'fee', label: '转会费', align: 'right' },
   ],
 };
-var CAREER_VIEW_NAME = { table: '积分榜', squad: '阵容', market: '转会', fixtures: '赛程', xi: '首发' };
+var CAREER_VIEW_NAME = { table: '积分榜', squad: '阵容', market: '转会', fixtures: '赛程', xi: '首发', files: '存档' };
 
 function careerSafeLeft() {
   return isTouch ? 28 : 44;
@@ -2777,6 +2783,69 @@ function drawCareerColumns(rows, headers, size, small) {
   text(hint, (left + right) / 2, helpY, Math.min(small, font + 1), '#9fb4dd', 'center');
 }
 
+function menuChrome() {
+  var scale = paintScale();
+  var hint = Math.max(15, Math.ceil(13 / (scale || 1)));
+  if (hint > 22) hint = 22;
+  var hintY = H - 14 - hint / 2;
+  var toastH = 34;
+  var toastY = hintY - hint / 2 - 12 - toastH;
+  return { hint: hint, hintY: hintY, toastY: toastY, toastH: toastH, contentBottom: toastY - 14 };
+}
+function drawHubButtons(rows, small, title, sub) {
+  var chrome = menuChrome();
+  var btn = Math.min(small, 24);
+  var bh = btn + 20;
+  var gap = Math.max(10, Math.round(btn * 0.42));
+  var n = rows.length;
+  var top = 104;
+  var room = chrome.contentBottom - top;
+  var block = n * bh + Math.max(0, n - 1) * gap;
+  if (block > room && n > 1) {
+    gap = Math.max(8, Math.floor((room - n * bh) / (n - 1)));
+    block = n * bh + (n - 1) * gap;
+  }
+  if (block > room) {
+    bh = Math.max(btn + 10, Math.floor((room - Math.max(0, n - 1) * 8) / n));
+    gap = 8;
+    block = n * bh + Math.max(0, n - 1) * gap;
+  }
+  var left = careerSafeLeft();
+  var right = careerSafeRight();
+  var bw = Math.min(520, Math.max(280, right - left - 32));
+  var cx = (left + right) / 2;
+  var bx = cx - bw / 2;
+  text(title, cx, 36, Math.min(small + 8, 32), '#ffd94a', 'center', true);
+  text(sub, cx, 72, Math.min(small, 22), '#d6e6ff', 'center');
+  var by0 = top + Math.max(0, Math.floor((room - block) / 2));
+  if (by0 + block > chrome.contentBottom) by0 = chrome.contentBottom - block;
+  var sel = ui.menuSel || 0;
+  if (sel >= n) sel = ui.menuSel = 0;
+  rows.forEach(function (it, i) {
+    var by = by0 + i * (bh + gap);
+    var on = i === sel;
+    ctx.fillStyle = on ? '#ffd94a' : 'rgba(8,12,26,0.86)';
+    rr(bx, by, bw, bh, 8); ctx.fill();
+    ctx.strokeStyle = on ? '#fff6cc' : '#9eb6de';
+    ctx.lineWidth = on ? 3 : 2;
+    ctx.stroke();
+    var label = (on ? '▶ ' : '') + it.label;
+    ctx.font = 'bold ' + btn + 'px "PingFang SC","Microsoft YaHei",monospace';
+    var labelSize = btn;
+    var maxW = bw - 36;
+    if (ctx.measureText(label).width > maxW) labelSize = Math.max(14, Math.floor(btn * maxW / ctx.measureText(label).width));
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(bx + 12, by, bw - 24, bh);
+    ctx.clip();
+    text(label, cx, by + bh / 2, labelSize, on ? '#3a2a00' : '#f4f7ff', 'center', true);
+    ctx.restore();
+    (function (fn, idx) {
+      addClick(bx, by, bw, bh, function () { ui.menuSel = idx; if (fn) fn(); });
+    })(it.fn, i);
+  });
+  text('摇杆或上/下选择    确定    取消返回', cx, chrome.hintY, chrome.hint, '#d5e4ff', 'center');
+}
 function drawMenuBackdrop() {
   ctx.fillStyle = '#07101f';
   ctx.fillRect(0, 0, W, H);
@@ -2813,6 +2882,12 @@ function drawCareer() {
   }
   if (CAREER_COLS[ui.careerView]) {
     drawCareerColumns(rows, CAREER_COLS[ui.careerView], size, small);
+    return;
+  }
+  if (!ui.careerView || ui.careerView === 'hub' || ui.careerView === 'files') {
+    var hubTitle = C.teamName(careerSave, careerSave.clubId) + '  第' + careerSave.season + '赛季';
+    if (ui.careerView === 'files') hubTitle += '  ·  存档';
+    drawHubButtons(rows, small, hubTitle, '预算 ' + careerSave.budget + '    阵容 ' + careerSave.squad.length + '人');
     return;
   }
   var viewName = CAREER_VIEW_NAME[ui.careerView] || '';
@@ -4120,7 +4195,7 @@ function drawToast() {
   if (state && state.lastAction && state.lastAction.duel) return;
   if (!ui.toast || Date.now() > ui.toastUntil) return;
   var menuUi = screen === 'title' || screen === 'career';
-  var y = menuUi ? (H - 78) : (H - 40);
+  var y = menuUi ? menuChrome().toastY : (H - 40);
   ctx.font = '17px "PingFang SC","Microsoft YaHei",monospace';
   var tw = ctx.measureText(ui.toast).width + 40;
   ctx.fillStyle = 'rgba(8,12,26,0.92)';
